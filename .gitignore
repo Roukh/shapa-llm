@@ -1,0 +1,24 @@
+# --- Python ---
+__pycache__/
+*.pyc
+.venv/
+venv/
+.DS_Store
+
+# --- shapa wiki ---
+# The user's memory (the "wiki") is EXTERNAL to this repo - it lives at
+# $SHAPA_MEMORY or ~/.shapa/memory, never inside the tool - so there is nothing
+# to gitignore here. The design docs shipped with the tool live in
+# shapa/assets/ and ARE tracked.
+
+# Claude Code session/harness state (not for the public repo)
+.claude/
+
+# Embeddings cache sidecar (generated inside a wiki when embeddings are active;
+# can appear under tests/fixtures/ when the suite runs with embeddings installed)
+.shapa-vectors.json
+
+# Python build artifacts
+*.egg-info/
+build/
+dist/

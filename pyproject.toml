@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "shapa"
+version = "0.6.0"
+description = "Operational memory for an LLM agent - a self-healing markdown-graph memory."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Roukh" }]
+keywords = ["llm", "agent", "memory", "obsidian", "markdown", "knowledge-graph"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+dependencies = []  # core engine is pure standard library
+
+[project.optional-dependencies]
+# Activates local semantic embeddings for fetch + maintain (else BM25/Jaccard).
+embeddings = ["sentence-transformers>=2.2.0"]
+
+[project.scripts]
+shapa = "shapa.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/Roukh/shapa-llm"
+Repository = "https://github.com/Roukh/shapa-llm"
+
+[tool.setuptools]
+packages = ["shapa"]
+
+[tool.setuptools.package-data]
+# Design docs (arch/ + AGENTS.md) shipped with the tool and installed into a
+# wiki by `shapa init`.
+shapa = ["assets/*.md", "assets/arch/*.md"]

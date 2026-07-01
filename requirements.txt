@@ -1,0 +1,11 @@
+# shapa optional dependencies.
+#
+# The CORE engine (frontmatter, nodes, heartbeat, validate, score, fetch,
+# capture, maintain) runs on the Python 3.11+ standard library alone.
+#
+# Installing the package below ACTIVATES local semantic embeddings (used by
+# `fetch` for retrieval and by `maintain` for similarity). Without it, shapa
+# falls back to BM25 (fetch) and token-Jaccard (maintain) - no install needed.
+#
+#   pip install -r requirements.txt
+sentence-transformers>=2.2.0
