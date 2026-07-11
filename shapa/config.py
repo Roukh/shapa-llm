@@ -1,13 +1,16 @@
 """Where shapa keeps memory.
 
 The user's memory (the "wiki") is EXTERNAL to the (public) tool and can live
-anywhere. ``shapa init [DIR]`` *connects* a wiki by recording its path in a
-small pointer file, so every later command - and the Claude Code hooks - resolve
-the same location. Resolution order (highest priority first):
+anywhere. A wiki is a directory named ``shapa`` holding the ``AGENTS.md`` marker.
+``shapa init`` scaffolds one at a repo root; every later command - and the
+Claude Code hooks - resolve a wiki the same way. Resolution order (highest
+priority first):
 
 1. ``$SHAPA_MEMORY`` if set (explicit per-invocation override).
-2. The persisted pointer written by ``shapa init`` (``~/.shapa/config.json``).
-3. ``~/.shapa/memory`` otherwise (the default).
+2. The nearest ``shapa/`` wiki discovered by walking up from the cwd (so a
+   session in a project targets that project's wiki automatically).
+3. The persisted pointer written by ``shapa init DIR`` (``~/.shapa/config.json``).
+4. ``~/.shapa/memory`` otherwise (the default).
 
 This keeps private notes out of the tool's repo entirely - memory never lives
 inside the installed/cloned tool.
@@ -21,8 +24,38 @@ from pathlib import Path
 
 ENV_VAR = "SHAPA_MEMORY"
 DEFAULT_DIR = Path.home() / ".shapa" / "memory"
-#: Pointer file written by ``shapa init`` to remember the connected wiki.
+#: Pointer file written by ``shapa init`` to remember a default wiki.
 CONFIG_FILE = Path.home() / ".shapa" / "config.json"
+#: Directory name a wiki lives in at a repo root, and the file that marks it.
+WIKI_DIRNAME = "shapa"
+WIKI_MARKER = "AGENTS.md"
+
+
+def discover(start: str | Path | None = None) -> Path | None:
+    """Return the nearest repo-root wiki at or above *start* (default: cwd).
+
+    A wiki is a directory named :data:`WIKI_DIRNAME` containing the
+    :data:`WIKI_MARKER` file. Walking up from the cwd (like git finding
+    ``.git``) lets a global hook target whichever project the session runs in.
+    The marker requirement means shapa's own ``shapa/`` *package* directory -
+    which has no ``AGENTS.md`` - is never mistaken for a wiki.
+    """
+    try:
+        here = Path(start).resolve() if start is not None else Path.cwd().resolve()
+    except OSError:
+        return None
+    for d in (here, *here.parents):
+        wiki = d / WIKI_DIRNAME / WIKI_MARKER
+        try:
+            # A permission-denied ancestor must not crash the CLI: pre-3.13
+            # ``Path.is_file()`` re-raises EACCES (the 3.13 pathlib rewrite
+            # started swallowing it), and ``memory_dir`` is called at import.
+            found = wiki.is_file()
+        except OSError:
+            continue
+        if found:
+            return (d / WIKI_DIRNAME).resolve()
+    return None
 
 
 def _pointer() -> Path | None:
@@ -42,6 +75,9 @@ def memory_dir() -> Path:
     env = os.environ.get(ENV_VAR)
     if env:
         return Path(env).expanduser()
+    local = discover()
+    if local is not None:
+        return local
     pointer = _pointer()
     if pointer is not None:
         return pointer
