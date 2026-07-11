@@ -11,9 +11,13 @@ uses: 0
 
 > shapa is a standalone open-source repo.
 > It has no coupling to any database or personal infrastructure.
-> State lives in an EXTERNAL wiki directory (`$SHAPA_MEMORY` or `~/.shapa/memory`)
-> as plain markdown; the tool never stores memory inside itself. `shapa init`
-> connects a wiki anywhere and installs these arch docs into it.
+> State lives in an EXTERNAL wiki — a directory named `shapa/` holding an
+> `AGENTS.md` marker, scaffolded by `shapa init` at a repo root (`<repo>/shapa/`,
+> resolved by walking up from the cwd) or globally (`$SHAPA_MEMORY` /
+> `~/.shapa/memory`) — as plain markdown; the tool never stores memory inside
+> itself. `shapa init` installs `AGENTS.md` + generic `arch/` project templates
+> into the wiki. shapa's own design docs (this file included) live in the repo's
+> `docs/design/`, not in the install payload.
 > Related design docs: [[PRD]] · [[memri-spec]] · [[hook-design]].
 
 ---
@@ -53,7 +57,7 @@ These hold at all times and are never overridden by any future milestone:
 
 ## Current state
 
-The engine is built and tested: the frontmatter parser, the `[[wikilink]]` link-graph, the heartbeat (random-walk pulse + orphan prune), the frontmatter-schema validator, the scoring model, and the fetch/read hook (`shapa/fetch.py`). The wiki is **external** to the tool: `shapa init [DIR]` connects it anywhere (recording the path so every command and hook resolve the same place) and installs these `arch/` docs plus `AGENTS.md` into it. `install.sh` wires the hooks against that connected wiki: fetch on `UserPromptSubmit`, and capture + maintain on `Stop`. The maintainer treats the `arch/` cluster (`type: reference`) as curated and never prunes it. The wiki uses one coherent format across `arch/` and the operational memory notes.
+The engine is built and tested: the frontmatter parser, the `[[wikilink]]` link-graph, the heartbeat (random-walk pulse + orphan prune), the frontmatter-schema validator, the scoring model, and the fetch/read hook (`shapa/fetch.py`). The wiki is **external** to the tool and **repo-scoped**: `shapa init` scaffolds a `shapa/` wiki at a repo root (default `./shapa`) or globally, and `config.discover` resolves it by walking up from the cwd to the nearest `shapa/AGENTS.md` — so one set of global hooks targets whichever project the session runs in (`$SHAPA_MEMORY` still overrides). `init` installs `AGENTS.md` plus generic `arch/` project templates (PRD/architecture/system-design) for agents to fill in; shapa's own design docs live in `docs/design/`. `install.sh`/`bootstrap.sh` wire the hooks: fetch on `UserPromptSubmit`, capture + maintain on `Stop`. The maintainer treats the `arch/` cluster (`type: reference`) as curated and never prunes it. The wiki uses one coherent format across `arch/` and the operational memory notes.
 
 ---
 

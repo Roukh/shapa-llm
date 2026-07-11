@@ -19,7 +19,7 @@ uses: 0
 
 shapa = **S**elf-**H**ealing **A**utonomous **P**ersistent **A**gent.
 
-It is a persistent markdown-graph memory. The graph lives in an external wiki directory (`$SHAPA_MEMORY`, the path recorded by `shapa init`, or the default `~/.shapa/memory`) — never inside the tool's repo. Design docs (`type: reference`) are installed into the wiki's `arch/` subdirectory by `shapa init`; operational notes (`memory`, `rule`, `issue`) are written directly to the wiki root. Every file is a note-to-self written by an agent at the end of a work session: an instruction on operation, a correction to prior understanding, or an issue flagging a detected problem. The fetch hook (`shapa/fetch.py`, wired by `install.sh` on `UserPromptSubmit`) reads the most relevant notes at the start of each prompt and calls `record_use` on each surfaced note. Writing to the graph at session end is the "always-meta" discipline: every substantive piece of work ends with the agent reflecting on what just happened and committing at least one note to the graph. A topic note is just a file whose `id` matches the topic slug; a phantom `[[wikilink]]` referencing it lights up automatically once that file is added.
+It is a persistent markdown-graph memory. The graph lives in an external wiki — a directory named `shapa/` holding this `AGENTS.md` marker. `shapa init` scaffolds one at a repo root (`<repo>/shapa/`, resolved automatically for any session run inside that repo, discovered by walking up from the cwd) or globally (`$SHAPA_MEMORY`, the path recorded by `shapa init`, or the default `~/.shapa/memory`) — never inside the tool's own repo. Project arch templates (`type: reference`) are installed into the wiki's `arch/` subdirectory by `shapa init` for agents to fill in; operational notes (`memory`, `rule`, `issue`) are written directly to the wiki root. Every file is a note-to-self written by an agent at the end of a work session: an instruction on operation, a correction to prior understanding, or an issue flagging a detected problem. The fetch hook (`shapa/fetch.py`, wired by `install.sh` on `UserPromptSubmit`) reads the most relevant notes at the start of each prompt and calls `record_use` on each surfaced note. Writing to the graph at session end is the "always-meta" discipline: every substantive piece of work ends with the agent reflecting on what just happened and committing at least one note to the graph. A topic note is just a file whose `id` matches the topic slug; a phantom `[[wikilink]]` referencing it lights up automatically once that file is added.
 
 The graph is maintained by a lightweight Python engine (`shapa/`) that uses only the Python 3.11+ standard library. Zero external dependencies.
 
@@ -66,7 +66,7 @@ uses: 0                      # mechanical read counter (set by record_use, never
 
 ### Scoring fields (optional; validated when present)
 
-A node's value to the consuming agent is scored from four fields (see §6.5 and [[memri-spec]]):
+A node's value to the consuming agent is scored from four fields (see §6.5; full rationale in the shapa tool's `docs/design/memri-spec.md`):
 
 - `consequence` (1-10) — how much the agent's performance would degrade without this node. Set by the author at capture time; the engine does not compute it. Invalid range is error **S01**.
 - `locus` — `output` (changes the agent's answer), `output-meta` (changes how the agent works), or `meta` (changes the agent's self-governance). Drives a weight and is intended to drive retrieval policy. Invalid value is error **S02**.
@@ -160,26 +160,26 @@ The fetch hook (`shapa/fetch.py`, registered on `UserPromptSubmit` by `install.s
 
 ## 9. What is deferred
 
-- **LLM-distilled capture** — a heuristic capture hook (`shapa/capture.py`) is built and wired on Stop/SubagentStop; the richer LLM-salience version (see [[hook-design]]) is deferred.
+- **LLM-distilled capture** — a heuristic capture hook (`shapa/capture.py`) is built and wired on Stop/SubagentStop; the richer LLM-salience version (see the shapa tool's `docs/design/hook-design.md`) is deferred.
 - **Heartbeat scheduling** — maintenance runs on the Stop hook and on demand; a standalone cadence trigger is deferred.
 
 **Implemented but not yet run on a live config:** `install.sh` finds the Claude config and wires the fetch hook (UserPromptSubmit) plus capture + `maintain --prune` (Stop) against the connected wiki. Verified in a sandbox but not yet applied to a real `~/.claude/` installation.
 
-These are tracked in [[MACRO]].
+These are tracked in the shapa tool's `docs/design/MACRO.md`.
 
 ---
 
 ## 10. File layout within the wiki
 
-The wiki is an external directory (configured by `shapa init` — `$SHAPA_MEMORY`
-/ `~/.shapa/memory`), never inside the shapa repo:
+The wiki is an external directory named `shapa/` (scaffolded by `shapa init` —
+a repo root's `shapa/`, `$SHAPA_MEMORY`, or `~/.shapa/memory`), never inside the
+shapa tool's own repo:
 
 ```
-<wiki_root>/          (external — connected by `shapa init`, never inside the repo)
-  AGENTS.md           ← this file, installed by `shapa init` from package assets
-  arch/               ← design docs (type: reference), installed by `shapa init`
-    MACRO.md          ← shapa's north-star and verifiable criteria
-    PRD.md  memri-spec.md  hook-design.md  ...
+<wiki_root>/          (a `shapa/` dir — repo-root or global; never inside the tool repo)
+  AGENTS.md           ← this file, installed by `shapa init`; also the wiki marker
+  arch/               ← project templates (type: reference), installed by `shapa init`
+    PRD.md  architecture.md  system-design.md   ← fill these in for your project
   <id>.md             ← operational notes captured at the wiki root;
                         each links to its [[type]] + related topics/peers
 ```
@@ -188,15 +188,18 @@ There is no central index. Notes connect peer-to-peer and to type/topic
 nodes, so clusters form organically as topics recur. The `arch/` docs are a
 separate cluster and are not wired into the memory graph.
 
-## 11. Privacy invariant (memory is never inside the repo)
+## 11. Privacy invariant (memory is never inside the *tool's* repo)
 
-Privacy is **structural**: the wiki is an external directory, never located
-inside the shapa repo or the installed package. The tool ships no wiki content —
-`shapa init` connects an external path and installs the design docs there — so a
-user's captured memory is never git-tracked and there is nothing to gitignore.
+Privacy is **structural**: memory lives in a wiki directory that is external to
+the shapa *tool* — never inside the shapa repo or the installed package. The
+tool ships no wiki content; `shapa init` scaffolds the wiki elsewhere (a
+repo-root `shapa/` of *your* project, or a global path) and installs only the
+`AGENTS.md` rules and the `arch/` templates there. A repo-root wiki does live
+inside your own project — gitignore `shapa/` if you want those notes private —
+but the capture hook never writes back into the shapa tool's own tree.
 
-This is an invariant, not a convention: the capture hook (deferred, see
-[[hook-design]]) **must** write only to the configured wiki root
-(`$SHAPA_MEMORY` or the path `shapa init` recorded), never to a path inside the
-repo or package directory. Writing a note anywhere inside a tracked repository is
-a privacy violation.
+This is an invariant, not a convention: the capture hook **must** write only to
+the resolved wiki root (a repo-root `shapa/`, `$SHAPA_MEMORY`, or the path
+`shapa init` recorded), never to a path inside the shapa tool's own repo or
+package directory. Writing a note anywhere inside the *tool's* repository is a
+privacy violation.

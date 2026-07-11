@@ -20,10 +20,13 @@ class TestInit(unittest.TestCase):
         self.tmp = Path(tempfile.mkdtemp())
         self.wiki = self.tmp / "wiki"
         self.cfg = self.tmp / "config.json"
-        # Redirect the persisted pointer and clear any env override.
+        # Redirect the persisted pointer, clear any env override, and pin the
+        # cwd to an isolated dir so cwd-discovery can't hijack these pointer/
+        # default resolution assertions.
         self.patches = [
             mock.patch.object(config, "CONFIG_FILE", self.cfg),
             mock.patch.dict("os.environ", {}, clear=False),
+            mock.patch.object(config.Path, "cwd", staticmethod(lambda: self.tmp)),
         ]
         for p in self.patches:
             p.start()
@@ -35,14 +38,17 @@ class TestInit(unittest.TestCase):
             p.stop()
         shutil.rmtree(self.tmp)
 
-    def test_init_installs_design_docs(self):
+    def test_init_installs_rules_and_arch_templates(self):
         cli._init([str(self.wiki)])
         self.assertTrue((self.wiki / "AGENTS.md").is_file())
-        self.assertTrue((self.wiki / "arch" / "MACRO.md").is_file())
+        self.assertTrue((self.wiki / "arch" / "PRD.md").is_file())
+        # The bundled docs are the rules + generic project templates, NOT
+        # shapa's own design docs (those live in the repo's docs/design/).
+        self.assertFalse((self.wiki / "arch" / "MACRO.md").exists())
         # Every installed doc validates against the schema (loads as a node).
         nodes = load_nodes(self.wiki)
-        self.assertIn("MACRO", nodes)
-        self.assertIn("AGENTS", nodes)
+        for nid in ("AGENTS", "PRD", "architecture", "system-design"):
+            self.assertIn(nid, nodes)
 
     def test_init_records_pointer_and_where_reads_it(self):
         cli._init([str(self.wiki)])
@@ -69,13 +75,21 @@ class TestConfigResolution(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
         self.cfg = self.tmp / "config.json"
-        self.patch = mock.patch.object(config, "CONFIG_FILE", self.cfg)
-        self.patch.start()
+        # mock.patch.dict restores any pre-existing SHAPA_MEMORY on tearDown,
+        # instead of permanently popping it from the real environment.
+        self.patches = [
+            mock.patch.object(config, "CONFIG_FILE", self.cfg),
+            mock.patch.dict("os.environ", {}, clear=False),
+            mock.patch.object(config.Path, "cwd", staticmethod(lambda: self.tmp)),
+        ]
+        for p in self.patches:
+            p.start()
         import os
         os.environ.pop(config.ENV_VAR, None)
 
     def tearDown(self):
-        self.patch.stop()
+        for p in self.patches:
+            p.stop()
         shutil.rmtree(self.tmp)
 
     def test_malformed_pointer_falls_through_to_default(self):

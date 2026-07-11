@@ -14,8 +14,8 @@ A memory made of plain markdown files. An agent writes to it at the end of a wor
 
 | Part | What it is |
 |------|-----------|
-| **Wiki** (external) | The memory. An external directory (`$SHAPA_MEMORY` or `~/.shapa/memory`) you connect with `shapa init`. Every file — the installed `arch/` design docs and your operational notes alike — has the same frontmatter and links to others with `[[wikilinks]]`, so the whole thing is one graph you can browse in Obsidian. |
-| **AGENTS.md** (installed into the wiki) | The rules. The authoritative schema and operating conventions. Shipped with the tool and installed into your wiki by `shapa init`. |
+| **Wiki** (external) | The memory. A directory named `shapa/` you scaffold with `shapa init` — at a **repo root** (`<repo>/shapa/`, resolved automatically for any session inside that repo) or globally (`~/.shapa/memory`). Every file — the installed `arch/` templates and your operational notes alike — has the same frontmatter and links to others with `[[wikilinks]]`, so the whole thing is one graph you can browse in Obsidian. |
+| **AGENTS.md** (installed into the wiki) | The rules. The authoritative schema and operating conventions, and the marker that makes a `shapa/` directory a wiki. Shipped with the tool and installed by `shapa init`. |
 | **Engine** (`shapa/`) | The maintainer. A stdlib Python package that validates frontmatter, scores notes, retrieves relevant notes (fetch), captures new ones (capture), and self-heals (maintain: prune + auto-merge duplicates). Optional embeddings via `requirements.txt`. |
 
 There is **one coherent file format** across the whole wiki — no separate "node" format.
@@ -56,21 +56,50 @@ score = locus_weight × (consequence / 10) × freshness × use_factor
 
 ## Install
 
+One line — installs the tool and wires the Claude Code hooks (no clone):
+
+```
+curl -fsSL https://raw.githubusercontent.com/Roukh/shapa-llm/main/bootstrap.sh | sh
+```
+
+It installs `shapa` (pipx > uv > pip --user), wires the fetch/capture/maintain
+hooks, and scaffolds the default global wiki. `SHAPA_EMBEDDINGS=1` adds local
+embeddings; `SHAPA_NO_HOOKS=1` installs the tool only. Or install by hand:
+
 ```
 pipx install shapa                 # the tool (semantic retrieval via BM25)
 pipx install "shapa[embeddings]"   # + local embeddings (sentence-transformers)
-shapa init                         # create your memory at ~/.shapa/memory
 ```
 
-Your **memory is external to the tool** — it lives wherever you point it (`$SHAPA_MEMORY`, the path `shapa init` records, or the default `~/.shapa/memory`), never inside the installed package or this repo. `shapa init [DIR]` connects a wiki: it creates the directory, installs the bundled design docs (`arch/` + `AGENTS.md`) into it, scaffolds an Obsidian vault, and remembers the path so every later command and hook resolve the same place. Open that folder as an Obsidian vault to browse the graph.
+### Where memory lives
 
-To wire the hooks (fetch on each prompt, capture + maintain on stop) into Claude Code, clone this repo and run `./install.sh` (it connects the wiki, installs the design docs, wires the hooks, and registers the Obsidian vault). Contributors can `git clone` and work from the repo.
+Your **memory is external to the tool** — never inside the installed package or
+this repo. A wiki is a directory named `shapa/` holding an `AGENTS.md` marker.
+Two ways to make one:
+
+```
+cd <your-repo> && shapa init       # a repo-root wiki: <your-repo>/shapa/
+shapa init ~/.shapa/memory         # a global wiki (LLM rules, any session)
+```
+
+`shapa init [DIR]` creates the directory, installs `AGENTS.md` + the `arch/`
+project templates, scaffolds an Obsidian vault, and records the path. A session
+running **inside a repo that has a `shapa/` wiki uses it automatically** — the
+hooks walk up from the cwd to the nearest `shapa/AGENTS.md` (like git finding
+`.git`) — unless `$SHAPA_MEMORY` is set, which always takes precedence.
+Outside any such repo, resolution falls back to the recorded path or
+`~/.shapa/memory`. Open any wiki folder as an Obsidian vault to browse the
+graph.
+
+To wire the hooks into Claude Code from a clone instead of the one-liner, run
+`./install.sh` (wires the hooks, installs the docs, registers the Obsidian
+vault). Contributors can `git clone` and work from the repo.
 
 ## How to run
 
 ```
-shapa init [DIR]                       # connect a wiki: install design docs + Obsidian vault
-shapa where                            # print the memory directory
+shapa init [DIR]                       # scaffold a wiki (default: ./shapa)
+shapa where                            # print the resolved memory directory
 shapa fetch --query "fix the git flow" # surface relevant memory (read path)
 shapa heartbeat --dry-run              # preview orphan pruning
 shapa maintain --dry-run               # preview merges/prunes (nothing changes)
@@ -80,26 +109,28 @@ shapa score                            # rank notes by value
 shapa validate                         # validate every note's frontmatter
 ```
 
-All commands default to `$SHAPA_MEMORY` (or `~/.shapa/memory`); pass a directory to override. From a clone without installing, use `python3 -m shapa <command>`.
+Every command resolves the wiki the same way (local `shapa/` → `$SHAPA_MEMORY` → recorded path → `~/.shapa/memory`); pass a directory to override. From a clone without installing, use `python3 -m shapa <command>`.
 
 ## Repo layout (the tool)
 
 ```
 shapa-llm/
   pyproject.toml         ← packaging (pipx/PyPI); `shapa` console command
-  install.sh             ← connects the wiki, wires the Claude Code hooks + Obsidian vault
+  bootstrap.sh           ← curl|sh installer (installs the tool + wires hooks)
+  install.sh             ← wires the Claude Code hooks + Obsidian vault (from a clone)
   shapa/                 ← Python engine (core is stdlib; embeddings optional)
-    config.py            ← where memory lives ($SHAPA_MEMORY / pointer / ~/.shapa/memory)
+    config.py            ← wiki resolution (local shapa/ · $SHAPA_MEMORY · pointer · default)
     cli.py               ← the unified `shapa` command (incl. `init`)
     frontmatter.py · nodes.py · heartbeat.py · validate.py · score.py
     fetch.py · capture.py · maintain.py · embed.py
-    assets/              ← design docs shipped with the tool, installed by `shapa init`
-      AGENTS.md          ← the schema and rules
-      arch/              ← design docs (PRD, memri-spec, hook-design, MACRO)
+    assets/              ← docs installed into every wiki by `shapa init`
+      AGENTS.md          ← the schema and rules (also the wiki marker)
+      arch/              ← generic project templates (PRD, architecture, system-design)
+  docs/design/           ← shapa's OWN design docs (PRD, MACRO, memri-spec, hook-design)
   tests/                 ← regression suite
 ```
 
-The repo contains **no user memory** — your notes live in the external wiki directory you connect with `shapa init`, so private notes are never inside this repo at all. There is nothing to gitignore and no commit guard to maintain: the tool ships only the engine and the design-doc templates under `shapa/assets/`.
+The repo contains **no user memory** — your notes live in the external `shapa/` wiki you scaffold with `shapa init`, so private notes are never inside this repo at all. There is nothing to gitignore and no commit guard to maintain: the tool ships only the engine, the `AGENTS.md` rules, and the generic `arch/` templates under `shapa/assets/`. shapa's own design docs live in `docs/design/`, not in the install payload.
 
 ---
 
