@@ -31,7 +31,7 @@ WIKI_DIRNAME = "shapa"
 WIKI_MARKER = "AGENTS.md"
 
 
-def discover(start=None) -> Path | None:
+def discover(start: str | Path | None = None) -> Path | None:
     """Return the nearest repo-root wiki at or above *start* (default: cwd).
 
     A wiki is a directory named :data:`WIKI_DIRNAME` containing the

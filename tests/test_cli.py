@@ -75,8 +75,11 @@ class TestConfigResolution(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
         self.cfg = self.tmp / "config.json"
+        # mock.patch.dict restores any pre-existing SHAPA_MEMORY on tearDown,
+        # instead of permanently popping it from the real environment.
         self.patches = [
             mock.patch.object(config, "CONFIG_FILE", self.cfg),
+            mock.patch.dict("os.environ", {}, clear=False),
             mock.patch.object(config.Path, "cwd", staticmethod(lambda: self.tmp)),
         ]
         for p in self.patches:

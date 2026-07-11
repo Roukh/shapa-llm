@@ -86,9 +86,10 @@ shapa init ~/.shapa/memory         # a global wiki (LLM rules, any session)
 project templates, scaffolds an Obsidian vault, and records the path. A session
 running **inside a repo that has a `shapa/` wiki uses it automatically** — the
 hooks walk up from the cwd to the nearest `shapa/AGENTS.md` (like git finding
-`.git`). Outside any such repo they fall back to `$SHAPA_MEMORY`, the recorded
-path, or `~/.shapa/memory`. Open any wiki folder as an Obsidian vault to browse
-the graph.
+`.git`) — unless `$SHAPA_MEMORY` is set, which always takes precedence.
+Outside any such repo, resolution falls back to the recorded path or
+`~/.shapa/memory`. Open any wiki folder as an Obsidian vault to browse the
+graph.
 
 To wire the hooks into Claude Code from a clone instead of the one-liner, run
 `./install.sh` (wires the hooks, installs the docs, registers the Obsidian

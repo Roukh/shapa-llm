@@ -29,12 +29,19 @@ class TestDiscover(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
         self.cfg = self.tmp / "config.json"
-        self.patch = mock.patch.object(config, "CONFIG_FILE", self.cfg)
-        self.patch.start()
+        # mock.patch.dict restores any pre-existing SHAPA_MEMORY on tearDown,
+        # instead of permanently popping it from the real environment.
+        self.patches = [
+            mock.patch.object(config, "CONFIG_FILE", self.cfg),
+            mock.patch.dict(os.environ, {}, clear=False),
+        ]
+        for p in self.patches:
+            p.start()
         os.environ.pop(config.ENV_VAR, None)
 
     def tearDown(self):
-        self.patch.stop()
+        for p in self.patches:
+            p.stop()
         shutil.rmtree(self.tmp)
 
     def test_discovers_wiki_from_repo_root(self):
@@ -98,8 +105,11 @@ class TestInitPointerPolicy(unittest.TestCase):
         self.cli = cli
         self.tmp = Path(tempfile.mkdtemp())
         self.cfg = self.tmp / "config.json"
+        # mock.patch.dict restores any pre-existing SHAPA_MEMORY on tearDown,
+        # instead of permanently popping it from the real environment.
         self.patches = [
             mock.patch.object(config, "CONFIG_FILE", self.cfg),
+            mock.patch.dict(os.environ, {}, clear=False),
             mock.patch.object(config.Path, "cwd", staticmethod(lambda: self.tmp)),
         ]
         for p in self.patches:

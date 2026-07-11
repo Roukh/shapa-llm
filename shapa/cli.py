@@ -81,7 +81,7 @@ def _init(argv: list[str]) -> None:
     # collision): merging wiki files into it would pollute it and could make
     # ``config.discover`` treat it as a wiki thereafter. A directory that is
     # already a wiki (has the AGENTS.md marker) is fine - re-init is idempotent.
-    if target.is_dir() and any(target.iterdir()) and not (target / config.WIKI_MARKER).exists():
+    if target.is_dir() and next(target.iterdir(), None) is not None and not (target / config.WIKI_MARKER).exists():
         print(
             f"shapa: refusing to init: {target} already exists and is not a shapa "
             f"wiki (no {config.WIKI_MARKER}). Move it aside or pass an empty/new "
