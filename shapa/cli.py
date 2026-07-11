@@ -1,11 +1,12 @@
 """The unified ``shapa`` command - the entry point for the installed tool.
 
 Dispatches subcommands to the engine modules. Memory (the "wiki") lives OUTSIDE
-the tool and can be anywhere: ``$SHAPA_MEMORY``, the path recorded by
-``shapa init``, or ``~/.shapa/memory``. Run ``shapa init [DIR]`` to connect a
-wiki: it creates the directory, installs the bundled design docs (``arch/`` +
-``AGENTS.md``) into it, scaffolds an Obsidian vault, and records the path so
-every later command and hook resolve the same place.
+the tool and can be anywhere: a repo-root ``shapa/`` wiki discovered from the
+cwd, ``$SHAPA_MEMORY``, the path recorded by ``shapa init``, or the
+``~/.shapa/memory`` default. Run ``shapa init [DIR]`` to scaffold a wiki: it
+creates the directory, installs the bundled ``AGENTS.md`` rules and the
+``arch/`` project templates into it, scaffolds an Obsidian vault, and records
+the path so commands and hooks outside any repo resolve the same place.
 """
 
 from __future__ import annotations
@@ -19,7 +20,8 @@ from shapa import __version__, config
 
 _SUBMODULES = ("fetch", "capture", "maintain", "heartbeat", "score", "validate")
 
-#: Design docs shipped with the tool and installed into a wiki by ``shapa init``.
+#: Docs shipped with the tool and installed into a wiki by ``shapa init``:
+#: the ``AGENTS.md`` rules and the ``arch/`` project templates.
 ASSETS_DIR = Path(__file__).resolve().parent / "assets"
 
 USAGE = f"""shapa {__version__} - operational memory for an LLM agent
@@ -27,9 +29,10 @@ USAGE = f"""shapa {__version__} - operational memory for an LLM agent
 usage: shapa <command> [args]
 
 commands:
-  init [DIR]     connect a wiki: create it, install the design docs
-                 (arch/ + AGENTS.md), scaffold an Obsidian vault, and
-                 remember the path (default: $SHAPA_MEMORY or ~/.shapa/memory)
+  init [DIR]     scaffold a wiki: create it, install AGENTS.md + arch/
+                 templates, set up an Obsidian vault, and remember the path.
+                 Default DIR is ./shapa (a repo-root wiki a session in this
+                 repo resolves automatically).
   where          print the memory directory path
   fetch          surface relevant memory for a prompt (read path)
   capture        distil a finished session into a note (write path)
@@ -65,7 +68,28 @@ def _install_docs(target: Path) -> list[str]:
 
 
 def _init(argv: list[str]) -> None:
-    target = Path(argv[0]).expanduser() if argv else config.memory_dir()
+    # No argument -> scaffold a wiki at the repo root: ./shapa. A session in this
+    # repo then resolves that wiki automatically (config.discover walks up for
+    # the shapa/AGENTS.md marker). An explicit DIR overrides the location AND
+    # becomes the recorded default; a bare init relies on discovery and leaves
+    # the recorded default (e.g. the global LLM-rules wiki) untouched.
+    explicit = bool(argv)
+    target = Path(argv[0]).expanduser() if explicit else Path.cwd() / config.WIKI_DIRNAME
+
+    # Refuse to scaffold into a pre-existing directory that holds unrelated
+    # content (e.g. a Python package literally named ``shapa/``, or a namespace
+    # collision): merging wiki files into it would pollute it and could make
+    # ``config.discover`` treat it as a wiki thereafter. A directory that is
+    # already a wiki (has the AGENTS.md marker) is fine - re-init is idempotent.
+    if target.is_dir() and any(target.iterdir()) and not (target / config.WIKI_MARKER).exists():
+        print(
+            f"shapa: refusing to init: {target} already exists and is not a shapa "
+            f"wiki (no {config.WIKI_MARKER}). Move it aside or pass an empty/new "
+            f"path: shapa init <DIR>.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
     target.mkdir(parents=True, exist_ok=True)
 
     installed = _install_docs(target)
@@ -81,16 +105,25 @@ def _init(argv: list[str]) -> None:
         if not f.exists():
             f.write_text(content, encoding="utf-8")
 
-    # Remember where the wiki is so later commands + hooks resolve the same place.
-    resolved = config.set_memory_dir(target)
-
-    print(f"shapa wiki connected at: {resolved}")
-    if installed:
-        print(f"Installed {len(installed)} design doc(s): {', '.join(installed)}")
+    # Record an explicitly-chosen DIR as the default so commands outside any
+    # repo resolve it. A bare init (repo-root ./shapa) is found by discovery, so
+    # it must NOT overwrite the recorded default (e.g. the global rules wiki).
+    if explicit:
+        resolved = config.set_memory_dir(target)
     else:
-        print("Design docs already present (left untouched).")
+        resolved = target.resolve()
+
+    verb = "connected" if explicit else "scaffolded"
+    print(f"shapa wiki {verb} at: {resolved}")
+    if installed:
+        print(f"Installed {len(installed)} doc(s): {', '.join(installed)}")
+    else:
+        print("Wiki docs already present (left untouched).")
     print("Open this folder as an Obsidian vault to browse the graph.")
-    print("This path is now the default; override per-invocation with $SHAPA_MEMORY.")
+    if resolved.name == config.WIKI_DIRNAME:
+        print("A session run inside this repo resolves this wiki automatically.")
+    if explicit:
+        print("This path is now the recorded default; override with $SHAPA_MEMORY.")
 
 
 def main(argv: list[str] | None = None) -> None:
