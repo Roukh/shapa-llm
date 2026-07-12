@@ -96,6 +96,68 @@ class TestDiscover(unittest.TestCase):
                 self.assertEqual(config.memory_dir(), override)
 
 
+class TestDotFolderDiscover(unittest.TestCase):
+    """A wiki may also live in a hidden dot-folder (``.shapa/``) at a repo root —
+    additive to (never replacing) the legacy ``shapa/`` name, so existing wikis
+    and the bare ``shapa init`` default are unaffected."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.cfg = self.tmp / "config.json"
+        self.patches = [
+            mock.patch.object(config, "CONFIG_FILE", self.cfg),
+            mock.patch.dict(os.environ, {}, clear=False),
+        ]
+        for p in self.patches:
+            p.start()
+        os.environ.pop(config.ENV_VAR, None)
+
+    def tearDown(self):
+        for p in self.patches:
+            p.stop()
+        shutil.rmtree(self.tmp)
+
+    def _make_dot_wiki(self, root: Path) -> Path:
+        wiki = root / ".shapa"
+        wiki.mkdir(parents=True, exist_ok=True)
+        (wiki / config.WIKI_MARKER).write_text("# rules\n", encoding="utf-8")
+        return wiki
+
+    def test_discovers_dot_folder_wiki(self):
+        repo = self.tmp / "repo"
+        wiki = self._make_dot_wiki(repo)
+        self.assertEqual(config.discover(repo), wiki.resolve())
+
+    def test_discovers_dot_folder_wiki_from_nested_subdir(self):
+        repo = self.tmp / "repo"
+        wiki = self._make_dot_wiki(repo)
+        nested = repo / "src" / "deep"
+        nested.mkdir(parents=True)
+        self.assertEqual(config.discover(nested), wiki.resolve())
+
+    def test_dot_folder_wiki_preferred_over_legacy_name_same_level(self):
+        # An (unusual) repo carrying both a stale legacy `shapa/` wiki and a
+        # migrated `.shapa/` wiki resolves the dot-folder — the going-forward
+        # convention wins when both exist at the same directory level.
+        repo = self.tmp / "repo"
+        _make_wiki(repo)
+        dot_wiki = self._make_dot_wiki(repo)
+        self.assertEqual(config.discover(repo), dot_wiki.resolve())
+
+    def test_bare_dot_shapa_dir_without_marker_is_not_a_wiki(self):
+        repo = self.tmp / "repo"
+        (repo / ".shapa").mkdir(parents=True)
+        (repo / ".shapa" / "config.json").write_text("{}", encoding="utf-8")
+        self.assertIsNone(config.discover(repo))
+
+    def test_legacy_shapa_dirname_still_discovered_unchanged(self):
+        # Backward compatibility: an existing `shapa/`-named wiki with no
+        # `.shapa/` sibling keeps resolving exactly as before.
+        repo = self.tmp / "repo"
+        wiki = _make_wiki(repo)
+        self.assertEqual(config.discover(repo), wiki.resolve())
+
+
 class TestInitPointerPolicy(unittest.TestCase):
     """A bare ``shapa init`` (repo-root wiki) must not hijack the recorded
     default; only an explicit ``shapa init DIR`` sets it."""
