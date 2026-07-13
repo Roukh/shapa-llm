@@ -32,7 +32,9 @@ commands:
   init [DIR]     scaffold a wiki: create it, install AGENTS.md + arch/
                  templates, set up an Obsidian vault, and remember the path.
                  Default DIR is ./shapa (a repo-root wiki a session in this
-                 repo resolves automatically).
+                 repo resolves automatically). Pass ./.shapa for a hidden
+                 dot-folder wiki instead — discovery checks .shapa/ before
+                 the legacy shapa/ name at every ancestor directory.
   where          print the memory directory path
   fetch          surface relevant memory for a prompt (read path)
   capture        distil a finished session into a note (write path)
