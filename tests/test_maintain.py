@@ -98,16 +98,18 @@ class TestMaintain(unittest.TestCase):
         # brain task 67d830ea-d33b-4ce8-b4a8-5c00b4d15da8: a tracked non-markdown
         # .shapa sidecar (e.g. adr-constraints.json) must survive `shapa maintain
         # --prune` no matter how old/unlinked it is — the pruner's scan path is
-        # markdown wiki nodes only.
-        r = maintain.maintain(self.tmp, prune=True, max_age_days=1, now=NOW)
+        # markdown wiki nodes only. This is the dry-run half of the pair below.
+        r = maintain.maintain(self.tmp, prune=True, max_age_days=1, now=NOW, dry_run=True)
         self.assertTrue(self.sidecar.exists(), "non-md sidecar was deleted by --prune")
         self.assertNotIn("adr-constraints", r["pruned"])
         self.assertNotIn("adr-constraints.json", r["pruned"])
+        self.assertTrue(r["dry_run"])
 
     def test_prune_never_deletes_a_non_md_sidecar_non_dry_run_real_files(self):
         # Belt-and-braces: same assertion via the real (non-dry-run) unlink path,
-        # with every OTHER on-disk file in the same directory actually pruned, so
-        # this proves survival is per-file selection, not an accidental global no-op.
+        # with every OTHER stale/orphaned file actually pruned (used-old.md
+        # survives separately, on its own merit — it has uses=3), so this proves
+        # survival is per-file selection, not an accidental global no-op.
         r = maintain.maintain(self.tmp, prune=True, max_age_days=1, now=NOW, dry_run=False)
         self.assertIn("lonely", r["pruned"])  # sanity: real pruning did happen
         self.assertTrue(self.sidecar.exists())
