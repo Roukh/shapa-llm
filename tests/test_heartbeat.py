@@ -42,6 +42,17 @@ class TestHeartbeat(unittest.TestCase):
         self.tmp = Path(tempfile.mkdtemp())
         for f in GRAPH.glob("*.md"):
             shutil.copy(f, self.tmp / f.name)
+        # A non-markdown sidecar living directly in the wiki dir (e.g. a repo's
+        # real .shapa/adr-constraints.json — see scripts/docs/adr-fitness.js in
+        # roukh-llm). It is unlinked, so it would look maximally "prunable" if
+        # it were ever treated as a node. shapa/nodes.py's load_nodes() docstring
+        # claims its *.md glob protects both shapa.maintain and shapa.heartbeat
+        # from ever scoring/unlinking a sidecar like this — this fixture proves
+        # the heartbeat half of that claim.
+        self.sidecar = self.tmp / "adr-constraints.json"
+        self.sidecar.write_text(
+            '{"id": "adr-fitness", "kind": "path", "pattern": "^legacy/"}\n', encoding="utf-8"
+        )
 
     def tearDown(self):
         shutil.rmtree(self.tmp)
@@ -61,6 +72,27 @@ class TestHeartbeat(unittest.TestCase):
         result = heartbeat.heartbeat(self.tmp, seed=42, dry_run=True)
         self.assertEqual(set(result["pruned"]), {"e"})
         self.assertEqual(len(list(self.tmp.glob("*.md"))), 5)
+
+    def test_prune_never_deletes_a_non_md_sidecar(self):
+        # brain task 67d830ea-d33b-4ce8-b4a8-5c00b4d15da8: dry-run half of the
+        # pair below — a non-md .shapa sidecar must survive `shapa heartbeat`'s
+        # orphan prune, exactly like it survives `shapa maintain --prune`.
+        result = heartbeat.heartbeat(self.tmp, seed=42, dry_run=True)
+        self.assertTrue(self.sidecar.exists(), "non-md sidecar was deleted by heartbeat prune")
+        self.assertNotIn("adr-constraints", result["pruned"])
+        self.assertNotIn("adr-constraints.json", result["pruned"])
+
+    def test_prune_never_deletes_a_non_md_sidecar_real_files(self):
+        # Belt-and-braces: same assertion via the real (non-dry-run) unlink
+        # path, with the actual orphan ("e") still pruned, so this proves
+        # survival is per-file selection, not an accidental global no-op.
+        result = heartbeat.heartbeat(self.tmp, seed=42, dry_run=False)
+        self.assertIn("e", result["pruned"])  # sanity: real pruning did happen
+        self.assertTrue(self.sidecar.exists())
+        self.assertEqual(
+            self.sidecar.read_text(encoding="utf-8"),
+            '{"id": "adr-fitness", "kind": "path", "pattern": "^legacy/"}\n',
+        )
 
     def test_deterministic(self):
         t2 = Path(tempfile.mkdtemp())

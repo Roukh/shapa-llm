@@ -54,6 +54,17 @@ def load_nodes(root) -> dict[str, Node]:
     """Load every ``*.md`` under *root* (recursively) as a Node.
 
     The node id is the frontmatter ``id`` if present, else the filename stem.
+
+    Prune-safety contract: the ``*.md`` glob is deliberate, not incidental. A
+    non-markdown sidecar living directly in the wiki dir (e.g. a repo's
+    ``.shapa/adr-constraints.json`` — a plain JSON rules file that isn't shapa
+    node schema, so it is never turned into one) is never loaded here, and
+    therefore can never be scored as an orphan/stale node nor unlinked by
+    ``shapa maintain --prune`` (maintain.py) or ``shapa heartbeat``
+    (heartbeat.py) — both operate exclusively on this function's output.
+    Widening this glob (e.g. to ``*``) would put every non-md file in the
+    wiki dir back in the pruner's scan path; see tests/test_maintain.py's
+    sidecar-survival tests before doing that.
     """
     root = Path(root)
     paths = sorted(root.rglob("*.md")) if root.is_dir() else [root]

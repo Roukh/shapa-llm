@@ -3,6 +3,7 @@
 Embeddings are not installed in CI, so similarity falls back to Jaccard.
 """
 
+import os
 import shutil
 import tempfile
 import unittest
@@ -34,6 +35,19 @@ class TestMaintain(unittest.TestCase):
         dup = "always validate every input at the boundary before processing it links [[keepme]]"
         _note(self.tmp, "dup-low", "2026-06-25T00:00:00Z", 0, dup, consequence=5)
         _note(self.tmp, "dup-high", "2026-06-25T00:00:00Z", 0, dup, consequence=8)
+        # A non-markdown sidecar living directly in the wiki dir (e.g. a repo's real
+        # .shapa/adr-constraints.json — see scripts/docs/adr-fitness.js in roukh-llm).
+        # Shaped to look maximally "prunable" if it were ever treated as a node: old,
+        # zero-linked, zero-use — so this fixture would catch a future regression
+        # (e.g. someone widening nodes.py's `rglob("*.md")` to `rglob("*")`) even
+        # though it never fires against today's code, which already excludes it by
+        # extension before it can be scored as an orphan or stale note.
+        self.sidecar = self.tmp / "adr-constraints.json"
+        self.sidecar.write_text(
+            '{"id": "adr-fitness", "kind": "path", "pattern": "^legacy/"}\n', encoding="utf-8"
+        )
+        old = datetime(2020, 1, 1, tzinfo=timezone.utc).timestamp()
+        os.utime(self.sidecar, (old, old))
 
     def tearDown(self):
         shutil.rmtree(self.tmp)
@@ -72,6 +86,37 @@ class TestMaintain(unittest.TestCase):
         # No rule-vs-rule contradiction candidates here beyond the merged dupe.
         r = maintain.maintain(self.tmp, prune=False, resolve=False, now=NOW)
         self.assertEqual(r["resolved"], [])
+
+    def test_non_md_sidecar_is_never_loaded_as_a_node(self):
+        # load_nodes globs *.md exclusively — a sidecar like adr-constraints.json is
+        # never even a candidate node, regardless of its own age/content.
+        nodes = load_nodes(self.tmp)
+        self.assertNotIn("adr-constraints", nodes)
+        self.assertNotIn("adr-constraints.json", nodes)
+
+    def test_prune_never_deletes_a_non_md_sidecar(self):
+        # brain task 67d830ea-d33b-4ce8-b4a8-5c00b4d15da8: a tracked non-markdown
+        # .shapa sidecar (e.g. adr-constraints.json) must survive `shapa maintain
+        # --prune` no matter how old/unlinked it is — the pruner's scan path is
+        # markdown wiki nodes only. This is the dry-run half of the pair below.
+        r = maintain.maintain(self.tmp, prune=True, max_age_days=1, now=NOW, dry_run=True)
+        self.assertTrue(self.sidecar.exists(), "non-md sidecar was deleted by --prune")
+        self.assertNotIn("adr-constraints", r["pruned"])
+        self.assertNotIn("adr-constraints.json", r["pruned"])
+        self.assertTrue(r["dry_run"])
+
+    def test_prune_never_deletes_a_non_md_sidecar_non_dry_run_real_files(self):
+        # Belt-and-braces: same assertion via the real (non-dry-run) unlink path,
+        # with every OTHER stale/orphaned file actually pruned (used-old.md
+        # survives separately, on its own merit — it has uses=3), so this proves
+        # survival is per-file selection, not an accidental global no-op.
+        r = maintain.maintain(self.tmp, prune=True, max_age_days=1, now=NOW, dry_run=False)
+        self.assertIn("lonely", r["pruned"])  # sanity: real pruning did happen
+        self.assertTrue(self.sidecar.exists())
+        self.assertEqual(
+            self.sidecar.read_text(encoding="utf-8"),
+            '{"id": "adr-fitness", "kind": "path", "pattern": "^legacy/"}\n',
+        )
 
 
 if __name__ == "__main__":
