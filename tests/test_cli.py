@@ -135,6 +135,54 @@ class TestArchProtection(unittest.TestCase):
         stale = maintain.find_stale(load_nodes(self.tmp), NOW, max_age_days=90)
         self.assertNotIn("old-arch", stale)
 
+    def _write(self, path: Path, body: str) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body, encoding="utf-8")
+
+    def test_orphan_prune_skips_arch_file_with_no_frontmatter(self):
+        # Root-cause regression: AGENTS.md promises "Files in arch/ ... are
+        # never pruned" as a PATH guarantee, but a real arch/ note can be
+        # committed with no frontmatter at all (no `type: reference` to key
+        # off). arch/ location alone must still protect it.
+        arch_file = self.tmp / "arch" / "no-frontmatter-note.md"
+        self._write(arch_file, "# A note with zero frontmatter\n\nno links at all\n")
+        graph = build_graph(load_nodes(self.tmp))
+        self.assertNotIn("no-frontmatter-note", heartbeat.find_orphans(graph))
+        heartbeat.heartbeat(self.tmp, seed=1)
+        self.assertTrue(arch_file.exists())
+
+    def test_orphan_prune_skips_arch_file_with_nested_type(self):
+        # Root-cause regression: `type: reference` nested under a `metadata:`
+        # block (as some agent-authored notes do) is not parsed as a
+        # top-level `type` key by shapa.frontmatter. arch/ location alone
+        # must still protect the file, independent of frontmatter shape.
+        arch_file = self.tmp / "arch" / "nested-type-note.md"
+        self._write(
+            arch_file,
+            "---\n"
+            "name: nested-type-note\n"
+            "metadata:\n"
+            "  type: reference\n"
+            "uses: 0\n"
+            "---\n"
+            "no links at all\n",
+        )
+        graph = build_graph(load_nodes(self.tmp))
+        self.assertNotIn("nested-type-note", heartbeat.find_orphans(graph))
+        heartbeat.heartbeat(self.tmp, seed=1)
+        self.assertTrue(arch_file.exists())
+
+    def test_orphan_prune_still_deletes_unlinked_root_note(self):
+        # Regression guard: arch/ protection must not become blanket - a
+        # linkless root-level note (no type: reference, not under arch/) is
+        # still pruned exactly as before.
+        root_file = self.tmp / "unlinked-root-note.md"
+        self._write(root_file, "no links at all\n")
+        graph = build_graph(load_nodes(self.tmp))
+        self.assertIn("unlinked-root-note", heartbeat.find_orphans(graph))
+        heartbeat.heartbeat(self.tmp, seed=1)
+        self.assertFalse(root_file.exists())
+
 
 if __name__ == "__main__":
     unittest.main()
