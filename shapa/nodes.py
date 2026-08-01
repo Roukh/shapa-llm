@@ -25,8 +25,19 @@ PROTECTED_TYPES = frozenset({"reference"})
 
 
 def is_protected(node: "Node") -> bool:
-    """True when *node* is curated material the maintainer must never delete."""
-    return str(node.meta.get("type", "")) in PROTECTED_TYPES
+    """True when *node* is curated material the maintainer must never delete.
+
+    Two independent signals, either one sufficient: the frontmatter contract
+    (top-level ``type: reference``), or physical location under the wiki's
+    ``arch/`` subdirectory (``node.in_arch``). The path signal exists because
+    AGENTS.md documents arch/ protection as a location guarantee ("Files in
+    arch/ ... are never pruned"), and that guarantee must hold even when a
+    given arch/ file's frontmatter is missing or malformed - the frontmatter
+    contract is easy for a writing agent to get wrong (absent entirely, or a
+    `type` key nested under a non-standard block) and orphan pruning must not
+    depend on it being right.
+    """
+    return node.in_arch or str(node.meta.get("type", "")) in PROTECTED_TYPES
 
 
 def extract_links(body: str) -> set[str]:
@@ -41,6 +52,7 @@ class Node:
     path: Path
     meta: dict = field(default_factory=dict)
     outlinks: set[str] = field(default_factory=set)
+    in_arch: bool = False
 
 
 @dataclass
@@ -74,12 +86,15 @@ def load_nodes(root) -> dict[str, Node]:
         if parsed.error:
             continue
         node_id = str(parsed.meta.get("id") or p.stem)
+        rel_parts = p.relative_to(root).parts if root.is_dir() else ()
+        in_arch = len(rel_parts) > 1 and rel_parts[0] == "arch"
         nodes[node_id] = Node(
             id=node_id,
             type=str(parsed.meta.get("type", "")),
             path=p,
             meta=parsed.meta,
             outlinks=extract_links(parsed.body),
+            in_arch=in_arch,
         )
     return nodes
 
