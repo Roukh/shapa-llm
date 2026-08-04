@@ -126,11 +126,12 @@ shapa-llm/
     assets/              ← docs installed into every wiki by `shapa init`
       AGENTS.md          ← the schema and rules (also the wiki marker)
       arch/              ← generic project templates (PRD, architecture, system-design)
-  docs/design/           ← shapa's OWN design docs (PRD, MACRO, memri-spec, hook-design)
   tests/                 ← regression suite
 ```
 
-The repo contains **no user memory** — your notes live in the external `shapa/` wiki you scaffold with `shapa init`, so private notes are never inside this repo at all. There is nothing to gitignore and no commit guard to maintain: the tool ships only the engine, the `AGENTS.md` rules, and the generic `arch/` templates under `shapa/assets/`. shapa's own design docs live in `docs/design/`, not in the install payload.
+The repo contains **no user memory** — your notes live in the external `shapa/` wiki you scaffold with `shapa init`, so private notes are never inside this repo at all. There is nothing to gitignore and no commit guard to maintain: the tool ships only the engine, the `AGENTS.md` rules, and the generic `arch/` templates under `shapa/assets/`.
+
+> **Note on `.shapa/` / `shapa/` at this repo's own root:** this repo is shapa's own source, not a shapa wiki. `shapa/config.discover()` treats a directory named `.shapa/` or `shapa/` containing an `AGENTS.md` file as a wiki marker (see [Where memory lives](#where-memory-lives)). The `shapa/` directory here is the Python package, not a wiki — it has no `AGENTS.md` at its root (only nested under `assets/`), so it's never mistaken for one. For this reason the tool's own repo deliberately does **not** carry a `.shapa/` documentation folder: doing so would create exactly the marker `discover()` looks for and would make every `shapa` session run from within this repo silently treat the repo as its own connected memory wiki.
 
 ---
 
@@ -152,6 +153,39 @@ with [[wikilinks]] in the body, e.g. its type [[rule]] and a peer [[memory-hygie
 See `AGENTS.md` (installed into your wiki by `shapa init`, source at `shapa/assets/AGENTS.md`) for the full schema.
 
 ---
+
+## Architecture reference
+
+### Heartbeat (self-healing)
+
+One heartbeat cycle (`shapa/heartbeat.py`) runs two phases over the wikilink graph built by `shapa/nodes.py`:
+
+1. **Random walk (the pulse)** — a seedable walk (`random.Random(seed)`) starting at a random file, hopping to a random `[[wikilink]]` neighbour at each step, stopping at a dead end or after `max_steps` files. All collections are sorted before any random choice, so a given seed reproduces the same walk regardless of filesystem/dict ordering.
+2. **Orphan scan + prune** — independent of the walk (the walk is only a sample), every operational note at the wiki root is checked; a file with no `[[wikilink]]` to or from it is an orphan and its file is deleted (or reported, in `--dry-run`). Files under `arch/` (`type: reference`) are curated and exempt from pruning.
+
+### Hooks wired by `install.sh`
+
+| Event | Command | Purpose |
+|-------|---------|---------|
+| `UserPromptSubmit` | `shapa fetch` | Read path — surfaces the most relevant, highest-scored notes at the start of each prompt; calls `record_use` on each. |
+| `Stop` | `shapa capture` | Write path — distils the finished session into one memory note (heuristic, stdlib-only; no LLM salience judgement), linked into the graph. |
+| `Stop` | `shapa maintain --prune` | Prunes orphans/stale notes and auto-merges near-duplicates. |
+| `SubagentStop` | `shapa capture` | Same as the `Stop` capture, so subagent work is captured too. |
+
+Hooks receive a JSON payload on stdin (`transcript_path`, `session_id`, `cwd`, plus `agent_id`/`agent_type` on `SubagentStop`). `capture` and `maintain` are write-only, non-blocking, and always exit 0. Registration is idempotent and deep-merged into `settings.json` (existing hooks from other tools are preserved, never overwritten).
+
+**Privacy is structural, not a convention:** hooks resolve their target via `config.resolve()`/`config.discover()` and write only to the connected wiki — never inside the shapa repo or the installed package. The wiki lives outside any git working tree by construction, so captured notes are never git-tracked.
+
+### Verified guarantees
+
+| Guarantee | Verified by |
+|---|---|
+| The heartbeat prunes a planted orphan while retaining all linked files. | `tests/test_heartbeat.py::test_prune_removes_only_orphan` |
+| A file with no `[[wikilink]]` in or out is the only note flagged as an orphan. | `tests/test_heartbeat.py::test_only_zero_link_note_is_orphan` |
+| The validator enforces the frontmatter schema (type enum, consequence 1-10, valid locus, non-negative uses). | `tests/test_validate.py::test_bad_type`, `::test_bad_consequence_and_locus` |
+| Scoring ranks by `locus_weight × (consequence/10) × freshness × use_factor`; `record_use` increments the mechanical counter. | `tests/test_score.py::test_meta_high_outranks_output_low`, `::test_record_use_increments_and_boosts` |
+| The validator rejects an `id` that doesn't match the filename stem. | `tests/test_validate.py::test_id_must_match_stem` |
+| Wikilink edges are undirected — a link from A to B connects both. | `tests/test_heartbeat.py::test_graph_edges_are_undirected` |
 
 ## What is deferred
 
