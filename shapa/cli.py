@@ -20,7 +20,7 @@ from shapa import __version__, config
 
 _SUBMODULES = (
     "bootstrap", "fetch", "capture", "maintain", "heartbeat", "score",
-    "validate", "serve",
+    "validate", "serve", "mcp",
 )
 
 #: Docs shipped with the tool and installed into a wiki by ``shapa init``:
@@ -49,6 +49,8 @@ commands:
   score          rank notes by value (--use FILE to record a use)
   validate       validate note frontmatter
   serve [ROOT]   run the optional warm per-root daemon (latency only)
+  mcp            run the MCP stdio server (search/get/save/placement tools;
+                 vendor-neutral - Codex/OpenCode/etc.)
 
 memory dir: ${'{'}SHAPA_MEMORY{'}'} or ~/.shapa/memory  (currently: {config.memory_dir()})
 """

@@ -23,7 +23,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from shapa import config, embed, frontmatter, store
+from shapa import config, embed, frontmatter, rank, store
 from shapa.bm25 import bm25_scores as _bm25_scores
 from shapa.bm25 import words as _words
 from shapa.config import WikiRoot
@@ -80,9 +80,14 @@ class _RootData:
 def _load_root_data(root: Path, query: str) -> _RootData:
     """Load *root*'s notes and score their relevance to *query*.
 
-    Relevance is local-embedding cosine similarity when available, else BM25
-    over note bodies + id/topic tokens - the same either/or fallback the
-    single-root path has always used (RRF fusion of both is Slice 6, §5)."""
+    Relevance fuses BM25 (lexical, always available) with local-embedding
+    cosine similarity (semantic, when ``shapa.embed`` is available) via
+    Reciprocal Rank Fusion (``shapa.rank.rrf``, §5) - both vote whenever
+    both exist, and this degrades gracefully to BM25-only when the semantic
+    backend is not installed. ``rel`` is always returned as a *complete*
+    dict over every note id (missing/zero-relevance ids explicit at 0.0),
+    matching the contract every caller here already relies on - RRF itself
+    only returns the ids it positively ranked."""
     if not root.is_dir():
         return _RootData()
     nodes = load_nodes(root)
@@ -95,13 +100,16 @@ def _load_root_data(root: Path, query: str) -> _RootData:
         id_topic = node.id.replace("-", " ") + " " + " ".join(node.outlinks)
         docs[nid] = _words(body + " " + id_topic)
 
+    bm25_rel = _bm25_scores(query, docs)
     if embed.available():
         vecs = embed.note_vectors(root, bodies)
         qv = embed.embed_one(query) if query.strip() else None
-        rel = {nid: (max(0.0, embed.cosine(qv, vecs[nid])) if qv is not None else 0.0)
-               for nid in nodes}
+        emb_rel = {nid: (max(0.0, embed.cosine(qv, vecs[nid])) if qv is not None else 0.0)
+                   for nid in nodes}
+        fused = rank.rrf([bm25_rel, emb_rel])
+        rel = {nid: fused.get(nid, 0.0) for nid in nodes}
     else:
-        rel = _bm25_scores(query, docs)
+        rel = bm25_rel
 
     # Value scoring reads the ``uses``/``last_used`` signal from the index
     # store, not the note's own frontmatter (shapa-backend-spec.md §10

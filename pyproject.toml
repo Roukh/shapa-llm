@@ -21,14 +21,17 @@ dependencies = []  # core engine is pure standard library
 [project.optional-dependencies]
 # Activates local semantic embeddings for fetch + maintain (else BM25/Jaccard).
 # `semantic` is the current name (shapa-backend-spec.md §3); `embeddings` is
-# kept as a deprecated alias with identical deps for one release.
-semantic = ["sentence-transformers>=2.2.0"]
-embeddings = ["sentence-transformers>=2.2.0"]
-# Reserved for the MCP stdio server (shapa-backend-spec.md §7.1, Slice 6) -
-# no package pinned yet since shapa/mcp.py doesn't exist; `pip install
-# shapa[mcp]` today installs the base package only. bootstrap.sh's extras
-# prompt already offers it so the flag name is stable ahead of that slice.
-mcp = []
+# kept as a deprecated alias with identical deps for one release. model2vec
+# (potion-base-8M) replaces sentence-transformers as of Slice 6: numpy-only,
+# no torch, ~94.7% of MiniLM's MTEB at a fraction of the install/latency cost.
+semantic = ["model2vec>=0.3.0"]
+embeddings = ["model2vec>=0.3.0"]
+# The MCP stdio server (shapa/mcp.py, shapa-backend-spec.md §7.1, Slice 6).
+# The official SDK is optional even with this extra installed: shapa/mcp.py
+# falls back to a stdlib-only JSON-RPC shim (the same wire protocol a real
+# MCP client speaks over stdio) whenever it is absent, so `shapa mcp` always
+# works, extra or not - this just upgrades it to the reference SDK surface.
+mcp = ["mcp>=1.0.0"]
 
 [project.scripts]
 shapa = "shapa.cli:main"

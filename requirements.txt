@@ -6,6 +6,8 @@
 # Installing the package below ACTIVATES local semantic embeddings (used by
 # `fetch` for retrieval and by `maintain` for similarity). Without it, shapa
 # falls back to BM25 (fetch) and token-Jaccard (maintain) - no install needed.
+# model2vec is numpy-only (no torch) - see shapa/embed.py and pyproject.toml's
+# `semantic` extra, which is the preferred way to install this.
 #
 #   pip install -r requirements.txt
-sentence-transformers>=2.2.0
+model2vec>=0.3.0

@@ -1,11 +1,16 @@
 """Optional local embeddings.
 
-Uses ``sentence-transformers`` (model all-MiniLM-L6-v2) when it is installed,
-giving true semantic similarity. When it is not installed, ``available()``
-returns False and callers fall back to the lexical methods (BM25 in fetch,
-token-Jaccard in maintain). Install to activate::
+Uses ``model2vec`` (model ``minishlab/potion-base-8M`` - MIT, numpy-only, no
+torch, ~94.7% of MiniLM's MTEB at a fraction of the install size/latency;
+shapa-backend-spec.md §5) when it is installed, giving true semantic
+similarity. When it is not installed, ``available()`` returns False and
+callers fall back to the lexical methods (BM25 in fetch, token-Jaccard in
+maintain). Install to activate::
 
-    pip install sentence-transformers      # see requirements.txt
+    pip install shapa[semantic]      # see pyproject.toml - no torch pulled in
+
+``[embeddings]`` is kept as a deprecated alias for ``[semantic]`` with the
+identical dependency, for one release (shapa-backend-spec.md §3).
 
 Embeddings are cached per note in a sidecar file inside the (external) wiki
 directory, so a note is only re-embedded when its content changes.
@@ -19,7 +24,7 @@ from pathlib import Path
 
 _MODEL = None
 _AVAILABLE: bool | None = None
-_MODEL_NAME = "all-MiniLM-L6-v2"
+_MODEL_NAME = "minishlab/potion-base-8M"
 _CACHE_FILE = ".shapa-vectors.json"
 
 
@@ -28,8 +33,11 @@ def available() -> bool:
     global _AVAILABLE, _MODEL
     if _AVAILABLE is None:
         try:
-            from sentence_transformers import SentenceTransformer  # type: ignore
-            _MODEL = SentenceTransformer(_MODEL_NAME)
+            from model2vec import StaticModel  # type: ignore
+            # normalize=True: vectors come back unit-length, matching the
+            # sentence-transformers backend's normalize_embeddings=True this
+            # replaces - cosine() below assumes normalized input either way.
+            _MODEL = StaticModel.from_pretrained(_MODEL_NAME, normalize=True)
             _AVAILABLE = True
         except Exception:
             _AVAILABLE = False
@@ -38,7 +46,7 @@ def available() -> bool:
 
 def embed_one(text: str) -> list[float]:
     """Embed a single string (normalized). Requires available()."""
-    return _MODEL.encode([text], normalize_embeddings=True)[0].tolist()  # type: ignore
+    return _MODEL.encode([text])[0].tolist()  # type: ignore
 
 
 def cosine(a: list[float], b: list[float]) -> float:
@@ -57,15 +65,23 @@ def note_vectors(directory, texts: dict[str, str]) -> dict[str, list[float]]:
     """Return {id: vector} for *texts*, caching by content hash in the dir.
 
     Only callable when available(); embeds just the notes whose content changed.
+    The cache is stamped with the embedding model name - switching backends
+    (e.g. the sentence-transformers -> model2vec swap, shapa-backend-spec.md
+    §5) must never silently mix incompatible vector spaces just because a
+    note's content hash happens to still match; a stamp mismatch invalidates
+    the whole cache rather than trusting per-note hashes across models.
     """
     directory = Path(directory)
     cache_path = directory / _CACHE_FILE
     cache = {}
     if cache_path.is_file():
         try:
-            cache = json.loads(cache_path.read_text(encoding="utf-8"))
+            raw = json.loads(cache_path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, ValueError):
-            cache = {}
+            raw = {}
+        if isinstance(raw, dict) and raw.get("model") == _MODEL_NAME:
+            cache = raw.get("notes", {}) if isinstance(raw.get("notes"), dict) else {}
+        # else: cache from a different (or pre-stamp legacy) model - discard.
 
     out: dict[str, list[float]] = {}
     dirty = False
@@ -85,7 +101,9 @@ def note_vectors(directory, texts: dict[str, str]) -> dict[str, list[float]]:
         dirty = True
     if dirty:
         try:
-            cache_path.write_text(json.dumps(cache), encoding="utf-8")
+            cache_path.write_text(
+                json.dumps({"model": _MODEL_NAME, "notes": cache}), encoding="utf-8"
+            )
         except OSError:
             pass
     return out
