@@ -35,10 +35,6 @@ DEFAULT_BUDGET = 4000  # max total characters of surfaced snippets
 SNIPPET_CHARS = 500    # per-note snippet length (a digest, not the whole doc)
 
 # --- multi-root merge (shapa-backend-spec.md §4.1) --------------------------
-#: locus:meta anchors are capped PER ROOT (never 2 total) - each root's own
-#: standing rules always surface, regardless of the prompt or which other
-#: roots are in scope.
-META_ANCHOR_CAP_PER_ROOT = 2
 #: Minimum characters guaranteed to each root's relevance-ranked fill before
 #: any leftover budget is handed to cross-root relevance - the proportional-
 #: floor fix for anchor/budget starvation as root count grows (§4.1). Actual
@@ -96,6 +92,38 @@ MIN_RELEVANCE_FRACTION = 0.3
 MIN_ABSOLUTE_BM25_BARE_CORE = 0.5
 MIN_ABSOLUTE_EMBED = 0.22
 
+#: GAP F fix (2026-09-30, operator-confirmed measurement against the real
+#: global wiki) - per-prompt fetch used to reserve
+#: ``META_ANCHOR_CAP_PER_ROOT x N roots`` of every single result
+#: *unconditionally*, before relevance ranking even ran (see
+#: :func:`select_multi`'s old "Phase 1: anchors" - removed). That made a
+#: fixed, query-independent slice of every fetch's output identical
+#: regardless of the prompt: with 2 roots and ``DEFAULT_K=8``, 4 of 8 slots
+#: were the same two ``locus: meta`` notes per root on EVERY prompt,
+#: on-topic or not. Measured impact: a genuinely relevant note (e.g.
+#: "which gh account for roukh repos" -> ``ghobz-git-identity-repo-hygiene``)
+#: pushed out of the top 3 in most repos in scope, and out of the top 8
+#: entirely in some.
+#:
+#: ``locus: meta`` notes (standing rules, the agenda) are session-start
+#: context - ``shapa.bootstrap`` already surfaces every root's own anchors,
+#: unconditionally, once per session, before any prompt exists (its own,
+#: separate ``META_ANCHOR_CAP_PER_ROOT``, untouched by this fix). Re-showing
+#: the identical notes on every per-prompt fetch regardless of relevance was
+#: pure waste of the per-prompt budget, not a safety net - so a
+#: ``locus: meta`` note is no longer special-cased in :func:`select_multi`'s
+#: fill at all; it earns a slot the same way every other note does, by
+#: actually clearing the relevance/value ranking.
+#:
+#: The one exception is the genuinely-off-topic case (``no_match``: nothing
+#: anywhere clears :data:`MIN_RELEVANCE_FRACTION`/the absolute guard above).
+#: Rather than surface nothing at all, :func:`select_multi` surfaces "at
+#: most one short line": the single highest-value ``locus: meta`` note
+#: across every root in scope, as a short pointer (its frontmatter
+#: ``summary``, never a body snippet) - see :func:`_short_anchor_line`.
+#: Never more than one, and never the old unconditional per-root set.
+NO_MATCH_ANCHOR_CHARS = 160
+
 
 def _snippet(body: str, limit: int = SNIPPET_CHARS) -> str:
     """First ~limit characters of the body, cut at a word boundary."""
@@ -105,6 +133,21 @@ def _snippet(body: str, limit: int = SNIPPET_CHARS) -> str:
     cut = body[:limit]
     sp = cut.rfind(" ")
     return (cut[:sp] if sp > 0 else cut).rstrip() + " ..."
+
+
+def _short_anchor_line(node: Node, body: str) -> str:
+    """A one-line pointer to a standing rule, for the no-match fallback only
+    (GAP F) - deliberately NOT the ~500-char body snippet every other
+    surfaced note gets: this says "this rule exists, go look at it," not
+    "here is its content," since the full rule was already shown once at
+    session start by ``shapa.bootstrap``. Prefers the note's own
+    frontmatter ``summary`` (schema v2 - the same field bootstrap's Tier 1
+    renders); a legacy note written before that field existed falls back to
+    a short cut of its body."""
+    summary = str(node.meta.get("summary", "")).strip()
+    if summary:
+        return summary[:NO_MATCH_ANCHOR_CHARS]
+    return _snippet(body, limit=NO_MATCH_ANCHOR_CHARS)
 
 
 @dataclass
@@ -270,17 +313,17 @@ def select(query: str, root=None, k: int = DEFAULT_K, budget: int = DEFAULT_BUDG
     §4.1/§10.2) - previously this branch had its own hand-rolled merge that
     never applied the confidence floor at all, so an explicit-root caller
     (the CLI's ``--root``, ``shapa search``, and every single-root test)
-    never got the "off-topic query -> anchors only, no padded guess" fix,
-    only the no-``root`` multi-root fan-out did. With no *root* (the live
-    hook default), it fans out across every wiki in scope instead - see
-    :func:`select_multi` - and returns just the merged item list (drop
-    ``no_match``/``collisions``; use :func:`select_multi` directly to see
-    those).
+    never got the "off-topic query -> at most one short anchor line, no
+    padded guess" fix, only the no-``root`` multi-root fan-out did. With no
+    *root* (the live hook default), it fans out across every wiki in scope
+    instead - see :func:`select_multi` - and returns just the merged item
+    list (drop ``no_match``/``collisions``; use :func:`select_multi`
+    directly to see those).
 
-    With an empty prompt it falls back to pure value ranking (the standing
-    high-value rules still surface); a non-empty prompt with no relevant
-    match yields no non-anchor results, not padded filler - see
-    :func:`select_multi`'s confidence floor.
+    With an empty prompt it falls back to pure value ranking (high-value
+    notes, ``locus: meta`` included, still surface on their own merits); a
+    non-empty prompt with no relevant match yields no padded filler - see
+    :func:`select_multi`'s confidence floor and its GAP F no-match fallback.
 
     ``read_only`` forwards to :func:`_load_root_data` - see its docstring.
     """
@@ -325,24 +368,30 @@ def select_multi(query: str, start=None, roots: list[WikiRoot] | None = None,
 
     *roots* overrides discovery (mainly for tests); by default the roots are
     :func:`config.wiki_roots(start)` - most-specific first, global always
-    included. Per-root ``locus: meta`` anchors are unconditional (capped at
-    :data:`META_ANCHOR_CAP_PER_ROOT` each, never budget-gated - a root's own
-    standing rules must not disappear because another root filled the
-    budget first). The relevance-ranked fill is proportional-with-a-floor:
-    each root gets ``max(ROOT_FLOOR_CHARS, budget // len(roots))`` of
-    guaranteed room *before* any leftover budget goes to cross-root
-    relevance, so no root's share collapses to zero as root count grows.
-    Candidates below the percentile-relative confidence floor
-    (:data:`MIN_RELEVANCE_FRACTION` of the single best fused score) never
-    enter the fill at all, AND the single best RAW per-modality score
-    anywhere must clear :data:`MIN_ABSOLUTE_EMBED` (or
-    :data:`MIN_ABSOLUTE_BM25_BARE_CORE` with no semantic backend
-    installed) - GAP C's absolute guard, checked on the raw scores. A
-    percentile-relative floor alone can never reject an
+    included. A ``locus: meta`` note (a root's own standing rule/anchor) is
+    NOT special-cased in the fill (GAP F, see the module-level constant
+    above) - it is just another candidate, competing on the exact same
+    relevance/value ranking as everything else; it was already surfaced,
+    unconditionally, at session start by ``shapa.bootstrap``, so re-showing
+    the identical note on every single per-prompt fetch regardless of
+    relevance would only burn budget a genuinely relevant note could use
+    instead. The relevance-ranked fill is proportional-with-a-floor: each
+    root gets ``max(ROOT_FLOOR_CHARS, budget // len(roots))`` of guaranteed
+    room *before* any leftover budget goes to cross-root relevance, so no
+    root's share collapses to zero as root count grows. Candidates below
+    the percentile-relative confidence floor (:data:`MIN_RELEVANCE_FRACTION`
+    of the single best fused score) never enter the fill at all, AND the
+    single best RAW per-modality score anywhere must clear
+    :data:`MIN_ABSOLUTE_EMBED` (or :data:`MIN_ABSOLUTE_BM25_BARE_CORE` with
+    no semantic backend installed) - GAP C's absolute guard, checked on the
+    raw scores. A percentile-relative floor alone can never reject an
     off-topic prompt whose "best" match is pure noise, since the top
     *fused* score always clears a fraction of itself once min-max
-    normalized) - a genuinely off-topic prompt surfaces anchors only, plus
-    ``no_match=True``, never a padded guess.
+    normalized - a genuinely off-topic prompt instead gets the GAP F
+    no-match fallback: "at most one short line" (the single highest-value
+    ``locus: meta`` note in scope, as a short pointer, never a body
+    snippet), plus ``no_match=True`` - never a padded guess, and never the
+    old unconditional per-root anchor set either.
 
     ``read_only`` forwards to :func:`_load_root_data` for every root - see
     its docstring.
@@ -358,8 +407,7 @@ def select_multi(query: str, start=None, roots: list[WikiRoot] | None = None,
     # repos) must still be caught as a genuine collision; real discovery
     # never repeats a kind, but the explicit-roots API surface (used by
     # tests/test_fetch_multiroot.py scale tests) does, and this must
-    # stay correct either way - the same reasoning the anchor-keying
-    # comment below already applies.
+    # stay correct either way.
     id_roots: dict[str, set[WikiRoot]] = {}
     for wr in wiki_roots:
         data = _load_root_data(Path(wr.path), query, read_only=read_only)
@@ -374,37 +422,17 @@ def select_multi(query: str, start=None, roots: list[WikiRoot] | None = None,
         # original never-blocks contract (nothing printed), not a marker.
         return Selection(items=[])
 
-    # --- anchors: up to META_ANCHOR_CAP_PER_ROOT locus=meta notes per root,
-    # unconditional - never gated by budget or relevance. Keyed by the
-    # WikiRoot itself (not just its ``kind``) so this stays correct even
-    # when a synthetic multi-root scale test reuses the same ``kind`` label
-    # across several distinct roots - real discovery never does, but the
-    # merge logic shouldn't quietly assume it.
-    anchor_order: list[tuple[WikiRoot, str]] = []
-    anchor_keys: set[tuple[WikiRoot, str]] = set()
-    for wr in wiki_roots:
-        data = per_root[wr]
-        metas = sorted(
-            (nid for nid, node in data.nodes.items() if node.meta.get("locus") == "meta"),
-            key=lambda nid: (-data.value[nid], nid),
-        )[:META_ANCHOR_CAP_PER_ROOT]
-        for nid in metas:
-            anchor_order.append((wr, nid))
-            anchor_keys.add((wr, nid))
-
     # --- confidence floor: percentile-relative to the single best fused
-    # relevance score across every root's non-anchor candidates (operator
-    # decision §10.2). An empty prompt asks for no relevance ranking at all
-    # (pure value fallback, exactly like the single-root path); a real
-    # prompt that matches nothing (top score 0) gets anchors-only fill.
+    # relevance score across every root's candidates (operator decision
+    # §10.2) - computed over EVERY note, ``locus: meta`` included (GAP F:
+    # no note is exempted from needing to actually be relevant here). An
+    # empty prompt asks for no relevance ranking at all (pure value
+    # fallback, exactly like the single-root path); a real prompt that
+    # matches nothing (top score 0, or below the absolute guard) gets the
+    # GAP F no-match fallback below.
     query_has_text = bool(query.strip())
-    non_anchor_ids = [
-        (wr, nid)
-        for wr, data in per_root.items()
-        for nid in data.nodes
-        if (wr, nid) not in anchor_keys
-    ]
-    top_rel = max((per_root[wr].rel.get(nid, 0.0) for wr, nid in non_anchor_ids), default=0.0)
+    all_ids = [(wr, nid) for wr, data in per_root.items() for nid in data.nodes]
+    top_rel = max((per_root[wr].rel.get(nid, 0.0) for wr, nid in all_ids), default=0.0)
     # GAP C absolute guard: checked on each modality's RAW score, never on
     # the min-max-normalized `rel` above - see MIN_ABSOLUTE_BM25_BARE_CORE/_EMBED's
     # docstring on why the fused scale can't carry this signal. The
@@ -412,8 +440,8 @@ def select_multi(query: str, start=None, roots: list[WikiRoot] | None = None,
     # whenever it exists; BM25's raw magnitude scales with corpus size
     # (its idf term grows with log(N)), so it is only trusted as a guard
     # on its own when there is no semantic channel to ask instead.
-    top_bm25 = max((per_root[wr].bm25_rel.get(nid, 0.0) for wr, nid in non_anchor_ids), default=0.0)
-    top_emb = max((per_root[wr].emb_rel.get(nid, 0.0) for wr, nid in non_anchor_ids), default=0.0)
+    top_bm25 = max((per_root[wr].bm25_rel.get(nid, 0.0) for wr, nid in all_ids), default=0.0)
+    top_emb = max((per_root[wr].emb_rel.get(nid, 0.0) for wr, nid in all_ids), default=0.0)
     # GAP D: which branch to check is read off each root's OWN
     # _RootData.embed_used (set by _load_root_data from either the daemon's
     # answer or the cold path's real embed.available() result) rather than
@@ -434,34 +462,47 @@ def select_multi(query: str, start=None, roots: list[WikiRoot] | None = None,
     threshold = top_rel * MIN_RELEVANCE_FRACTION if mode == "relevance" else None
     no_match = query_has_text and mode == "none"
 
-    rest_by_root: dict[WikiRoot, list[str]] = {}
-    for wr in wiki_roots:
-        data = per_root[wr]
-        candidates = [nid for nid in data.nodes if (wr, nid) not in anchor_keys]
-        if mode == "relevance":
-            candidates = [nid for nid in candidates if data.rel.get(nid, 0.0) >= threshold]
-            candidates.sort(key=lambda nid: (-data.rel[nid], -data.value[nid], nid))
-        elif mode == "value":
-            candidates.sort(key=lambda nid: (-data.value[nid], nid))
-        else:
-            candidates = []  # off-topic prompt: no padded filler, ever
-        rest_by_root[wr] = candidates
-
     out: list = []
     used = 0
     item_roots: dict[str, Path] = {}
 
-    # Phase 1: anchors, unconditional (root order, capped only by k).
-    for wr, nid in anchor_order:
-        if len(out) >= k:
-            break
-        data = per_root[wr]
-        snip = _snippet(data.bodies[nid].strip())
-        out.append((data.nodes[nid], snip))
-        item_roots[data.nodes[nid].id] = Path(wr.path)
-        used += len(snip)
+    if no_match:
+        # GAP F no-match fallback: "at most one short line" - the single
+        # highest-value ``locus: meta`` note across every root in scope
+        # (ties broken toward the most-specific root, then note id),
+        # rendered as a short pointer rather than a body snippet. Never
+        # gated by the relevance floor above (nothing cleared it anyway on
+        # a genuinely off-topic prompt); never more than one, and never
+        # the old unconditional per-root anchor set.
+        metas = [
+            (wr, nid)
+            for wr in wiki_roots
+            for nid in per_root[wr].nodes
+            if per_root[wr].nodes[nid].meta.get("locus") == "meta"
+        ]
+        if metas:
+            metas.sort(key=lambda pair: (
+                -per_root[pair[0]].value[pair[1]], wiki_roots.index(pair[0]), pair[1],
+            ))
+            wr, nid = metas[0]
+            data = per_root[wr]
+            line = _short_anchor_line(data.nodes[nid], data.bodies[nid])
+            out.append((data.nodes[nid], line))
+            item_roots[data.nodes[nid].id] = Path(wr.path)
+        return Selection(items=out, no_match=no_match, collisions=collisions, item_roots=item_roots)
 
-    # Phase 2: each root's proportional-floor reserve, ignoring the total
+    rest_by_root: dict[WikiRoot, list[str]] = {}
+    for wr in wiki_roots:
+        data = per_root[wr]
+        candidates = list(data.nodes)
+        if mode == "relevance":
+            candidates = [nid for nid in candidates if data.rel.get(nid, 0.0) >= threshold]
+            candidates.sort(key=lambda nid: (-data.rel[nid], -data.value[nid], nid))
+        else:  # mode == "value"
+            candidates.sort(key=lambda nid: (-data.value[nid], nid))
+        rest_by_root[wr] = candidates
+
+    # Phase 1: each root's proportional-floor reserve, ignoring the total
     # budget - this is the guarantee that a root's share never hits zero.
     n_roots = len(wiki_roots)
     per_root_reserve = max(ROOT_FLOOR_CHARS, budget // n_roots) if n_roots else budget
@@ -483,12 +524,12 @@ def select_multi(query: str, start=None, roots: list[WikiRoot] | None = None,
             i += 1
         leftover.extend((wr, nid) for nid in cands[i:])
 
-    # Phase 3: whatever total budget remains, filled by cross-root relevance
+    # Phase 2: whatever total budget remains, filled by cross-root relevance
     # (or value, in "value" mode) - the remainder §4.1 describes.
     if mode == "relevance":
         leftover.sort(key=lambda pair: (-per_root[pair[0]].rel[pair[1]],
                                          -per_root[pair[0]].value[pair[1]]))
-    elif mode == "value":
+    else:  # mode == "value"
         leftover.sort(key=lambda pair: -per_root[pair[0]].value[pair[1]])
     for wr, nid in leftover:
         if len(out) >= k:

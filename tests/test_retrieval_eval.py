@@ -9,9 +9,10 @@ Fixes verified here:
      agreement on a different, merely-mediocre note.
   2. An ABSOLUTE minimum-relevance guard, on top of the existing
      percentile-relative floor (``MIN_RELEVANCE_FRACTION``): a clearly
-     off-topic prompt now returns the anchors plus the explicit
-     "no query-relevant notes found" marker, never a padded, low-confidence
-     guess. The guard is checked on each modality's RAW score
+     off-topic prompt now returns at most one short locus:meta pointer
+     line (GAP F - never the old unconditional per-root anchor set) plus
+     the explicit "no query-relevant notes found" marker, never a padded,
+     low-confidence guess. The guard is checked on each modality's RAW score
      (``fetch.MIN_ABSOLUTE_EMBED`` / ``MIN_ABSOLUTE_BM25_BARE_CORE``), never
      on the fused/normalized scale - see ``fetch.py``'s module docstring on
      why normalization alone cannot carry this signal.
@@ -111,8 +112,13 @@ class TestRetrievalEvalAcceptance(unittest.TestCase):
                               f"{q!r} did not surface the no-match marker")
                 selected = fetch.select(q, root=WIKI, k=5, read_only=True)
                 ids = {n.id for n, _ in selected}
-                # Anchors only - never a padded, low-confidence guess.
-                self.assertEqual(ids, {"placement", "shapa-maintain-prune-data-loss"})
+                # GAP F: at most ONE short locus:meta pointer line, never
+                # the old unconditional per-root anchor set - never a
+                # padded, low-confidence guess either. "placement" and
+                # "shapa-maintain-prune-data-loss" tie on consequence (9)
+                # but "placement" is far fresher (created same day vs.
+                # ~2.5 months earlier), so it wins the single slot.
+                self.assertEqual(ids, {"placement"})
 
     def test_recall_at_5_does_not_regress(self):
         hits = 0

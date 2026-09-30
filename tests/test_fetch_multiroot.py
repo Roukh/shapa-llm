@@ -78,10 +78,19 @@ class FetchMultirootTestCase(unittest.TestCase):
 
 
 class TestAnchorsPresentPerRoot(FetchMultirootTestCase):
-    """Each root's own locus:meta anchor surfaces regardless of the prompt,
-    and regardless of what the *other* root contains."""
+    """GAP F (2026-09-30): a ``locus: meta`` note is no longer an
+    unconditional, query-independent reservation - it is just another
+    candidate that earns its slot on relevance/value like everything else.
+    ``shapa.bootstrap`` already surfaces every root's own anchors,
+    unconditionally, once per session; per-prompt fetch re-showing the
+    SAME notes on every prompt regardless of relevance was the bug (a
+    fixed, query-independent slice of every fetch's output - see
+    fetch.py's ``NO_MATCH_ANCHOR_CHARS`` comment). These tests assert the
+    corrected contract directly: a meta note surfaces when it is actually
+    relevant, and does NOT auto-surface just because it is ``locus: meta``
+    when it is not."""
 
-    def test_global_and_repo_anchors_both_present(self):
+    def test_relevant_meta_note_surfaces_on_its_own_merit(self):
         global_wiki = self.tmp / "global"
         config.set_memory_dir(global_wiki)
         _note(global_wiki, "g-meta", "standing rule about deploy safety", locus="meta", consequence=9)
@@ -92,16 +101,43 @@ class TestAnchorsPresentPerRoot(FetchMultirootTestCase):
         _note(repo_wiki, "r-meta", "standing rule about test discipline", locus="meta", consequence=9)
         _note(repo_wiki, "r-filler", "unrelated filler note about weather")
 
+        # Query shares "safety" with g-meta's body only - r-meta ("test
+        # discipline") and both fillers share no term with it at all.
         selection = fetch.select_multi("database migration rollback safety", start=repo)
         ids = [n.id for n, _ in selection.items]
+        self.assertFalse(selection.no_match)
         self.assertIn("g-meta", ids)
-        self.assertIn("r-meta", ids)
 
-    def test_low_value_root_anchor_survives_a_high_value_root(self):
-        # The old single-root code capped anchors at 2 GLOBALLY (sorted by
-        # value) - a root whose own meta note is weak would lose its anchor
-        # slot entirely to another root's stronger ones. The per-root cap
-        # (2 EACH) must guarantee the weak root's own anchor regardless.
+    def test_irrelevant_meta_note_does_not_auto_surface(self):
+        # The old unconditional per-root anchor reservation would have put
+        # r-meta in the result regardless of the query. GAP F: it must NOT
+        # appear here - its content ("test discipline") has no relevance
+        # to this query, so being locus:meta buys it nothing on its own.
+        global_wiki = self.tmp / "global"
+        config.set_memory_dir(global_wiki)
+        _note(global_wiki, "g-meta", "standing rule about deploy safety", locus="meta", consequence=9)
+
+        repo = _make_git_repo(self.tmp / "repoA2")
+        repo_wiki = _make_repo_wiki(repo)
+        _note(repo_wiki, "r-meta", "standing rule about test discipline", locus="meta", consequence=9)
+        _note(repo_wiki, "r-topic", "notes about database migration rollback safety procedures")
+
+        selection = fetch.select_multi("database migration rollback safety", start=repo)
+        ids = [n.id for n, _ in selection.items]
+        self.assertIn("r-topic", ids)  # the actually-relevant note still wins a slot
+        self.assertNotIn("r-meta", ids)
+
+    def test_value_mode_ranks_meta_notes_by_score_not_by_per_root_reservation(self):
+        # An empty query (the "value" fallback, exactly like the
+        # single-root path) is the one place a meta note's OLD per-root
+        # count guarantee genuinely disappears under GAP F - it is no
+        # longer special-cased at all, so a root whose notes simply sort
+        # ahead on value can fill k before another root gets a turn, same
+        # as any other note would. This is accepted scope: a real
+        # UserPromptSubmit hook call always carries prompt text (mode is
+        # "relevance" or "none", never "value"); the empty-query path is a
+        # manual/CLI-only corner this fix does not extend the old
+        # anchor-specific guarantee to.
         global_wiki = self.tmp / "global"
         config.set_memory_dir(global_wiki)
         _note(global_wiki, "g-weak-meta", "a weak global rule", locus="meta", consequence=2)
@@ -111,14 +147,9 @@ class TestAnchorsPresentPerRoot(FetchMultirootTestCase):
         for i in range(5):
             _note(repo_wiki, f"r-strong-meta-{i}", f"strong repo rule {i}", locus="meta", consequence=10)
 
-        # k == exactly (2 per-root cap) + 1 == 3: a global cap-of-2 sorted
-        # by value across both roots would fill entirely from the repo's
-        # 5 strong metas and starve the weak global anchor. The per-root
-        # cap must reserve exactly repo's top 2 + global's 1 instead.
         selection = fetch.select_multi("", start=repo, k=3)
         ids = {n.id for n, _ in selection.items}
-        self.assertIn("g-weak-meta", ids)
-        self.assertEqual(ids, {"g-weak-meta", "r-strong-meta-0", "r-strong-meta-1"})
+        self.assertEqual(ids, {"r-strong-meta-0", "r-strong-meta-1", "r-strong-meta-2"})
 
 
 class TestRootShareNeverStarves(FetchMultirootTestCase):
@@ -162,9 +193,10 @@ class TestRootShareNeverStarves(FetchMultirootTestCase):
 
 
 class TestConfidenceFloorNoPaddedFiller(FetchMultirootTestCase):
-    """An off-topic prompt (no term overlap anywhere) gets anchors only,
-    plus the explicit no-match marker - never a confident-looking but
-    wrong note padded in to fill k."""
+    """An off-topic prompt (no term overlap anywhere) gets the GAP F
+    no-match fallback - at most ONE short locus:meta pointer line (never
+    the old full per-root anchor set), plus the explicit no-match marker -
+    never a confident-looking but wrong note padded in to fill k."""
 
     def _two_root_fixture(self):
         global_wiki = self.tmp / "global"
@@ -178,11 +210,15 @@ class TestConfidenceFloorNoPaddedFiller(FetchMultirootTestCase):
         _note(repo_wiki, "r-topic", "notes about git worktree branch management")
         return repo
 
-    def test_off_topic_query_is_anchors_only_plus_no_match(self):
+    def test_off_topic_query_is_at_most_one_short_anchor_plus_no_match(self):
         repo = self._two_root_fixture()
         selection = fetch.select_multi("xylophone kumquat zephyr", start=repo)
         ids = {n.id for n, _ in selection.items}
-        self.assertEqual(ids, {"g-meta", "r-meta"})
+        # GAP F: at most ONE anchor line total - never both roots'
+        # anchors unconditionally. r-meta and g-meta tie on value (same
+        # consequence/freshness/uses); the tie-break prefers the
+        # most-specific root in scope (repo over global).
+        self.assertEqual(ids, {"r-meta"})
         self.assertTrue(selection.no_match)
         self.assertEqual(selection.collisions, [])
 
@@ -190,8 +226,8 @@ class TestConfidenceFloorNoPaddedFiller(FetchMultirootTestCase):
         repo = self._two_root_fixture()
         block = fetch.fetch_context("xylophone kumquat zephyr", start=repo, record=False)
         self.assertIn("<!-- no query-relevant notes found -->", block)
-        self.assertIn("g-meta", block)
         self.assertIn("r-meta", block)
+        self.assertNotIn("g-meta", block)
         self.assertNotIn("g-topic", block)
         self.assertNotIn("r-topic", block)
 
@@ -284,6 +320,73 @@ class TestSelectRootParamUnaffected(FetchMultirootTestCase):
         ids = [n.id for n, _ in selected]
         self.assertIn("r-note", ids)
         self.assertNotIn("g-note", ids)  # the global wiki must never be reached
+
+
+class TestPerPromptTopSlotsAreQueryDependent(FetchMultirootTestCase):
+    """GAP F regression (2026-09-30): pre-fix, ``META_ANCHOR_CAP_PER_ROOT
+    (2) x N roots`` was reserved out of every fetch's result unconditionally,
+    before relevance ranking ran at all. With 2 roots that is 4 slots -
+    exactly ``DEFAULT_K // 2`` - occupied by the SAME two locus:meta notes
+    per root on every single prompt, on-topic or not: the top-4 of any two
+    on-topic prompts were identical regardless of what each prompt was
+    actually about, and an actually-relevant note could be pushed past the
+    top-k entirely. This is a direct repro of that measurement against a
+    fixed 2-root fixture (2 locus:meta anchors per root, exactly the
+    real-world shape), asserting the corrected contract: an on-topic
+    prompt's relevance-ranked result lands in the top slots, and the
+    top-4 for two differently-themed prompts is NOT the same fixed set."""
+
+    def _two_root_fixture_with_anchors_and_topics(self):
+        global_wiki = self.tmp / "global"
+        config.set_memory_dir(global_wiki)
+        _note(global_wiki, "g-meta-1", "standing rule about code review etiquette",
+              locus="meta", consequence=9)
+        _note(global_wiki, "g-meta-2", "standing rule about commit message style",
+              locus="meta", consequence=9)
+        _note(global_wiki, "topic-db",
+              "database migration rollback safety procedure", consequence=5)
+
+        repo = _make_git_repo(self.tmp / "repoG")
+        repo_wiki = _make_repo_wiki(repo)
+        _note(repo_wiki, "r-meta-1", "standing rule about branch naming conventions",
+              locus="meta", consequence=9)
+        _note(repo_wiki, "r-meta-2", "standing rule about pull request templates",
+              locus="meta", consequence=9)
+        _note(repo_wiki, "topic-git", "git worktree branch management", consequence=5)
+        return repo
+
+    def test_on_topic_prompt_lands_its_relevant_note_in_top_slots(self):
+        repo = self._two_root_fixture_with_anchors_and_topics()
+        selection = fetch.select_multi(
+            "database migration rollback safety procedure", start=repo, k=8,
+        )
+        ids = [n.id for n, _ in selection.items]
+        self.assertFalse(selection.no_match)
+        self.assertIn("topic-db", ids[:4])
+
+    def test_top_four_differs_across_differently_themed_prompts(self):
+        repo = self._two_root_fixture_with_anchors_and_topics()
+        ids_db = [n.id for n, _ in fetch.select_multi(
+            "database migration rollback safety procedure", start=repo, k=8,
+        ).items]
+        ids_git = [n.id for n, _ in fetch.select_multi(
+            "git worktree branch management", start=repo, k=8,
+        ).items]
+
+        # Each prompt's own topic lands in ITS top 4, not the other's.
+        self.assertIn("topic-db", ids_db[:4])
+        self.assertIn("topic-git", ids_git[:4])
+        self.assertNotIn("topic-git", ids_db[:4])
+        self.assertNotIn("topic-db", ids_git[:4])
+
+        # The actual GAP F repro: two differently-themed on-topic prompts
+        # must NOT share an identical top-4 - pre-fix, both were always
+        # exactly {g-meta-1, g-meta-2, r-meta-1, r-meta-2} (the same 4
+        # anchors, unconditionally, regardless of the prompt).
+        self.assertNotEqual(ids_db[:4], ids_git[:4])
+        fixed_anchor_set = {"g-meta-1", "g-meta-2", "r-meta-1", "r-meta-2"}
+        self.assertNotEqual(set(ids_db[:4]), fixed_anchor_set)
+        self.assertNotEqual(set(ids_git[:4]), fixed_anchor_set)
 
 
 if __name__ == "__main__":

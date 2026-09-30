@@ -102,8 +102,8 @@ class TestFetch(unittest.TestCase):
     @unittest.skipUnless(embed.available(), "semantic channel required: see comment below")
     def test_bm25_relevance_steers(self):
         # 'git' prompt (plus "word" so f-long's filler body also clears the
-        # GAP C absolute floor, keeping both non-anchor notes in the fill):
-        # after the meta anchor, the git note outranks the filler.
+        # GAP C absolute floor, keeping both notes in the fill): the git
+        # note outranks the filler.
         #
         # This needs the [semantic] extra, not just BM25, despite the test's
         # name (kept for history - it predates GAP C's fusion rework): with
@@ -118,8 +118,13 @@ class TestFetch(unittest.TestCase):
         # semantically-empty filler - so this assertion, like the other
         # embed-dependent acceptance checks in test_embed.py and
         # test_retrieval_eval.py, is guarded the same way.
+        #
+        # GAP F: f-meta (locus: meta) is no longer force-ranked first as an
+        # unconditional anchor - its content (testing discipline) has no
+        # relevance to this query at all, so it correctly drops out of the
+        # fill entirely rather than occupying a slot it didn't earn.
         ids = [n.id for n, _ in fetch.select("git commit word", root=FIX, k=5)]
-        self.assertEqual(ids[0], "f-meta")  # meta anchor
+        self.assertNotIn("f-meta", ids)
         self.assertLess(ids.index("f-out"), ids.index("f-long"))
 
     def test_archived_notes_never_surface(self):
