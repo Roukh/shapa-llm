@@ -27,6 +27,9 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      - name: Install test runner
+        run: pip install pytest
+
       - name: Install shapa (core only)
         if: matrix.extras == ''
         run: pip install -e .

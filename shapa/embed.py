@@ -50,10 +50,20 @@ def embed_one(text: str) -> list[float]:
 
 
 def cosine(a: list[float], b: list[float]) -> float:
-    """Cosine similarity of two normalized vectors."""
-    import numpy as np
+    """Cosine similarity of two normalized vectors.
+
+    numpy is never a core dependency (it only arrives transitively via the
+    ``[semantic]`` extra's model2vec) so it is used opportunistically here
+    and must degrade to a pure stdlib dot product when it isn't installed -
+    this function has to work in a bare-core install, not just when
+    ``available()`` is True.
+    """
     if not a or not b:
         return 0.0
+    try:
+        import numpy as np
+    except ImportError:
+        return float(sum(x * y for x, y in zip(a, b)))
     return float(np.dot(np.asarray(a), np.asarray(b)))
 
 
