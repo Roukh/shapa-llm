@@ -18,18 +18,27 @@ from shapa.config import WikiRoot
 
 
 def _make_wiki(root: Path) -> Path:
-    """Create a minimal valid wiki (``.shapa/AGENTS.md``) under *root*.
+    """Create a minimal valid wiki (``.shapa/AGENTS.md`` + ``agenda.md``)
+    under *root*.
 
     The marker file itself carries real node frontmatter (as the shipped
     ``shapa/assets/AGENTS.md`` does: ``id: AGENTS, type: reference``) so a
     ``rglob("*.md")`` over the wiki dir - which ``validate --all-roots`` and
-    ``nodes.load_nodes`` both do - doesn't trip F01-F03 on it.
+    ``nodes.load_nodes`` both do - doesn't trip F01-F03 on it. ``agenda.md``
+    is included too (F11 - spec §10 decision 6 requires one at every wiki
+    root), so a "minimal valid wiki" stays valid under the lean-shape check,
+    not just the frontmatter one.
     """
     wiki = root / ".shapa"
     wiki.mkdir(parents=True, exist_ok=True)
     (wiki / config.WIKI_MARKER).write_text(
         "---\nid: AGENTS\ntype: reference\ncreated: \"2026-01-01T00:00:00Z\"\n"
         "consequence: 8\nlocus: output\nuses: 0\n---\n# rules\n",
+        encoding="utf-8",
+    )
+    (wiki / "agenda.md").write_text(
+        "---\nid: agenda\ntype: memory\ncreated: \"2026-01-01T00:00:00Z\"\n"
+        "consequence: 5\nlocus: meta\nuses: 0\n---\n# Agenda\n\n1. one fire\n",
         encoding="utf-8",
     )
     return wiki
@@ -211,9 +220,27 @@ class TestCrossRootDuplicateId(MultirootTestCase):
             validate.main(["--all-roots", str(repo)])
         self.assertNotEqual(cm.exception.code, 0)
 
+    def test_structural_ids_never_flagged_as_f09(self):
+        # Every wiki `shapa init` scaffolds carries the same AGENTS/
+        # placement/agenda ids by construction (and, if `shapa init` filled
+        # arch/ too, PRD/architecture/system-design) - that recurrence is
+        # not the ambiguity F09 exists to catch.
+        global_wiki = self.tmp / "global"
+        _note(global_wiki, "AGENTS", "schema doc")
+        _note(global_wiki, "agenda", "1. one fire\n")
+
+        repo = _make_git_repo(self.tmp / "repoK")
+        repo_wiki = _make_wiki(repo)
+        config.set_memory_dir(global_wiki)
+
+        roots = config.wiki_roots(repo)
+        violations = validate.check_cross_root_duplicates(roots)
+        self.assertEqual(violations, [])
+
     def test_all_roots_cli_exits_zero_when_clean(self):
         global_wiki = self.tmp / "global"
         _note(global_wiki, "clean-global")
+        _note(global_wiki, "agenda", "1. one fire\n")
 
         repo = _make_git_repo(self.tmp / "repoJ")
         repo_wiki = _make_wiki(repo)

@@ -194,6 +194,57 @@ class TestSyncIncremental(unittest.TestCase):
         uses, _ = store.get_use(self.tmp, "n0")
         self.assertEqual(uses, 2)
 
+    def test_sync_never_indexes_archive_attic_or_obsidian(self):
+        # GAP A (shapa-backend-spec.md §10 decision 6): archive/attic are
+        # never loaded - store.sync() must skip them exactly like
+        # nodes.load_nodes does, not just add them and rely on some later
+        # filter.
+        _note(self.tmp, "live-one", "body")
+        (self.tmp / "archive").mkdir()
+        _note(self.tmp / "archive", "archived-one", "body")
+        (self.tmp / "attic").mkdir()
+        _note(self.tmp / "attic", "attic-one", "body")
+        (self.tmp / ".obsidian").mkdir()
+        _note(self.tmp / ".obsidian", "stray", "body")
+
+        result = store.sync(self.tmp)
+        self.assertEqual(result.added, 1)  # only live-one
+
+        conn = store.open_index(self.tmp)
+        try:
+            ids = {row["id"] for row in conn.execute("SELECT id FROM notes")}
+        finally:
+            conn.close()
+        self.assertEqual(ids, {"live-one"})
+
+    def test_moving_a_note_into_archive_drops_it_from_the_index(self):
+        # A note `shapa maintain --lean --apply` moves into archive/
+        # disappears from the index on the very next sync - the same
+        # "gone" cleanup path an ordinary delete takes.
+        p = _note(self.tmp, "was-live", "body")
+        store.sync(self.tmp)
+        conn = store.open_index(self.tmp)
+        try:
+            self.assertEqual(
+                {row["id"] for row in conn.execute("SELECT id FROM notes")},
+                {"was-live"},
+            )
+        finally:
+            conn.close()
+
+        archive_dir = self.tmp / "archive"
+        archive_dir.mkdir()
+        p.rename(archive_dir / p.name)
+        result = store.sync(self.tmp)
+        self.assertEqual(result.removed, 1)
+
+        conn = store.open_index(self.tmp)
+        try:
+            ids = {row["id"] for row in conn.execute("SELECT id FROM notes")}
+        finally:
+            conn.close()
+        self.assertEqual(ids, set())
+
 
 class TestFts5UnavailableFallbackIdentical(unittest.TestCase):
     """Slice 5 acceptance: 'FTS5-creation-failure path returns results

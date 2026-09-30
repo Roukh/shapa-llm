@@ -178,11 +178,13 @@ validation today:
 - **F06** — `scope` matches the file's physical bucket (global vs. repo).
 - **F07** — body past the type's word ceiling (300 memory/rule/issue, 2000 reference).
 - **F08** — `supersedes` names an id that does not exist.
-- **F09** — duplicate `id` across two roots in one `wiki_roots()` result. **Error**, not a warning — checked only by `--all-roots`.
+- **F09** — duplicate `id` across two roots in one `wiki_roots()` result. **Error**, not a warning — checked only by `--all-roots`. Ids every wiki carries by construction (`AGENTS`, `placement`, `PRD`, `architecture`, `system-design`, `agenda`) are exempt — that recurrence is not the ambiguity this rule exists to catch.
+- **F10** — lean wiki shape (§11.1): too many live root notes (>40), too many `arch/` reference docs (>12), or too much live disk footprint (>250 KB, excluding `archive/`/`attic/`). **Error**.
+- **F11** — `agenda.md` missing, or listing more than 3 top-level items. **Error**.
 - **S04** — `status` is one of `active`/`superseded`/`draft`.
 
 ```
-python3 -m shapa.validate --all-roots [START]   # also checks F09 across every wiki_roots() root
+python3 -m shapa.validate --all-roots [START]   # also checks F09/F10/F11 across every wiki_roots() root
 ```
 
 ---
@@ -241,7 +243,42 @@ its own). Writing is narrower and agent-gated: a new note declares exactly
 one `scope` and lands in exactly one place — see `placement.md`. Never
 assume a single resolved directory is the whole picture when reading.
 
-## 11. Privacy invariant (memory is never inside the *tool's* repo)
+## 11. Lean wiki shape
+
+Every wiki, global or repo, keeps the same lean shape — checked by
+`validate.py`'s **F10**/**F11** and reported by `shapa maintain --lean`:
+
+- `agenda.md` is required at the wiki root. It lists the top 3 fires only
+  — no more (**F11**). `ideas.md` is optional: an append-only dated log
+  with a status per entry, for everything that isn't one of the top 3.
+- Live notes at the root (`memory`/`rule`/`issue`): at most 40. Reference
+  docs in `arch/`: at most 12. Live wiki total (note content, not derived
+  index files): at most 250 KB. All three are **F10**; the limits are
+  config values (defaults 40/12/250 — see `shapa.validate`).
+- No duplicates: one note per subject. `shapa maintain` auto-merges
+  near-duplicates and never keeps two live files on the same topic.
+- A note that's done being live gets `status: superseded` and moves to
+  `archive/` — by hand, or via `shapa maintain --lean --apply` (git-aware:
+  `git mv` when this is a git checkout, else a plain move; **never
+  deletes**).
+
+### 11.1 `archive/` and `attic/` are never loaded
+
+Two directories at the wiki root are invisible to every reader in this
+engine — `nodes.load_nodes`, `fetch`, `bootstrap`, the sqlite index
+(`store.py`), and the MCP `search`/`get` tools all skip them entirely, at
+any depth, the same way `.obsidian/` (Obsidian's own config folder) is
+skipped:
+
+- **`archive/`** — notes that were live and are now `status: superseded`.
+- **`attic/`** — scratch material waiting on an operator decision.
+
+Both hold history; neither counts toward the F10 limits, and nothing under
+either is ever pruned, merged, fetched, or found by search. A note doesn't
+leave the wiki by being deleted — it leaves the *live* wiki by moving into
+one of these two directories.
+
+## 12. Privacy invariant (memory is never inside the *tool's* repo)
 
 Privacy is **structural**: memory lives in a wiki directory that is external to
 the shapa *tool* — never inside the shapa repo or the installed package. The

@@ -46,7 +46,9 @@ commands:
   save           write one note explicitly (--scope global|repo|external,
                  --applies-to REPO for external; see shapa/assets/placement.md)
   maintain       self-heal: auto-merge dupes, prune orphans/stale
-                 (--prune, --resolve, --dry-run, --merge-threshold)
+                 (--prune, --resolve, --dry-run, --merge-threshold);
+                 --lean reports lean-shape violations (F10/F11), --apply
+                 archives status:superseded notes (never deletes)
   heartbeat      prune orphan notes (--dry-run)
   score          rank notes by value (--use FILE to record a use)
   validate       validate note frontmatter

@@ -23,6 +23,27 @@ _WIKILINK_RE = re.compile(r"\[\[\s*([^\]\|#\n]+?)\s*(?:[#|][^\]]*)?\]\]")
 # and duplicate-merging.
 PROTECTED_TYPES = frozenset({"reference"})
 
+#: Directories whose contents are never treated as wiki nodes: the lean-
+#: wiki-shape history/scratch buckets (shapa-backend-spec.md §10 decision 6 -
+#: "archive/ and attic/ are never loaded and don't count toward the
+#: limits") plus Obsidian's own per-vault config folder (never note content
+#: to begin with). Checked at every depth under the wiki root, so nothing
+#: living anywhere under one of these ever becomes a Node - not just in
+#: :func:`load_nodes` itself, but (because every other reader in this
+#: package goes through `load_nodes` or `shapa.store.sync`'s identical
+#: filter) in `fetch`, `bootstrap`, `mcp` search/get, `capture`,
+#: `heartbeat`, and `maintain` either.
+EXCLUDED_DIRNAMES = frozenset({"archive", "attic", ".obsidian"})
+
+
+def is_excluded_path(rel_parts: tuple) -> bool:
+    """True when *rel_parts* - a file's path components relative to the
+    wiki root, as ``Path.relative_to(root).parts`` gives them - sits under
+    one of :data:`EXCLUDED_DIRNAMES` at any depth. Only the containing
+    directories are checked, never the file's own (last) component, so a
+    file merely *named* ``archive.md`` at the wiki root is unaffected."""
+    return any(part in EXCLUDED_DIRNAMES for part in rel_parts[:-1])
+
 
 def is_protected(node: "Node") -> bool:
     """True when *node* is curated material the maintainer must never delete.
@@ -82,11 +103,13 @@ def load_nodes(root) -> dict[str, Node]:
     paths = sorted(root.rglob("*.md")) if root.is_dir() else [root]
     nodes: dict[str, Node] = {}
     for p in paths:
+        rel_parts = p.relative_to(root).parts if root.is_dir() else ()
+        if is_excluded_path(rel_parts):
+            continue
         parsed = frontmatter.parse(p)
         if parsed.error:
             continue
         node_id = str(parsed.meta.get("id") or p.stem)
-        rel_parts = p.relative_to(root).parts if root.is_dir() else ()
         in_arch = len(rel_parts) > 1 and rel_parts[0] == "arch"
         nodes[node_id] = Node(
             id=node_id,

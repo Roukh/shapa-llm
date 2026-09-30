@@ -121,6 +121,19 @@ class TestTools(_StubWiki):
         self.assertIn("matches", out)
         self.assertEqual(len(out["matches"]), 2)
 
+    def test_search_never_returns_an_archived_note(self):
+        # GAP A acceptance: the MCP search tool never surfaces archive/.
+        _note(self.wiki / "archive", "old-workflow",
+              "branch off main before committing, archived version")
+        out = mcp.tool_search({"query": "branch off main before committing"}, str(self.repo))
+        ids = [r["id"] for r in out["results"]]
+        self.assertNotIn("old-workflow", ids)
+
+    def test_get_never_finds_an_archived_note(self):
+        _note(self.wiki / "archive", "old-workflow", "archived content")
+        out = mcp.tool_get({"id": "old-workflow"}, str(self.repo))
+        self.assertIn("error", out)
+
     def test_placement_returns_the_bundled_decision_rule(self):
         out = mcp.tool_placement({}, str(self.repo))
         self.assertNotIn("error", out)

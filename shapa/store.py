@@ -34,7 +34,7 @@ from pathlib import Path
 
 from shapa import frontmatter
 from shapa.bm25 import bm25_scores, words
-from shapa.nodes import extract_links
+from shapa.nodes import extract_links, is_excluded_path
 
 INDEX_FILENAME = ".shapa-index.db"
 
@@ -175,6 +175,13 @@ def sync(root, conn: sqlite3.Connection | None = None) -> SyncResult:
         on_disk: dict[str, tuple[int, int]] = {}
         if root.is_dir():
             for p in sorted(root.rglob("*.md")):
+                # archive/attic/.obsidian are never indexed (GAP A: same
+                # exclusion as nodes.load_nodes) - a note moved into
+                # archive/ by `shapa maintain --lean --apply` disappears
+                # from the index on the very next sync, same as any other
+                # removed path (see the "gone" cleanup below).
+                if is_excluded_path(p.relative_to(root).parts):
+                    continue
                 try:
                     st = p.stat()
                 except OSError:

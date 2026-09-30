@@ -119,5 +119,105 @@ class TestMaintain(unittest.TestCase):
         )
 
 
+def _plain_note(d, nid, status=None, note_type="memory", body="body text"):
+    lines = [
+        "---", f"id: {nid}", f"type: {note_type}",
+        'created: "2026-01-01T00:00:00Z"', "consequence: 5", "locus: output", "uses: 0",
+    ]
+    if status:
+        lines.append(f"status: {status}")
+    lines.append("---")
+    (d / f"{nid}.md").write_text("\n".join(lines) + f"\n{body}\n", encoding="utf-8")
+
+
+class TestLeanMaintenance(unittest.TestCase):
+    """``shapa maintain --lean``/``--apply`` (shapa-backend-spec.md §10
+    decision 6): report F10/F11 + archive status:superseded notes."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_find_superseded_lists_only_superseded_live_notes(self):
+        _plain_note(self.tmp, "live-active", status="active")
+        _plain_note(self.tmp, "live-superseded", status="superseded")
+        _plain_note(self.tmp, "no-status")
+        nodes = load_nodes(self.tmp)
+        self.assertEqual(maintain.find_superseded(nodes), ["live-superseded"])
+
+    def test_lean_report_never_moves_anything(self):
+        _plain_note(self.tmp, "old-note", status="superseded")
+        report = maintain.lean_report(self.tmp)
+        self.assertEqual(report["superseded"], ["old-note"])
+        self.assertTrue((self.tmp / "old-note.md").exists())
+        self.assertFalse((self.tmp / "archive").exists())
+
+    def test_apply_lean_moves_superseded_notes_into_archive_and_deletes_nothing(self):
+        _plain_note(self.tmp, "old-note", status="superseded", body="the actual content")
+        _plain_note(self.tmp, "current-note", status="active")
+
+        moved = maintain.apply_lean(self.tmp)
+
+        self.assertEqual([nid for nid, _ in moved], ["old-note"])
+        self.assertFalse((self.tmp / "old-note.md").exists())
+        dest = self.tmp / "archive" / "old-note.md"
+        self.assertTrue(dest.exists())
+        self.assertIn("the actual content", dest.read_text(encoding="utf-8"))
+        # Never touched a non-superseded note.
+        self.assertTrue((self.tmp / "current-note.md").exists())
+
+    def test_apply_lean_falls_back_to_a_plain_move_outside_a_git_checkout(self):
+        # This tmp dir is not a git checkout - git mv must fail cleanly and
+        # archive_note must still succeed via shutil.move.
+        _plain_note(self.tmp, "old-note", status="superseded")
+        dest = maintain.archive_note(self.tmp / "old-note.md", self.tmp / "archive")
+        self.assertEqual(dest, self.tmp / "archive" / "old-note.md")
+        self.assertTrue(dest.exists())
+        self.assertFalse((self.tmp / "old-note.md").exists())
+
+    def test_apply_lean_never_overwrites_an_already_archived_note(self):
+        archive_dir = self.tmp / "archive"
+        archive_dir.mkdir()
+        (archive_dir / "old-note.md").write_text("previously archived\n", encoding="utf-8")
+        _plain_note(self.tmp, "old-note", status="superseded", body="new content")
+
+        moved = maintain.apply_lean(self.tmp)
+
+        self.assertEqual(len(moved), 1)
+        dest = moved[0][1]
+        self.assertNotEqual(dest, archive_dir / "old-note.md")
+        self.assertEqual((archive_dir / "old-note.md").read_text(encoding="utf-8"),
+                          "previously archived\n")
+        self.assertIn("new content", dest.read_text(encoding="utf-8"))
+
+    def test_apply_lean_is_idempotent_when_nothing_superseded(self):
+        _plain_note(self.tmp, "current-note", status="active")
+        self.assertEqual(maintain.apply_lean(self.tmp), [])
+
+    def test_apply_lean_does_not_re_archive_already_archived_notes(self):
+        # A note living under archive/ is never loaded (GAP A), so it can
+        # never appear in find_superseded's input in the first place.
+        archive_dir = self.tmp / "archive"
+        archive_dir.mkdir()
+        _plain_note(archive_dir, "already-gone", status="superseded")
+        self.assertEqual(maintain.apply_lean(self.tmp), [])
+
+    def test_cli_lean_reports_violations_without_apply(self):
+        with self.assertRaises(SystemExit) as cm:
+            maintain.main(["--lean", str(self.tmp)])
+        self.assertEqual(cm.exception.code, 0)
+        # F11: agenda.md is missing from this bare tmp dir.
+        self.assertFalse((self.tmp / "archive").exists())
+
+    def test_cli_lean_apply_archives_superseded_notes(self):
+        _plain_note(self.tmp, "old-note", status="superseded")
+        with self.assertRaises(SystemExit):
+            maintain.main(["--lean", "--apply", str(self.tmp)])
+        self.assertTrue((self.tmp / "archive" / "old-note.md").exists())
+        self.assertFalse((self.tmp / "old-note.md").exists())
+
+
 if __name__ == "__main__":
     unittest.main()

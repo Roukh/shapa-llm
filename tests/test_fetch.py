@@ -82,6 +82,29 @@ class TestFetch(unittest.TestCase):
         self.assertEqual(ids[0], "f-meta")  # meta anchor
         self.assertLess(ids.index("f-out"), ids.index("f-long"))
 
+    def test_archived_notes_never_surface(self):
+        # GAP A acceptance: a query that matches an archived note's content
+        # exactly must never surface it - archive/ is never loaded, so it
+        # can never win on relevance either.
+        tmp = Path(tempfile.mkdtemp())
+        try:
+            for f in FIX.glob("*.md"):
+                shutil.copy(f, tmp / f.name)
+            archive = tmp / "archive"
+            archive.mkdir()
+            (archive / "watchdog-alert.md").write_text(
+                "---\nid: watchdog-alert\ntype: memory\n"
+                "created: \"2026-01-01T00:00:00Z\"\nconsequence: 9\n"
+                "locus: output\nuses: 0\n---\n"
+                "keeper watchdog alert firing on the exchange feed\n",
+                encoding="utf-8",
+            )
+            selected = fetch.select("keeper watchdog alert", root=tmp, k=5)
+            ids = [n.id for n, _ in selected]
+            self.assertNotIn("watchdog-alert", ids)
+        finally:
+            shutil.rmtree(tmp)
+
 
 if __name__ == "__main__":
     unittest.main()

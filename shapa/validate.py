@@ -24,6 +24,12 @@ Rules (core, F01-F03/S01-S03 unchanged from v1):
   F09  duplicate id across two roots in one wiki_roots() result (error) -
        checked only by --all-roots, since a single-root scan has nothing to
        compare against
+  F10  lean wiki shape (spec §10 decision 6): too many live root notes
+       (>40), too many arch/ reference docs (>12), or too much live disk
+       footprint (>250 KB, excluding archive/attic) - limits are config
+       values (MAX_LIVE_ROOT_NOTES/MAX_ARCH_NOTES/MAX_LIVE_KB)
+  F11  agenda.md missing, or listing more than 3 top-level items (the
+       "top 3 fires" - spec §10 decision 6)
 
 Rules (schema v2, spec §6 - all warnings this release):
   F04  summary present, <=160 chars, single line
@@ -54,12 +60,13 @@ CLI::
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from shapa import config, frontmatter
-from shapa.nodes import load_nodes
+from shapa.nodes import is_excluded_path, load_nodes
 from shapa.score import LOCUS_WEIGHTS
 
 VALID_TYPES = {"memory", "rule", "issue", "reference"}
@@ -73,6 +80,26 @@ VALID_STATUSES = {"active", "superseded", "draft"}
 #: §4: "Past 300 words: warning F07" / "Past 2000 words: F07").
 F07_WORD_CEILING = {"reference": 2000}
 F07_DEFAULT_CEILING = 300
+
+# ---------------------------------------------------------------------------
+# Lean wiki shape (spec §10 decision 6) - F10/F11. Limits are config values,
+# not baked-in physics: an operator overrides any of these module attributes
+# (monkeypatched in tests exactly like MERGE_THRESHOLD/MIN_RELEVANCE_FRACTION
+# elsewhere in this codebase), or a caller passes an explicit keyword to the
+# check function itself.
+# ---------------------------------------------------------------------------
+MAX_LIVE_ROOT_NOTES = 40   # memory/rule/issue notes at the wiki root
+MAX_ARCH_NOTES = 12        # reference docs under arch/
+MAX_LIVE_KB = 250          # total size of the live wiki (excludes archive/attic)
+
+#: A "live" note counted toward :data:`MAX_LIVE_ROOT_NOTES`: operational
+#: types only - the schema docs shapa init installs at the root
+#: (AGENTS.md/placement.md, both `type: reference`) are exempt, same as
+#: they are from orphan pruning (nodes.is_protected).
+LIVE_ROOT_TYPES = {"memory", "rule", "issue"}
+
+#: A top-level (non-indented) markdown list item: `1. text`, `- text`, `* text`.
+_TOP_LEVEL_ITEM_RE = re.compile(r"^(?:\d+[.)]|[-*])\s+\S")
 
 
 @dataclass
@@ -238,6 +265,17 @@ def validate_node(path, *, known_ids: set[str] | None = None) -> ValidationResul
     return ValidationResult(valid=not has_error, violations=violations)
 
 
+#: Ids that are expected to exist, identically, in every wiki by
+#: construction - the schema/template docs `shapa init` installs into
+#: every wiki verbatim (`AGENTS.md`, `placement.md`, the `arch/`
+#: PRD/architecture/system-design templates) plus `agenda.md` (decision 6:
+#: required at every wiki root, also installed by `shapa init`). None of
+#: these are the ambiguity F09 exists to catch - a schema doc or a per-wiki
+#: agenda recurring once per wiki, by design, is not two independently
+#: authored notes accidentally colliding on the same id.
+STRUCTURAL_IDS = frozenset({"AGENTS", "placement", "PRD", "architecture", "system-design", "agenda"})
+
+
 def check_cross_root_duplicates(roots) -> list[Violation]:
     """F09: a note ``id`` that exists in more than one of *roots* (a
     :func:`shapa.config.wiki_roots` result, or any iterable of
@@ -245,7 +283,8 @@ def check_cross_root_duplicates(roots) -> list[Violation]:
     property the whole multi-root read merge depends on (§4.1 of the spec:
     a silent keep-higher-scored pick is exactly the ambiguity this guards
     against). Reports every colliding id once, naming every root kind it
-    was found in."""
+    was found in. :data:`STRUCTURAL_IDS` - docs every wiki has one of by
+    construction, not by coincidence - are never flagged."""
     by_id: dict[str, list[str]] = {}
     for root in roots:
         path = getattr(root, "path", root)
@@ -255,6 +294,8 @@ def check_cross_root_duplicates(roots) -> list[Violation]:
         except OSError:
             continue
         for nid in nodes:
+            if nid in STRUCTURAL_IDS:
+                continue
             by_id.setdefault(nid, []).append(kind)
 
     violations = []
@@ -265,6 +306,129 @@ def check_cross_root_duplicates(roots) -> list[Violation]:
                 f"id '{nid}' exists in {len(kinds)} roots ({', '.join(kinds)}) - ambiguous",
             ))
     return violations
+
+
+def _live_size_bytes(root: Path, nodes: dict | None = None) -> int:
+    """Total size, in bytes, of the wiki's own note content - decision 6's
+    "live wiki total (everything except archive/ and attic/)".
+
+    Deliberately just the notes (``load_nodes``'s output, which already
+    excludes archive/attic/.obsidian - GAP A), not a raw walk of every byte
+    under *root*: the operational sidecars this engine itself writes next
+    to a wiki (``.shapa-index.db``, ``.shapa-vectors.json``) are typically
+    megabytes once semantic search/the daemon have run even once, and are
+    not "wiki content" a human or an agent reads - counting them would make
+    every wiki with an index fail F10 regardless of how lean its actual
+    notes are. This mirrors every other size/word budget in this codebase
+    (F07, SNIPPET_CHARS, DEFAULT_BUDGET): it measures note text.
+    """
+    if not root.is_dir():
+        return 0
+    if nodes is None:
+        nodes = load_nodes(root)
+    total = 0
+    for node in nodes.values():
+        try:
+            total += node.path.stat().st_size
+        except OSError:
+            continue
+    return total
+
+
+def check_lean_shape(
+    root,
+    *,
+    max_root_notes: int = MAX_LIVE_ROOT_NOTES,
+    max_arch_notes: int = MAX_ARCH_NOTES,
+    max_live_kb: int = MAX_LIVE_KB,
+) -> list[Violation]:
+    """F10: a wiki root that has grown past the lean-shape limits (spec §10
+    decision 6) - too many live root notes, too many arch/ reference docs,
+    or too much total (non-archive/attic) disk footprint. Reports each
+    exceeded limit once; a wiki within all three limits returns ``[]``.
+
+    Counts are taken from :func:`shapa.nodes.load_nodes`, which already
+    excludes ``archive/``/``attic/``/``.obsidian`` (GAP A) - those buckets
+    never count toward any of these limits, by construction, not by a
+    separate check here.
+    """
+    root = Path(root)
+    if not root.is_dir():
+        return []
+
+    nodes = load_nodes(root)
+    root_notes = [
+        n for n in nodes.values()
+        if len(n.path.relative_to(root).parts) == 1 and n.type in LIVE_ROOT_TYPES
+    ]
+    arch_notes = [n for n in nodes.values() if n.in_arch]
+
+    violations: list[Violation] = []
+    if len(root_notes) > max_root_notes:
+        violations.append(Violation(
+            "F10", 0,
+            f"{len(root_notes)} live root notes (memory/rule/issue) exceeds "
+            f"the lean-shape max of {max_root_notes}",
+        ))
+    if len(arch_notes) > max_arch_notes:
+        violations.append(Violation(
+            "F10", 0,
+            f"{len(arch_notes)} arch/ reference docs exceeds the lean-shape "
+            f"max of {max_arch_notes}",
+        ))
+    live_kb = _live_size_bytes(root, nodes) / 1024.0
+    if live_kb > max_live_kb:
+        violations.append(Violation(
+            "F10", 0,
+            f"live wiki is {live_kb:.1f} KB (excludes archive/attic), "
+            f"exceeds the lean-shape max of {max_live_kb} KB",
+        ))
+    return violations
+
+
+def _count_top_level_items(body: str) -> int:
+    return sum(1 for line in body.splitlines() if _TOP_LEVEL_ITEM_RE.match(line))
+
+
+def check_agenda(root, *, max_items: int = 3) -> list[Violation]:
+    """F11: ``agenda.md`` is required at the wiki root and must list the top
+    *max_items* fires only (spec §10 decision 6). Missing, or listing more
+    than *max_items* top-level list items, is an error; a bare directory
+    that doesn't exist yet (no wiki initialized) reports nothing - that is
+    "no wiki," not "a wiki with a shape violation."
+    """
+    root = Path(root)
+    if not root.is_dir():
+        return []
+
+    agenda_path = root / "agenda.md"
+    if not agenda_path.is_file():
+        return [Violation("F11", 0, "agenda.md is missing (required: lists the top 3 fires)")]
+
+    parsed = frontmatter.parse(agenda_path)
+    body = parsed.body if not parsed.error else ""
+    n = _count_top_level_items(body)
+    if n > max_items:
+        return [Violation(
+            "F11", 0,
+            f"agenda.md lists {n} top-level items, expected at most {max_items}",
+        )]
+    return []
+
+
+def _live_md_files(root: Path) -> list[Path]:
+    """Every ``*.md`` under *root*, sorted, except anything under
+    ``archive/``/``attic/``/``.obsidian`` at any depth (GAP A - the same
+    exclusion :func:`shapa.nodes.load_nodes` applies). ``validate`` scans
+    files directly here (F01-F09 need per-file paths, not just the parsed
+    ``Node`` objects ``load_nodes`` returns), so this keeps that scan
+    consistent with every other reader in this codebase: an archived note
+    is never re-validated against a schema it was retired from, and never
+    contributes an id F08's "known ids" set relies on being live.
+    """
+    if not root.is_dir():
+        return []
+    return [p for p in sorted(root.rglob("*.md")) if not is_excluded_path(p.relative_to(root).parts)]
 
 
 def _known_ids_for_paths(paths: list[str]) -> set[str]:
@@ -300,26 +464,38 @@ def main(argv: list[str] | None = None) -> None:
     if args.all_roots:
         start = args.paths[0] if args.paths else None
         roots = config.wiki_roots(start)
-        all_paths = [
-            str(p) for root in roots if root.path.is_dir() for p in root.path.rglob("*.md")
-        ]
+        all_paths = [str(p) for root in roots for p in _live_md_files(root.path)]
         known_ids = _known_ids_for_paths(all_paths)
         any_invalid = False
         for root in roots:
-            for raw in sorted(str(p) for p in root.path.rglob("*.md")) if root.path.is_dir() else []:
+            for raw in (str(p) for p in _live_md_files(root.path)):
                 result = validate_node(raw, known_ids=known_ids)
                 if not result.valid:
                     any_invalid = True
                 print(f"[{root.kind}] {raw}: {'OK' if result.valid and not result.violations else ('OK (with warnings)' if result.valid else 'INVALID')}")
                 for v in result.violations:
                     print(f"  [{v.rule}] {v.severity.upper()}: {v.message}")
+            for v in check_lean_shape(root.path) + check_agenda(root.path):
+                any_invalid = True
+                print(f"[{root.kind}] {root.path}: [{v.rule}] {v.severity.upper()}: {v.message}")
         dupes = check_cross_root_duplicates(roots)
         for v in dupes:
             any_invalid = True
             print(f"[{v.rule}] {v.severity.upper()}: {v.message}")
         sys.exit(1 if any_invalid else 0)
 
-    paths = args.paths or [str(p) for p in sorted(config.memory_dir().rglob("*.md"))]
+    # The root the lean-shape/agenda checks (F10/F11) run against: they are
+    # whole-wiki checks, not per-file, so they only make sense when *paths*
+    # names (or defaults to) a single wiki directory - not an arbitrary list
+    # of individual files, which has no one "root" to measure.
+    if not args.paths:
+        lean_root = config.memory_dir()
+    elif len(args.paths) == 1 and Path(args.paths[0]).is_dir():
+        lean_root = Path(args.paths[0])
+    else:
+        lean_root = None
+
+    paths = args.paths or [str(p) for p in _live_md_files(config.memory_dir())]
     known_ids = _known_ids_for_paths(paths)
     any_invalid = False
     for raw in paths:
@@ -332,6 +508,11 @@ def main(argv: list[str] | None = None) -> None:
         print(f"{raw}: {'OK (with warnings)' if result.valid else 'INVALID'}")
         for v in result.violations:
             print(f"  [{v.rule}] {v.severity.upper()}: {v.message}")
+
+    if lean_root is not None:
+        for v in check_lean_shape(lean_root) + check_agenda(lean_root):
+            any_invalid = True
+            print(f"[{lean_root}] [{v.rule}] {v.severity.upper()}: {v.message}")
 
     sys.exit(1 if any_invalid else 0)
 

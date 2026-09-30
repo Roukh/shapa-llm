@@ -1,11 +1,31 @@
 """Tests for shapa.validate: uniform frontmatter-schema validation."""
 
+import shutil
+import tempfile
 import unittest
 from pathlib import Path
 
-from shapa.validate import validate_frontmatter, validate_node
+from shapa.validate import (
+    check_agenda,
+    check_lean_shape,
+    validate_frontmatter,
+    validate_node,
+)
 
 FM = Path(__file__).parent / "fixtures" / "frontmatter"
+
+
+def _note(d: Path, nid: str, body: str = "body text", note_type: str = "memory") -> Path:
+    d.mkdir(parents=True, exist_ok=True)
+    p = d / f"{nid}.md"
+    p.write_text(
+        "---\n"
+        f"id: {nid}\ntype: {note_type}\ncreated: \"2026-01-01T00:00:00Z\"\n"
+        "consequence: 5\nlocus: output\nuses: 0\n---\n"
+        f"{body}\n",
+        encoding="utf-8",
+    )
+    return p
 
 
 class TestValidate(unittest.TestCase):
@@ -128,6 +148,90 @@ class TestValidate(unittest.TestCase):
         self.assertNotIn("F06", rules)
         self.assertNotIn("F07", rules)
         self.assertNotIn("F08", rules)
+
+
+class TestLeanShape(unittest.TestCase):
+    """F10/F11: lean wiki shape (shapa-backend-spec.md §10 decision 6)."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_within_every_limit_is_clean(self):
+        _note(self.tmp, "agenda", "1. one fire\n")
+        _note(self.tmp, "a-note")
+        self.assertEqual(check_lean_shape(self.tmp), [])
+        self.assertEqual(check_agenda(self.tmp), [])
+
+    def test_too_many_root_notes_is_f10(self):
+        for i in range(5):
+            _note(self.tmp, f"n{i}")
+        violations = check_lean_shape(self.tmp, max_root_notes=4)
+        self.assertEqual(len(violations), 1)
+        self.assertEqual(violations[0].rule, "F10")
+        self.assertIn("root notes", violations[0].message)
+
+    def test_too_many_arch_notes_is_f10(self):
+        for i in range(5):
+            _note(self.tmp / "arch", f"a{i}", note_type="reference")
+        violations = check_lean_shape(self.tmp, max_arch_notes=4)
+        self.assertEqual(len(violations), 1)
+        self.assertEqual(violations[0].rule, "F10")
+        self.assertIn("arch/", violations[0].message)
+
+    def test_live_kb_over_limit_is_f10(self):
+        _note(self.tmp, "big", "x" * 2000)
+        violations = check_lean_shape(self.tmp, max_live_kb=1)
+        self.assertEqual(len(violations), 1)
+        self.assertIn("KB", violations[0].message)
+
+    def test_reference_docs_at_root_are_exempt_from_the_root_count(self):
+        # AGENTS.md/placement.md/agenda.md-style schema docs (type:
+        # reference) at the wiki root don't count toward the 40 live-note
+        # limit - only memory/rule/issue do.
+        for i in range(3):
+            _note(self.tmp, f"ref{i}", note_type="reference")
+        violations = check_lean_shape(self.tmp, max_root_notes=2)
+        self.assertEqual(violations, [])
+
+    def test_archive_and_attic_never_count_toward_any_limit(self):
+        # Even wildly over any limit, archive/attic contents are invisible
+        # to F10 entirely - GAP A's exclusion, not a separate carve-out.
+        for i in range(50):
+            _note(self.tmp / "archive", f"old{i}", "x" * 10000)
+        for i in range(50):
+            _note(self.tmp / "attic", f"scratch{i}", "x" * 10000)
+        violations = check_lean_shape(self.tmp, max_root_notes=1, max_arch_notes=1, max_live_kb=1)
+        self.assertEqual(violations, [])
+
+    def test_missing_agenda_is_f11(self):
+        violations = check_agenda(self.tmp)
+        self.assertEqual(len(violations), 1)
+        self.assertEqual(violations[0].rule, "F11")
+        self.assertIn("missing", violations[0].message)
+
+    def test_agenda_with_exactly_three_items_is_clean(self):
+        _note(self.tmp, "agenda", "1. one\n2. two\n3. three\n")
+        self.assertEqual(check_agenda(self.tmp), [])
+
+    def test_agenda_with_too_many_items_is_f11(self):
+        _note(self.tmp, "agenda", "1. one\n2. two\n3. three\n4. four\n")
+        violations = check_agenda(self.tmp)
+        self.assertEqual(len(violations), 1)
+        self.assertEqual(violations[0].rule, "F11")
+        self.assertIn("4", violations[0].message)
+
+    def test_agenda_indented_sub_items_dont_count_as_top_level(self):
+        _note(self.tmp, "agenda", "1. one\n   - a sub-point\n2. two\n3. three\n")
+        self.assertEqual(check_agenda(self.tmp), [])
+
+    def test_nonexistent_root_reports_nothing(self):
+        # No wiki initialized yet is "no wiki," not "a shape violation."
+        missing = self.tmp / "does-not-exist"
+        self.assertEqual(check_lean_shape(missing), [])
+        self.assertEqual(check_agenda(missing), [])
 
 
 if __name__ == "__main__":

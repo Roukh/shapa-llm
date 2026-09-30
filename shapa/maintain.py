@@ -7,6 +7,9 @@ It does not report for a human to act on; it maintains the network:
     higher-scored one, repoint inbound [[links]] to it, and delete the other.
   - RESOLVE contradictions (--resolve): for similar rule-vs-rule pairs, ask the
     local ``claude`` CLI to reconcile them into one note (or confirm DISTINCT).
+  - LEAN (--lean): report lean-wiki-shape violations (F10/F11, see
+    shapa.validate) and which live notes are ``status: superseded`` -
+    ready to move into ``archive/`` (--apply; never deletes).
 
 Similarity uses local embeddings when available (see shapa.embed), else token
 Jaccard. Auto-merge is mechanical and safe; contradiction resolution is an LLM
@@ -15,6 +18,8 @@ step, so it is on-demand (--resolve), not part of the per-turn hook.
 CLI::
     shapa maintain --prune            # prune + auto-merge dupes (connected wiki)
     shapa maintain --prune --resolve  # also LLM-reconcile contradictions
+    shapa maintain --lean             # report lean-shape violations (F10/F11)
+    shapa maintain --lean --apply     # + archive status:superseded notes
 """
 
 from __future__ import annotations
@@ -25,8 +30,9 @@ import shutil
 import subprocess
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 
-from shapa import config, embed, frontmatter
+from shapa import config, embed, frontmatter, validate
 from shapa.heartbeat import find_orphans
 from shapa.nodes import build_graph, is_protected, load_nodes
 from shapa.score import _parse_ts, score_meta
@@ -246,6 +252,93 @@ def resolve_contradictions(directory, low: float = CONTRA_LOW,
     return resolved
 
 
+# ---------------------------------------------------------------------------
+# Lean wiki shape (--lean/--apply, spec §10 decision 6)
+# ---------------------------------------------------------------------------
+
+def find_superseded(nodes: dict) -> list[str]:
+    """Ids of live notes (``nodes`` - i.e. already excluding archive/attic;
+    see ``nodes.load_nodes``) whose frontmatter declares
+    ``status: superseded``. These are exactly what ``--lean --apply`` moves
+    into ``archive/`` - they are done being live memory, but decision 6
+    says archive/attic notes are never deleted, only ever moved there."""
+    return sorted(
+        nid for nid, node in nodes.items()
+        if str(node.meta.get("status", "")).strip().lower() == "superseded"
+    )
+
+
+def _git_mv(src: Path, dest: Path) -> bool:
+    """Try ``git mv`` (history-preserving) for *src* -> *dest*. Returns
+    True on success; False (never raises) when there is no git checkout
+    here, git isn't on PATH, or the move is refused for any reason - the
+    caller falls back to a plain filesystem move either way."""
+    try:
+        r = subprocess.run(
+            ["git", "mv", "--", str(src), str(dest)],
+            cwd=str(src.parent), capture_output=True, text=True, timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return r.returncode == 0
+
+
+def _unique_dest(archive_dir: Path, name: str) -> Path:
+    """*name* under *archive_dir*, disambiguated (``-2``, ``-3``, ...) if a
+    file by that name is already archived - never silently overwrites an
+    earlier archived note."""
+    dest = archive_dir / name
+    if not dest.exists():
+        return dest
+    stem, suffix = dest.stem, dest.suffix
+    n = 2
+    while True:
+        candidate = archive_dir / f"{stem}-{n}{suffix}"
+        if not candidate.exists():
+            return candidate
+        n += 1
+
+
+def archive_note(node_path: Path, archive_dir: Path) -> Path:
+    """Move *node_path* into *archive_dir* (created if needed) and return
+    its new path. Prefers ``git mv`` (history-preserving) when the wiki
+    sits inside a git checkout; falls back to a plain filesystem move
+    otherwise. Never deletes anything - the file always still exists,
+    just under ``archive/`` (spec §10 decision 6: "archive/ and attic/ ...
+    hold history ... never deletes")."""
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    dest = _unique_dest(archive_dir, node_path.name)
+    if not _git_mv(node_path, dest):
+        shutil.move(str(node_path), str(dest))
+    return dest
+
+
+def apply_lean(directory) -> list[tuple[str, Path]]:
+    """Move every ``status: superseded`` live note into ``archive/``
+    (:func:`archive_note`). Returns ``[(id, new_path), ...]`` for what was
+    moved, in id order."""
+    directory = Path(directory)
+    nodes = load_nodes(directory)
+    archive_dir = directory / "archive"
+    moved = []
+    for nid in find_superseded(nodes):
+        node = nodes[nid]
+        if not node.path.exists():
+            continue
+        dest = archive_note(node.path, archive_dir)
+        moved.append((nid, dest))
+    return moved
+
+
+def lean_report(directory) -> dict:
+    """The ``--lean`` report: lean-shape violations (F10/F11) plus which
+    live notes are ``status: superseded`` and so ready to archive."""
+    directory = Path(directory)
+    violations = validate.check_lean_shape(directory) + validate.check_agenda(directory)
+    superseded = find_superseded(load_nodes(directory))
+    return {"violations": violations, "superseded": superseded}
+
+
 def maintain(directory, prune: bool = False, resolve: bool = False,
              max_age_days: int = 90, now: datetime | None = None,
              dry_run: bool = False, merge_threshold: float | None = None) -> dict:
@@ -292,7 +385,35 @@ def main(argv: list[str] | None = None) -> None:
                         help="Similarity >= this auto-merges (default: backend-appropriate - "
                              f"{MERGE_THRESHOLD_EMBED} for embeddings, {MERGE_THRESHOLD_JACCARD} "
                              "for token-Jaccard).")
+    parser.add_argument("--lean", action="store_true",
+                        help="Report lean-wiki-shape violations (F10/F11) and which "
+                             "status:superseded notes are ready to archive. Ignores "
+                             "--prune/--resolve/--merge-threshold.")
+    parser.add_argument("--apply", action="store_true",
+                        help="With --lean: move status:superseded notes into archive/ "
+                             "(git mv when this is a git checkout, else a plain move). "
+                             "Never deletes.")
     args = parser.parse_args(argv)
+
+    if args.lean:
+        directory = config.resolve(args.directory)
+        report = lean_report(directory)
+        print("=== shapa maintain --lean ===")
+        if report["violations"]:
+            for v in report["violations"]:
+                print(f"  [{v.rule}] {v.severity.upper()}: {v.message}")
+        else:
+            print("  no lean-shape violations")
+        verb = "superseded, ready to archive" if not args.apply else "archiving"
+        print(f"status:superseded notes ({len(report['superseded'])}) {verb}: "
+              f"{', '.join(report['superseded']) or 'none'}")
+        if args.apply:
+            moved = apply_lean(directory)
+            for nid, dest in moved:
+                print(f"  archived {nid} -> {dest}")
+            if not moved:
+                print("  nothing to archive")
+        sys.exit(0)
 
     r = maintain(config.resolve(args.directory), prune=args.prune, resolve=args.resolve,
                  max_age_days=args.max_age_days, dry_run=args.dry_run,
