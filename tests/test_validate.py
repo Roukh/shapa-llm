@@ -57,6 +57,28 @@ class TestValidate(unittest.TestCase):
         self.assertFalse(result.valid)
         self.assertIn("F01", self._rules(result))
 
+    def test_missing_uses_is_not_s03(self):
+        # shapa-backend-spec.md §10 decision 7: `uses`/`last_used` are
+        # tolerated legacy fields now (the live counter lives in the index
+        # store) - a note `maintain --backfill` has stripped them from must
+        # stay exactly as valid as one that never had them.
+        meta = {"id": "n", "type": "memory", "created": "2026-01-01T00:00:00Z",
+                "consequence": 5, "locus": "output"}
+        violations = validate_frontmatter(meta, "n")
+        self.assertNotIn("S03", self._rules_of(violations))
+
+    def test_present_but_malformed_uses_is_still_s03(self):
+        # A field that IS present but not a non-negative integer is still a
+        # real mistake (hand-authored, or a pre-backfill note mid-migration)
+        # - only its ABSENCE is tolerated, not a garbage value.
+        meta = {"id": "n", "type": "memory", "created": "2026-01-01T00:00:00Z",
+                "consequence": 5, "locus": "output", "uses": "banana"}
+        violations = validate_frontmatter(meta, "n")
+        self.assertIn("S03", self._rules_of(violations))
+
+    def _rules_of(self, violations):
+        return {v.rule for v in violations}
+
     # ---- Schema v2 (spec §6): F04-F09/S04, warnings-first this release ----
 
     def test_v1_note_missing_schema_v2_fields_is_still_valid(self):

@@ -16,7 +16,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from shapa import __version__, config
+from shapa import __version__, config, embed, store
 
 _SUBMODULES = (
     "bootstrap", "fetch", "capture", "save", "maintain", "heartbeat", "score",
@@ -88,6 +88,33 @@ def _install_docs(target: Path) -> list[str]:
     return installed
 
 
+#: The wiki's own read-path caches - `shapa.store`'s `.shapa-index.db` (plus
+#: its WAL/SHM siblings) and `shapa.embed`'s `.shapa-vectors.json` - are
+#: rebuildable side effects of a read path (fetch/bootstrap/score/mcp
+#: search), never authoritative content - a fresh `shapa init` gitignores
+#: them so neither can ever show up as an untracked/dirty file in a
+#: git-tracked wiki (shapa-backend-spec.md §10 decision 7's acceptance:
+#: "running fetch or bootstrap on a clean repo leaves git status clean").
+#: Non-destructive: only ever written when the wiki has no `.gitignore` yet,
+#: so an operator's own file is never touched.
+_INDEX_GITIGNORE = (
+    "# shapa: read-path caches (shapa.store/shapa.embed) - rebuilt\n"
+    "# automatically on the next read, never authoritative, never tracked.\n"
+    f"{store.INDEX_FILENAME}\n{store.INDEX_FILENAME}-wal\n{store.INDEX_FILENAME}-shm\n"
+    f"{embed.CACHE_FILENAME}\n"
+)
+
+
+def _ensure_index_gitignore(target: Path) -> bool:
+    """Write a ``.gitignore`` covering the index cache into *target* if it
+    doesn't already have one. Returns whether it wrote one."""
+    gitignore = target / ".gitignore"
+    if gitignore.exists():
+        return False
+    gitignore.write_text(_INDEX_GITIGNORE, encoding="utf-8")
+    return True
+
+
 #: Docs `--upgrade-docs` is allowed to overwrite: the schema/rules file and
 #: the placement decision rule. Deliberately excludes arch/ (curated project
 #: templates a user may have filled in) and, obviously, any note - this is
@@ -128,6 +155,8 @@ def _init(argv: list[str]) -> None:
             )
             sys.exit(2)
         updated = _upgrade_docs(target)
+        if _ensure_index_gitignore(target):
+            updated = [*updated, ".gitignore"]
         if updated:
             print(f"shapa: refreshed {len(updated)} doc(s) at {target}: {', '.join(updated)}")
         else:
@@ -159,6 +188,8 @@ def _init(argv: list[str]) -> None:
     target.mkdir(parents=True, exist_ok=True)
 
     installed = _install_docs(target)
+    if _ensure_index_gitignore(target):
+        installed = [*installed, ".gitignore"]
 
     obs = target / ".obsidian"
     obs.mkdir(exist_ok=True)

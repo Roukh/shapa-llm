@@ -14,8 +14,12 @@ It combines four fields:
   decay time-constant) grows with consequence, so a high-consequence rule barely
   decays while a routine memory fades fast.
 - **uses**: a mechanical counter of how many times the node file has been read /
-  used. Incremented by record_use() (NOT by an LLM). Dormant until shapa has a
-  read path; until then it stays 0.
+  used. Incremented by record_use() (NOT by an LLM). Lives in the index store
+  (``shapa.store``), keyed by ``(root, note id)`` - shapa-backend-spec.md §10
+  decision 7, "reads never write notes": a note's own frontmatter changes only
+  when its content does, never as a side effect of being read. ``uses``/
+  ``last_used`` in a file are tolerated legacy values, read here only as a
+  fallback for a note the store has never indexed.
 
 Score formula::
 
@@ -41,7 +45,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from shapa import config, frontmatter
+from shapa import config, frontmatter, store
 
 # ---------------------------------------------------------------------------
 # Tunable constants
@@ -145,67 +149,107 @@ def score_meta(meta: dict, now: datetime | None = None) -> tuple[float, int, str
     return score, consequence, locus, fresh, uses
 
 
-def score_node(path: str | Path, now: datetime | None = None) -> ScoreResult:
-    """Parse a node file and compute its score."""
+def _resolve_root(path: Path, root: str | Path | None) -> Path | None:
+    """*root* if given, else the nearest discoverable wiki above *path*
+    (:func:`shapa.config.discover`) - never guesses when neither resolves."""
+    if root is not None:
+        return Path(root)
+    return config.discover(path)
+
+
+def live_use_fields(path: str | Path, meta: dict, root: str | Path | None = None
+                     ) -> tuple[int, str | None]:
+    """``(uses, last_used)`` for the note at *path*, preferring the index
+    store's live counters over the note's own (legacy) frontmatter.
+
+    shapa-backend-spec.md §10 decision 7: usage counters live in
+    ``shapa.store``, keyed by ``(root, note id)`` - never re-read from a
+    note's frontmatter except as a fallback for a note the store has never
+    indexed (``uses`` and ``last_used`` both absent/zero there). *root* is
+    the wiki root to query; when not given explicitly it is discovered from
+    *path* (see :func:`_resolve_root`) - a note store.py has no indexed root
+    for at all (e.g. no discoverable wiki) simply falls back to whatever the
+    file itself says, exactly like before store.py existed.
+
+    Read-only: uses ``read_only=True`` (:func:`shapa.store.get_all_uses`),
+    so this never creates ``.shapa-index.db`` as a side effect of scoring.
+    """
+    p = Path(path)
+    resolved_root = _resolve_root(p, root)
+    if resolved_root is not None:
+        note_id = str(meta.get("id") or p.stem)
+        live = store.get_all_uses(resolved_root, read_only=True)
+        uses, last_used = live.get(note_id, (0, None))
+        if uses or last_used:
+            return uses, last_used
+    return uses_of(meta), meta.get("last_used")
+
+
+def score_node(path: str | Path, now: datetime | None = None,
+               root: str | Path | None = None) -> ScoreResult:
+    """Parse a node file and compute its score.
+
+    ``uses``/``last_used`` come from the index store when the note is
+    indexed there (live, decision 7); the note's own frontmatter is only
+    ever a legacy fallback - see :func:`live_use_fields`. *root* threads
+    through to it; omit it to auto-discover the wiki root above *path*.
+    """
     p = Path(path)
     parsed = frontmatter.parse(p)
-    score, consequence, locus, fresh, uses = score_meta(parsed.meta, now=now)
-    node_id = str(parsed.meta.get("id") or p.stem)
-    return ScoreResult(node_id, score, consequence, locus, fresh, uses, p)
+    meta = dict(parsed.meta)
+    uses, last_used = live_use_fields(p, meta, root=root)
+    meta["uses"] = uses
+    if last_used is not None:
+        meta["last_used"] = last_used
+    score, consequence, locus, fresh, uses_val = score_meta(meta, now=now)
+    node_id = str(meta.get("id") or p.stem)
+    return ScoreResult(node_id, score, consequence, locus, fresh, uses_val, p)
 
 
 # ---------------------------------------------------------------------------
 # Mechanical use counter (NOT an LLM judgement)
 # ---------------------------------------------------------------------------
 
-def record_use(path: str | Path, now: datetime | None = None) -> int:
-    """Increment the node's ``uses`` counter and set ``last_used`` to now.
+def record_use(path: str | Path, now: datetime | None = None,
+               root: str | Path | None = None) -> int:
+    """Record one use of the node at *path* in the index store.
 
-    Edits only the ``uses`` and ``last_used`` frontmatter lines, leaving the
-    rest of the file byte-for-byte intact. Returns the new use count. This is
-    the mechanical counter: it is meant to be called by the read/use path, not
-    by a language model.
+    shapa-backend-spec.md §10 decision 7 ("reads never write notes"): this
+    never touches the note's own frontmatter - the mechanical counter lives
+    in :func:`shapa.store.record_use`, keyed by ``(root, note id)``. Returns
+    the new use count, or 0 when *path* sits outside any discoverable wiki
+    root and no explicit *root* was given (never raises).
     """
     p = Path(path)
-    now = now or datetime.now(timezone.utc)
-    now_iso = now.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-    lines = p.read_text(encoding="utf-8").split("\n")
-    if not lines or lines[0].rstrip() != "---":
-        raise ValueError(f"{p}: no frontmatter to update")
-    close = next((i for i in range(1, len(lines)) if lines[i].rstrip() == "---"), None)
-    if close is None:
-        raise ValueError(f"{p}: unterminated frontmatter")
-
-    new_uses = uses_of(frontmatter.parse(p).meta) + 1
-
-    def set_line(key: str, value: str) -> None:
-        prefix = f"{key}:"
-        for i in range(1, close):
-            if lines[i].lstrip().startswith(prefix):
-                lines[i] = f"{key}: {value}"
-                return
-        # Not present: insert just before the closing delimiter.
-        lines.insert(close, f"{key}: {value}")
-
-    set_line("uses", str(new_uses))
-    set_line("last_used", now_iso)
-    p.write_text("\n".join(lines), encoding="utf-8")
-    return new_uses
+    resolved_root = _resolve_root(p, root)
+    if resolved_root is None:
+        return 0
+    meta = frontmatter.parse(p).meta
+    note_id = str(meta.get("id") or p.stem)
+    return store.record_use(resolved_root, note_id, now=now)
 
 
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
-def _iter_node_files(paths: list[str]) -> list[Path]:
-    out: list[Path] = []
+def _iter_node_files(paths: list[str]) -> list[tuple[Path | None, Path]]:
+    """``[(root_hint, file_path), ...]`` for each given path/directory.
+
+    *root_hint* is the directory itself when the argument was a directory -
+    matching every real invocation, which passes a wiki root (the default
+    memory dir, or an explicit one) - so every file found under it (incl.
+    the ``arch/`` subdir) shares that same root for the index-store lookup.
+    A bare file argument carries no such hint (``None``); the caller
+    resolves its root itself (:func:`_resolve_root` via ``config.discover``).
+    """
+    out: list[tuple[Path | None, Path]] = []
     for raw in paths:
         p = Path(raw)
         if p.is_dir():
-            out.extend(sorted(p.rglob("*.md")))  # include the arch/ subdir
+            out.extend((p, f) for f in sorted(p.rglob("*.md")))  # include arch/
         else:
-            out.append(p)
+            out.append((None, p))
     return out
 
 
@@ -224,16 +268,13 @@ def main(argv: list[str] | None = None) -> None:
         if not args.paths:
             print("score --use needs an explicit note path.", file=sys.stderr)
             sys.exit(2)
-        for p in _iter_node_files(args.paths):
-            try:
-                n = record_use(p)
-                print(f"{p}: uses -> {n}")
-            except ValueError as exc:
-                print(f"{p}: {exc}", file=sys.stderr)
+        for root_hint, p in _iter_node_files(args.paths):
+            n = record_use(p, root=root_hint)
+            print(f"{p}: uses -> {n}")
         return
 
     paths = args.paths or [str(config.memory_dir())]
-    results = [score_node(p) for p in _iter_node_files(paths)]
+    results = [score_node(p, root=root_hint) for root_hint, p in _iter_node_files(paths)]
     results.sort(key=lambda r: r.score, reverse=True)
     for r in results:
         print(

@@ -25,7 +25,11 @@ from pathlib import Path
 _MODEL = None
 _AVAILABLE: bool | None = None
 _MODEL_NAME = "minishlab/potion-base-8M"
-_CACHE_FILE = ".shapa-vectors.json"
+#: Public name for the embedding-cache sidecar (mirrors shapa.store's
+#: INDEX_FILENAME) - a rebuildable read-path side effect, never
+#: authoritative content, so `shapa init` gitignores it too.
+CACHE_FILENAME = ".shapa-vectors.json"
+_CACHE_FILE = CACHE_FILENAME
 
 
 def available() -> bool:

@@ -10,6 +10,9 @@ It does not report for a human to act on; it maintains the network:
   - LEAN (--lean): report lean-wiki-shape violations (F10/F11, see
     shapa.validate) and which live notes are ``status: superseded`` -
     ready to move into ``archive/`` (--apply; never deletes).
+  - BACKFILL (--backfill): strip legacy ``uses``/``last_used`` frontmatter
+    lines left over from before those counters moved into the index store
+    (shapa-backend-spec.md §10 decision 7 - see ``shapa.store``/``shapa.score``).
 
 Similarity uses local embeddings when available (see shapa.embed), else token
 Jaccard. Auto-merge is mechanical and safe; contradiction resolution is an LLM
@@ -20,6 +23,7 @@ CLI::
     shapa maintain --prune --resolve  # also LLM-reconcile contradictions
     shapa maintain --lean             # report lean-shape violations (F10/F11)
     shapa maintain --lean --apply     # + archive status:superseded notes
+    shapa maintain --backfill         # strip legacy uses/last_used lines
 """
 
 from __future__ import annotations
@@ -330,6 +334,57 @@ def apply_lean(directory) -> list[tuple[str, Path]]:
     return moved
 
 
+# ---------------------------------------------------------------------------
+# --backfill (GAP E, spec §10 decision 7): strip legacy uses/last_used lines
+# ---------------------------------------------------------------------------
+
+_LEGACY_USE_FIELD_RE = re.compile(r"^\s*(uses|last_used)\s*:")
+
+
+def backfill_strip_legacy_uses(directory) -> list[tuple[str, Path]]:
+    """Strip the legacy ``uses``/``last_used`` frontmatter lines from every
+    live note.
+
+    shapa-backend-spec.md §10 decision 7: those mechanical counters live
+    entirely in the index store (``shapa.store``) now, keyed by
+    ``(root, note id)`` - a note's own file should carry neither. Only the
+    two lines are removed, byte-for-byte, so the rest of a note (including
+    line numbers the validator/heartbeat report against) is untouched. A
+    note with neither field present is left completely alone - no read, no
+    write, no diff - so running this twice, or against a wiki that has
+    already been backfilled, touches nothing. Never descends into
+    ``archive/``/``attic/`` (decision 6: never loaded, so never touched
+    either - see ``nodes.load_nodes``).
+
+    Returns ``[(id, path), ...]`` for every note actually rewritten, in id
+    order.
+    """
+    directory = Path(directory)
+    nodes = load_nodes(directory)
+    changed: list[tuple[str, Path]] = []
+    for nid in sorted(nodes):
+        p = nodes[nid].path
+        try:
+            text = p.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        lines = text.split("\n")
+        if not lines or lines[0].rstrip() != "---":
+            continue
+        close = next((i for i in range(1, len(lines)) if lines[i].rstrip() == "---"), None)
+        if close is None:
+            continue
+        kept = [
+            ln for i, ln in enumerate(lines)
+            if not (0 < i < close and _LEGACY_USE_FIELD_RE.match(ln))
+        ]
+        if kept == lines:
+            continue  # nothing legacy here; never rewrite a clean note
+        p.write_text("\n".join(kept), encoding="utf-8")
+        changed.append((nid, p))
+    return changed
+
+
 def lean_report(directory) -> dict:
     """The ``--lean`` report: lean-shape violations (F10/F11) plus which
     live notes are ``status: superseded`` and so ready to archive."""
@@ -393,7 +448,21 @@ def main(argv: list[str] | None = None) -> None:
                         help="With --lean: move status:superseded notes into archive/ "
                              "(git mv when this is a git checkout, else a plain move). "
                              "Never deletes.")
+    parser.add_argument("--backfill", action="store_true",
+                        help="Strip legacy `uses`/`last_used` frontmatter lines from every "
+                             "live note (spec §10 decision 7: those counters live in the "
+                             "index store now, keyed by root+id - see shapa.store). A note "
+                             "with neither field is left untouched. Ignores "
+                             "--prune/--resolve/--lean/--merge-threshold.")
     args = parser.parse_args(argv)
+
+    if args.backfill:
+        directory = config.resolve(args.directory)
+        changed = backfill_strip_legacy_uses(directory)
+        print("=== shapa maintain --backfill ===")
+        print(f"stripped legacy uses/last_used from {len(changed)} note(s): "
+              f"{', '.join(nid for nid, _ in changed) or 'none'}")
+        sys.exit(0)
 
     if args.lean:
         directory = config.resolve(args.directory)

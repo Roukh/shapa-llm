@@ -61,9 +61,12 @@ class TestFetch(unittest.TestCase):
                 uses, last_used = store.get_use(tmp, n.id)
                 self.assertEqual(uses, 1)
                 self.assertIsNotNone(last_used)
-                # score.score_node still reads the file directly (legacy,
-                # untouched by this read path) - it must show the frontmatter
-                # value unchanged, never bumped by fetch.
+                # score.score_node now reads the SAME live count back from
+                # the store (GAP E) when given the matching root - the
+                # bump is real and visible, just never written to the file.
+                self.assertEqual(score.score_node(tmp / f"{n.id}.md", root=tmp).uses, 1)
+                # With no root (nothing to key the store lookup on), it
+                # still falls back to the note's own (legacy) frontmatter.
                 self.assertEqual(score.score_node(tmp / f"{n.id}.md").uses, 0)
             for f, contents in before.items():
                 self.assertEqual(f.read_bytes(), contents, f"{f} was written by a read path")

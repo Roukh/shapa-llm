@@ -219,5 +219,78 @@ class TestLeanMaintenance(unittest.TestCase):
         self.assertFalse((self.tmp / "old-note.md").exists())
 
 
+class TestBackfillLegacyUses(unittest.TestCase):
+    """``shapa maintain --backfill`` (GAP E, shapa-backend-spec.md §10
+    decision 7): strip the legacy `uses`/`last_used` frontmatter lines -
+    those counters live in the index store now, never in the file."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_strips_uses_and_last_used_leaves_everything_else_intact(self):
+        (self.tmp / "legacy.md").write_text(
+            "---\nid: legacy\ntype: memory\ncreated: \"2026-01-01T00:00:00Z\"\n"
+            "consequence: 5\nlocus: output\nuses: 7\nlast_used: \"2026-06-01T00:00:00Z\"\n"
+            "---\nsome body text with [[legacy-link]]\n",
+            encoding="utf-8",
+        )
+        changed = maintain.backfill_strip_legacy_uses(self.tmp)
+        self.assertEqual([nid for nid, _ in changed], ["legacy"])
+        text = (self.tmp / "legacy.md").read_text(encoding="utf-8")
+        self.assertNotIn("uses:", text)
+        self.assertNotIn("last_used:", text)
+        self.assertIn("id: legacy", text)
+        self.assertIn("consequence: 5", text)
+        self.assertIn("some body text with [[legacy-link]]", text)
+
+    def test_note_with_neither_field_is_never_rewritten(self):
+        p = self.tmp / "clean.md"
+        p.write_text(
+            "---\nid: clean\ntype: memory\ncreated: \"2026-01-01T00:00:00Z\"\n"
+            "consequence: 5\nlocus: output\n---\nbody\n",
+            encoding="utf-8",
+        )
+        before = p.stat().st_mtime_ns
+        before_bytes = p.read_bytes()
+        changed = maintain.backfill_strip_legacy_uses(self.tmp)
+        self.assertEqual(changed, [])
+        self.assertEqual(p.stat().st_mtime_ns, before, "a clean note must never be rewritten")
+        self.assertEqual(p.read_bytes(), before_bytes)
+
+    def test_is_idempotent(self):
+        _plain_note(self.tmp, "a")  # _plain_note writes uses: 0, no last_used
+        first = maintain.backfill_strip_legacy_uses(self.tmp)
+        self.assertEqual([nid for nid, _ in first], ["a"])
+        second = maintain.backfill_strip_legacy_uses(self.tmp)
+        self.assertEqual(second, [])
+
+    def test_never_touches_archive_or_attic(self):
+        archive_dir = self.tmp / "archive"
+        archive_dir.mkdir()
+        _plain_note(archive_dir, "archived")
+        before = (archive_dir / "archived.md").read_bytes()
+        maintain.backfill_strip_legacy_uses(self.tmp)
+        self.assertEqual((archive_dir / "archived.md").read_bytes(), before)
+
+    def test_backfilled_note_still_validates(self):
+        # shapa-backend-spec.md §10 decision 7: uses/last_used are tolerated
+        # legacy, so a backfilled note must not newly fail validation.
+        from shapa.validate import validate_node
+        _plain_note(self.tmp, "a")
+        maintain.backfill_strip_legacy_uses(self.tmp)
+        result = validate_node(self.tmp / "a.md")
+        self.assertTrue(result.valid, result.violations)
+
+    def test_cli_backfill_reports_and_strips(self):
+        _plain_note(self.tmp, "a")
+        with self.assertRaises(SystemExit) as cm:
+            maintain.main(["--backfill", str(self.tmp)])
+        self.assertEqual(cm.exception.code, 0)
+        self.assertNotIn("uses:", (self.tmp / "a.md").read_text(encoding="utf-8"))
+
+
 if __name__ == "__main__":
     unittest.main()

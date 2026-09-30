@@ -37,17 +37,23 @@ class TestScore(unittest.TestCase):
         self.assertGreater(hi.freshness, lo.freshness)
 
     def test_record_use_increments_and_boosts(self):
+        # shapa-backend-spec.md §10 decision 7 ("reads never write notes"):
+        # record_use bumps the index store's counter, keyed by (root, note
+        # id) - the note file itself is never touched.
         tmp = Path(tempfile.mkdtemp())
         try:
             f = tmp / "low.md"
-            f.write_text((FIX / "low.md").read_text(), encoding="utf-8")
-            before = score.score_node(f, now=NOW)
-            new_count = score.record_use(f, now=NOW)
+            original = (FIX / "low.md").read_text()
+            f.write_text(original, encoding="utf-8")
+            before = score.score_node(f, now=NOW, root=tmp)
+            new_count = score.record_use(f, now=NOW, root=tmp)
             self.assertEqual(new_count, 1)
-            after = score.score_node(f, now=NOW)
+            after = score.score_node(f, now=NOW, root=tmp)
             self.assertEqual(after.uses, 1)
             # use_factor > 1 with freshness held at 1.0 (last_used set to NOW).
             self.assertGreater(after.score, before.score)
+            self.assertEqual(f.read_text(encoding="utf-8"), original,
+                              "record_use must never rewrite the note file")
         finally:
             shutil.rmtree(tmp)
 
@@ -55,12 +61,39 @@ class TestScore(unittest.TestCase):
         tmp = Path(tempfile.mkdtemp())
         try:
             f = tmp / "high.md"
-            f.write_text((FIX / "high.md").read_text(), encoding="utf-8")
-            score.record_use(f, now=NOW)
-            self.assertEqual(score.record_use(f, now=NOW), 2)
-            self.assertEqual(score.score_node(f, now=NOW).uses, 2)
+            original = (FIX / "high.md").read_text()
+            f.write_text(original, encoding="utf-8")
+            score.record_use(f, now=NOW, root=tmp)
+            self.assertEqual(score.record_use(f, now=NOW, root=tmp), 2)
+            self.assertEqual(score.score_node(f, now=NOW, root=tmp).uses, 2)
+            self.assertEqual(f.read_text(encoding="utf-8"), original,
+                              "record_use must never rewrite the note file")
         finally:
             shutil.rmtree(tmp)
+
+    def test_record_use_without_a_discoverable_root_never_blocks(self):
+        # No explicit root and no ancestor wiki marker above tmp: score.py
+        # never raises and never falls back to writing the file - it simply
+        # reports 0 uses recorded, same "never blocks" contract every other
+        # read-path module in this codebase shares.
+        tmp = Path(tempfile.mkdtemp())
+        try:
+            f = tmp / "low.md"
+            original = (FIX / "low.md").read_text()
+            f.write_text(original, encoding="utf-8")
+            self.assertEqual(score.record_use(f, now=NOW), 0)
+            self.assertEqual(f.read_text(encoding="utf-8"), original)
+        finally:
+            shutil.rmtree(tmp)
+
+    def test_score_node_falls_back_to_frontmatter_when_never_indexed(self):
+        # A note the store has never seen (no root given, fixture directory
+        # has no index) still scores correctly off its own (legacy)
+        # frontmatter `uses` value - the store is a live enhancement, not a
+        # hard dependency for correctness (mirrors store.py's own module
+        # docstring contract for fetch.py/serve.py).
+        result = score.score_node(FIX / "low.md", now=NOW)
+        self.assertEqual(result.uses, 0)
 
     def test_invalid_score_fields_rejected(self):
         result = validate_node(FIX / "badscore.md")

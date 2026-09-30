@@ -70,6 +70,24 @@ class TestInit(unittest.TestCase):
         cli._init([str(self.wiki)])  # re-run
         self.assertEqual(agents.read_text(encoding="utf-8"), "EDITED")
 
+    def test_init_gitignores_the_index_cache(self):
+        # shapa-backend-spec.md §10 decision 7's acceptance ("running fetch
+        # or bootstrap on a clean repo leaves git status clean") needs the
+        # index store's sidecar db to never look like an untracked/dirty
+        # file in a git-tracked wiki.
+        cli._init([str(self.wiki)])
+        gitignore = (self.wiki / ".gitignore").read_text(encoding="utf-8")
+        from shapa import embed, store
+        self.assertIn(store.INDEX_FILENAME, gitignore)
+        self.assertIn(embed.CACHE_FILENAME, gitignore)
+
+    def test_init_never_overwrites_an_existing_gitignore(self):
+        cli._init([str(self.wiki)])
+        gitignore = self.wiki / ".gitignore"
+        gitignore.write_text("my-own-rule\n", encoding="utf-8")
+        cli._init([str(self.wiki)])  # re-run: already a wiki (AGENTS.md marker present)
+        self.assertEqual(gitignore.read_text(encoding="utf-8"), "my-own-rule\n")
+
 
 class TestUpgradeDocs(unittest.TestCase):
     """Tests for `shapa init --upgrade-docs [DIR]` (installer-hardening
@@ -125,6 +143,18 @@ class TestUpgradeDocs(unittest.TestCase):
         self.assertIn("MY OWN NOTES ON THIS PROJECT", prd.read_text(encoding="utf-8"))
         self.assertTrue(a_note.is_file())
         self.assertIn("something the agent wrote", a_note.read_text(encoding="utf-8"))
+
+    def test_upgrade_docs_backfills_a_missing_index_gitignore(self):
+        # A wiki scaffolded before this fix has no .gitignore for the index
+        # cache; --upgrade-docs is the existing "refresh an old wiki" path,
+        # so it backfills it too (never overwrites one that's already there
+        # - see test_upgrade_docs_never_touches_arch_or_notes's sibling
+        # non-destructive contract).
+        cli._init([str(self.wiki)])
+        (self.wiki / ".gitignore").unlink()  # simulate a pre-fix wiki
+        cli._init(["--upgrade-docs", str(self.wiki)])
+        from shapa import store
+        self.assertIn(store.INDEX_FILENAME, (self.wiki / ".gitignore").read_text(encoding="utf-8"))
 
     def test_upgrade_docs_default_target_is_the_connected_wiki(self):
         cli._init([str(self.wiki)])  # explicit DIR -> becomes the recorded pointer

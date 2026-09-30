@@ -1,10 +1,13 @@
 """Frontmatter-schema validator for shapa wiki files.
 
 Every file in the wiki - in ``arch/`` and ``memory/`` alike - carries the same
-core frontmatter: ``id, type, created, consequence, locus, uses``. Connections
+core frontmatter: ``id, type, created, consequence, locus``. Connections
 are ``[[wikilinks]]`` in the body and are not validated here (they are graph
 data, checked by the heartbeat). Body format is the maintaining LLM's
-discretion, subject to the length guidance checked by F07.
+discretion, subject to the length guidance checked by F07. ``uses``/
+``last_used`` are tolerated legacy fields, not required (spec §10 decision 7 -
+the live counter lives in the index store, ``shapa.store``, now); S03 only
+ever fires against a present-but-malformed value.
 
 Schema v2 (additive, spec §6) layers progressive-disclosure fields onto the
 same files: ``summary, scope, applies_to, tags, status, supersedes``. These
@@ -20,7 +23,7 @@ Rules (core, F01-F03/S01-S03 unchanged from v1):
   F03  created is present
   S01  consequence is an integer 1-10
   S02  locus is one of: output, output-meta, meta
-  S03  uses is a non-negative integer
+  S03  uses, when present, is a non-negative integer (absent is fine - legacy)
   F09  duplicate id across two roots in one wiki_roots() result (error) -
        checked only by --all-roots, since a single-root scan has nothing to
        compare against
@@ -197,13 +200,21 @@ def validate_frontmatter(
     if locus not in LOCUS_WEIGHTS:
         v.append(Violation("S02", 0, f"locus '{meta.get('locus')}' must be one of: {', '.join(sorted(LOCUS_WEIGHTS))}"))
 
-    uses = str(meta.get("uses", "")).strip()
-    try:
-        ok = int(uses) >= 0
-    except ValueError:
-        ok = False
-    if not ok:
-        v.append(Violation("S03", 0, f"uses '{meta.get('uses')}' must be a non-negative integer"))
+    # `uses` is tolerated legacy frontmatter now (shapa-backend-spec.md §10
+    # decision 7: the counter lives in the index store, keyed by root+id -
+    # see shapa.store/shapa.score) - its absence is never an error, a note
+    # `maintain --backfill` has stripped it from is exactly as valid as one
+    # that never had it. A PRESENT-but-malformed value still fails S03: that
+    # is either a hand-authored mistake or a pre-backfill note mid-migration,
+    # either way worth flagging.
+    if "uses" in meta:
+        uses = str(meta.get("uses", "")).strip()
+        try:
+            ok = int(uses) >= 0
+        except ValueError:
+            ok = False
+        if not ok:
+            v.append(Violation("S03", 0, f"uses '{meta.get('uses')}' must be a non-negative integer"))
 
     # ---- Schema v2 (spec §6) - warnings this release, never errors -------
     summary = meta.get("summary")

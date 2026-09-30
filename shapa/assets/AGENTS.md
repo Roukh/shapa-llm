@@ -51,10 +51,16 @@ type: memory | rule | issue | reference  # exactly one of these four values
 created: "2026-06-30T12:00:00Z"  # ISO-8601 timestamp string, quoted
 consequence: 7               # 1-10: performance loss if this node were absent (author-set)
 locus: output-meta           # output | output-meta | meta (what the node affects)
-uses: 0                      # mechanical read counter (set by record_use, never by an LLM)
-# last_used: "..."           # added automatically by record_use on first use
 ---
 ```
+
+`uses`/`last_used` are NOT part of this schema any more: the mechanical read
+counter lives entirely in the wiki's index store (`shapa.store`, keyed by
+root + note id), never in the file — a note is only ever rewritten when its
+own content changes (`shapa-backend-spec.md` §10 decision 7, "reads never
+write notes"). A note captured before this still carries `uses`/`last_used`
+lines; they are tolerated legacy (S03 only fires on a present-but-malformed
+value, never on their absence) and `shapa maintain --backfill` strips them.
 
 ### Frontmatter rules
 
@@ -62,7 +68,7 @@ uses: 0                      # mechanical read counter (set by record_use, never
 - `id` must match the filename stem exactly: `memory-genesis.md` → `id: memory-genesis`. This is error **F01**.
 - `type` must be one of the four values (`memory`, `rule`, `issue`, `reference`). Any other value is error **F02**.
 - `created` must be a valid ISO-8601 datetime string. Quote it in YAML. Absence is error **F03**.
-- `consequence`, `locus`, and `uses` are required (validated as S01, S02, S03 respectively — see the Scoring fields subsection below).
+- `consequence` and `locus` are required (validated as S01, S02 respectively — see the Scoring fields subsection below).
 
 ### Scoring fields (optional; validated when present)
 
@@ -70,8 +76,8 @@ A node's value to the consuming agent is scored from four fields (see §6.5; ful
 
 - `consequence` (1-10) — how much the agent's performance would degrade without this node. Set by the author at capture time; the engine does not compute it. Invalid range is error **S01**.
 - `locus` — `output` (changes the agent's answer), `output-meta` (changes how the agent works), or `meta` (changes the agent's self-governance). Drives a weight and is intended to drive retrieval policy. Invalid value is error **S02**.
-- `uses` — a non-negative integer incremented by `record_use` when the node file is read or used. Never set by a language model. Invalid value is error **S03**.
-- `last_used` — written automatically by `record_use`; drives freshness decay.
+- `uses` — a non-negative integer incremented by `record_use`, which lives in the index store (`shapa.store`), never in this file, when the node is read or used. Never set by a language model. A legacy in-file value is only ever read as a fallback for a note the store hasn't indexed; present-but-invalid is error **S03**.
+- `last_used` — bumped automatically alongside `uses`, in the same index store; drives freshness decay.
 
 Score = `locus_weight × (consequence / 10) × freshness × use_factor`, where freshness decays since `last_used` with a stability that grows with consequence, and `use_factor` rises with `uses`. Run `shapa score` (or `python3 -m shapa.score $SHAPA_MEMORY`) to rank notes.
 
@@ -167,7 +173,7 @@ It checks:
 - **F03** — `created` is present (and a valid ISO-8601 string).
 - **S01** — `consequence` is an integer in 1–10.
 - **S02** — `locus` is one of `output`, `output-meta`, or `meta`.
-- **S03** — `uses` is a non-negative integer.
+- **S03** — `uses`, when present, is a non-negative integer (absence is fine — legacy field, see §3).
 
 Schema v2 (§3.1) adds warnings-only checks for one release, promoted to
 errors after a one-time backfill — a note missing these never fails
