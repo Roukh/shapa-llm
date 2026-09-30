@@ -18,6 +18,13 @@ venv/
 # can appear under tests/fixtures/ when the suite runs with embeddings installed)
 .shapa-vectors.json
 
+# Sqlite index + daemon socket (shapa/store.py, shapa/serve.py) - generated
+# inside a wiki root, same rationale as the vectors sidecar above.
+.shapa-index.db
+.shapa-index.db-wal
+.shapa-index.db-shm
+.shapa-daemon.sock
+
 # Python build artifacts
 *.egg-info/
 build/

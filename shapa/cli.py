@@ -18,7 +18,10 @@ from pathlib import Path
 
 from shapa import __version__, config
 
-_SUBMODULES = ("bootstrap", "fetch", "capture", "maintain", "heartbeat", "score", "validate")
+_SUBMODULES = (
+    "bootstrap", "fetch", "capture", "maintain", "heartbeat", "score",
+    "validate", "serve",
+)
 
 #: Docs shipped with the tool and installed into a wiki by ``shapa init``:
 #: the ``AGENTS.md`` rules and the ``arch/`` project templates.
@@ -45,6 +48,7 @@ commands:
   heartbeat      prune orphan notes (--dry-run)
   score          rank notes by value (--use FILE to record a use)
   validate       validate note frontmatter
+  serve [ROOT]   run the optional warm per-root daemon (latency only)
 
 memory dir: ${'{'}SHAPA_MEMORY{'}'} or ~/.shapa/memory  (currently: {config.memory_dir()})
 """

@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from shapa import fetch, score
+from shapa import fetch, score, store
 
 FIX = Path(__file__).parent / "fixtures" / "fetch"
 
@@ -29,15 +29,45 @@ class TestFetch(unittest.TestCase):
         self.assertTrue(block.rstrip().endswith("</shapa-memory>"))
         self.assertIn("### f-meta (rule)", block)
 
-    def test_record_use_bumps_surfaced_notes(self):
+    def test_record_use_bumps_the_index_store_not_the_file(self):
+        # shapa-backend-spec.md §10 decision 7 ("reads never write notes"):
+        # a use bumps store.py's counter, keyed by (root, note id) - the
+        # note file itself is untouched, so `git status` on a wiki checkout
+        # stays clean after a fetch.
         tmp = Path(tempfile.mkdtemp())
         try:
             for f in FIX.glob("*.md"):
                 shutil.copy(f, tmp / f.name)
+            before = {f: f.read_bytes() for f in tmp.glob("*.md")}
             selected = fetch.select("testing", root=tmp, k=5)
             fetch.fetch_context("testing", root=tmp, record=True)
             for n, _ in selected:
-                self.assertEqual(score.score_node(tmp / f"{n.id}.md").uses, 1)
+                uses, last_used = store.get_use(tmp, n.id)
+                self.assertEqual(uses, 1)
+                self.assertIsNotNone(last_used)
+                # score.score_node still reads the file directly (legacy,
+                # untouched by this read path) - it must show the frontmatter
+                # value unchanged, never bumped by fetch.
+                self.assertEqual(score.score_node(tmp / f"{n.id}.md").uses, 0)
+            for f, contents in before.items():
+                self.assertEqual(f.read_bytes(), contents, f"{f} was written by a read path")
+        finally:
+            shutil.rmtree(tmp)
+
+    def test_live_use_count_feeds_scoring(self):
+        # fetch's own value ranking picks the bumped count back up from the
+        # store (§10 decision 7: "score.py reads them from there"), so the
+        # use signal stays live even though the file is never rewritten.
+        tmp = Path(tempfile.mkdtemp())
+        try:
+            for f in FIX.glob("*.md"):
+                shutil.copy(f, tmp / f.name)
+            for _ in range(60):
+                fetch.fetch_context("testing", root=tmp, record=True)
+            uses, _ = store.get_use(tmp, "f-out")
+            self.assertGreaterEqual(uses, 50)
+            data = fetch._load_root_data(tmp, "")
+            self.assertGreater(data.value["f-out"], score.score_meta(data.nodes["f-out"].meta)[0])
         finally:
             shutil.rmtree(tmp)
 

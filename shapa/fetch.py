@@ -19,15 +19,16 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from shapa import config, embed, frontmatter
+from shapa import config, embed, frontmatter, store
+from shapa.bm25 import bm25_scores as _bm25_scores
+from shapa.bm25 import words as _words
 from shapa.config import WikiRoot
 from shapa.nodes import Node, load_nodes
-from shapa.score import record_use, score_meta
+from shapa.score import score_meta
 
 DEFAULT_K = 8
 DEFAULT_BUDGET = 4000  # max total characters of surfaced snippets
@@ -50,51 +51,6 @@ ROOT_FLOOR_CHARS = 500
 #: than padding the result with a low-confidence guess. Needs calibration
 #: against a real prompt set (tracked as a follow-up - see the slice report).
 MIN_RELEVANCE_FRACTION = 0.3
-
-_WORD_RE = re.compile(r"[a-z][a-z0-9]{2,}")
-_STOP = {
-    "the", "and", "for", "with", "that", "this", "are", "but", "not", "you",
-    "its", "from", "into", "then", "they", "have", "has", "was", "will", "can",
-    "use", "uses", "used", "when", "where", "which", "what", "how", "any", "all",
-}
-_BM25_K1 = 1.5
-_BM25_B = 0.75
-
-
-def _words(text: str) -> list[str]:
-    return [w for w in _WORD_RE.findall(text.lower()) if w not in _STOP]
-
-
-def _bm25_scores(query: str, docs: dict[str, list[str]]) -> dict[str, float]:
-    """BM25 relevance of each doc (id -> tokens) to the query."""
-    q = set(_words(query))
-    if not q or not docs:
-        return {nid: 0.0 for nid in docs}
-    import math
-    from collections import Counter
-    n = len(docs)
-    lengths = {nid: len(toks) for nid, toks in docs.items()}
-    avgdl = (sum(lengths.values()) / n) or 1.0
-    df: Counter = Counter()
-    tfs: dict[str, Counter] = {}
-    for nid, toks in docs.items():
-        tf = Counter(toks)
-        tfs[nid] = tf
-        for t in set(toks) & q:
-            df[t] += 1
-    out = {}
-    for nid in docs:
-        tf = tfs[nid]
-        dl = lengths[nid] or 1
-        s = 0.0
-        for t in q:
-            if df[t] == 0 or tf[t] == 0:
-                continue
-            idf = math.log((n - df[t] + 0.5) / (df[t] + 0.5) + 1.0)
-            denom = tf[t] + _BM25_K1 * (1 - _BM25_B + _BM25_B * dl / avgdl)
-            s += idf * (tf[t] * (_BM25_K1 + 1)) / denom
-        out[nid] = s
-    return out
 
 
 def _snippet(body: str, limit: int = SNIPPET_CHARS) -> str:
@@ -147,7 +103,23 @@ def _load_root_data(root: Path, query: str) -> _RootData:
     else:
         rel = _bm25_scores(query, docs)
 
-    value = {nid: score_meta(node.meta)[0] for nid, node in nodes.items()}
+    # Value scoring reads the ``uses``/``last_used`` signal from the index
+    # store, not the note's own frontmatter (shapa-backend-spec.md §10
+    # decision 7, "reads never write notes"): fetch used to bump these
+    # fields on every surfaced note (a write on a read path, and a
+    # counter-only diff on every touched file); now the counters live in
+    # ``store.py`` (Slice 5) and this is where score.py's formula picks
+    # them back up so the use signal stays live without touching the file.
+    # A note store.py hasn't indexed yet (uses=0, last_used=None) simply
+    # falls back to whatever the frontmatter itself says.
+    live_uses = store.get_all_uses(root)
+    value = {}
+    for nid, node in nodes.items():
+        uses, last_used = live_uses.get(nid, (0, None))
+        meta = node.meta
+        if uses or last_used:
+            meta = {**node.meta, "uses": uses, "last_used": last_used or node.meta.get("last_used")}
+        value[nid] = score_meta(meta)[0]
     return _RootData(nodes=nodes, bodies=bodies, rel=rel, value=value)
 
 
@@ -228,6 +200,12 @@ class Selection:
     items: list
     no_match: bool = False
     collisions: list[str] = field(default_factory=list)
+    #: node id -> the wiki root directory it was loaded from. Not part of
+    #: ``items``' own shape (existing callers/tests unpack ``(node, snippet)``
+    #: pairs and must keep working unchanged) - this is purely so
+    #: :func:`fetch_context` knows which per-root store (shapa-backend-spec.md
+    #: §10 decision 7) to record a use against.
+    item_roots: dict[str, Path] = field(default_factory=dict)
 
 
 def select_multi(query: str, start=None, roots: list[WikiRoot] | None = None,
@@ -331,6 +309,7 @@ def select_multi(query: str, start=None, roots: list[WikiRoot] | None = None,
 
     out: list = []
     used = 0
+    item_roots: dict[str, Path] = {}
 
     # Phase 1: anchors, unconditional (root order, capped only by k).
     for wr, nid in anchor_order:
@@ -339,6 +318,7 @@ def select_multi(query: str, start=None, roots: list[WikiRoot] | None = None,
         data = per_root[wr]
         snip = _snippet(data.bodies[nid].strip())
         out.append((data.nodes[nid], snip))
+        item_roots[data.nodes[nid].id] = Path(wr.path)
         used += len(snip)
 
     # Phase 2: each root's proportional-floor reserve, ignoring the total
@@ -357,6 +337,7 @@ def select_multi(query: str, start=None, roots: list[WikiRoot] | None = None,
             if root_used + snip_len > per_root_reserve and root_used > 0:
                 break
             out.append((data.nodes[nid], _snippet(data.bodies[nid].strip())))
+            item_roots[data.nodes[nid].id] = Path(wr.path)
             used += snip_len
             root_used += snip_len
             i += 1
@@ -377,9 +358,10 @@ def select_multi(query: str, start=None, roots: list[WikiRoot] | None = None,
         if out and used + len(snip) > budget:
             continue
         out.append((data.nodes[nid], snip))
+        item_roots[data.nodes[nid].id] = Path(wr.path)
         used += len(snip)
 
-    return Selection(items=out, no_match=no_match, collisions=collisions)
+    return Selection(items=out, no_match=no_match, collisions=collisions, item_roots=item_roots)
 
 
 def fetch_context(query: str, root=None, start=None, roots: list[WikiRoot] | None = None,
@@ -390,12 +372,16 @@ def fetch_context(query: str, root=None, start=None, roots: list[WikiRoot] | Non
     With an explicit *root*, searches just that one directory (unchanged).
     Otherwise fans out across every wiki in scope via :func:`select_multi`
     (*start*/*roots* forwarded to it) - the live hook default."""
+    resolved_root = None
+    item_roots: dict[str, Path] = {}
     if root is not None:
+        resolved_root = config.resolve(root)
         selected = select(query, root=root, k=k, budget=budget)
         no_match, collisions = False, []
     else:
         selection = select_multi(query, start=start, roots=roots, k=k, budget=budget)
         selected, no_match, collisions = selection.items, selection.no_match, selection.collisions
+        item_roots = selection.item_roots
 
     if not selected and not no_match and not collisions:
         return ""
@@ -416,10 +402,17 @@ def fetch_context(query: str, root=None, start=None, roots: list[WikiRoot] | Non
     lines.append("</shapa-memory>")
 
     if record:
+        # A use bumps the index store's counter (shapa-backend-spec.md §10
+        # decision 7, "reads never write notes"), never the note file itself
+        # - fetch is a read path, and a note now changes only when its own
+        # content does.
         for node, _ in selected:
+            use_root = resolved_root if resolved_root is not None else item_roots.get(node.id)
+            if use_root is None:
+                continue
             try:
-                record_use(node.path)
-            except (OSError, ValueError):
+                store.record_use(use_root, node.id)
+            except OSError:
                 pass  # never let scoring bookkeeping break the prompt
 
     return "\n".join(lines)
