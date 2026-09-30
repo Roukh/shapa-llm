@@ -20,7 +20,15 @@ dependencies = []  # core engine is pure standard library
 
 [project.optional-dependencies]
 # Activates local semantic embeddings for fetch + maintain (else BM25/Jaccard).
+# `semantic` is the current name (shapa-backend-spec.md §3); `embeddings` is
+# kept as a deprecated alias with identical deps for one release.
+semantic = ["sentence-transformers>=2.2.0"]
 embeddings = ["sentence-transformers>=2.2.0"]
+# Reserved for the MCP stdio server (shapa-backend-spec.md §7.1, Slice 6) -
+# no package pinned yet since shapa/mcp.py doesn't exist; `pip install
+# shapa[mcp]` today installs the base package only. bootstrap.sh's extras
+# prompt already offers it so the flag name is stable ahead of that slice.
+mcp = []
 
 [project.scripts]
 shapa = "shapa.cli:main"

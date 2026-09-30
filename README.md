@@ -62,13 +62,17 @@ One line — installs the tool and wires the Claude Code hooks (no clone):
 curl -fsSL https://raw.githubusercontent.com/Roukh/shapa-llm/main/bootstrap.sh | sh
 ```
 
-It installs `shapa` (pipx > uv > pip --user), wires the fetch/capture/maintain
-hooks, and scaffolds the default global wiki. `SHAPA_EMBEDDINGS=1` adds local
-embeddings; `SHAPA_NO_HOOKS=1` installs the tool only. Or install by hand:
+It installs `shapa` (pipx > uv > pip --user) and wires the bootstrap/fetch/
+capture/maintain hooks, and scaffolds the default global wiki. When stdin is a
+TTY it asks whether to add semantic search and/or MCP server support; piped
+(`curl | sh`, no TTY) it installs the core (BM25-only) and prints the exact
+follow-up command instead of guessing. Skip the prompt outright:
+`sh -s -- --with-semantic` (or `--with-mcp` / `--full`). `SHAPA_NO_HOOKS=1`
+installs the tool only, no hooks. Or install by hand:
 
 ```
-pipx install shapa                 # the tool (semantic retrieval via BM25)
-pipx install "shapa[embeddings]"   # + local embeddings (sentence-transformers)
+pipx install shapa                # the tool (retrieval via BM25)
+pipx install "shapa[semantic]"    # + local embeddings (sentence-transformers)
 ```
 
 ### Where memory lives
@@ -122,7 +126,7 @@ shapa-llm/
     config.py            ← wiki resolution (local shapa/ · $SHAPA_MEMORY · pointer · default)
     cli.py               ← the unified `shapa` command (incl. `init`)
     frontmatter.py · nodes.py · heartbeat.py · validate.py · score.py
-    fetch.py · capture.py · maintain.py · embed.py
+    bootstrap.py · fetch.py · capture.py · maintain.py · embed.py
     assets/              ← docs installed into every wiki by `shapa init`
       AGENTS.md          ← the schema and rules (also the wiki marker)
       arch/              ← generic project templates (PRD, architecture, system-design)
@@ -167,6 +171,7 @@ One heartbeat cycle (`shapa/heartbeat.py`) runs two phases over the wikilink gra
 
 | Event | Command | Purpose |
 |-------|---------|---------|
+| `SessionStart` | `shapa bootstrap` | Read path — once per session, a metadata-only overview (id/type/summary, never bodies) of every wiki in scope, within a small token budget. |
 | `UserPromptSubmit` | `shapa fetch` | Read path — surfaces the most relevant, highest-scored notes at the start of each prompt; calls `record_use` on each. |
 | `Stop` | `shapa capture` | Write path — distils the finished session into one memory note (heuristic, stdlib-only; no LLM salience judgement), linked into the graph. |
 | `Stop` | `shapa maintain --prune` | Prunes orphans/stale notes and auto-merges near-duplicates. |

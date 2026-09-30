@@ -8,6 +8,7 @@
 # $SHAPA_MEMORY or ~/.shapa/memory - private notes never live in the repo.
 #
 # Hooks installed (idempotent):
+#   SessionStart     -> shapa bootstrap         (read: metadata-only overview, once/session)
 #   UserPromptSubmit -> shapa fetch             (read: relevant memory)
 #   Stop             -> shapa capture           (write: distil the session)
 #   Stop             -> shapa maintain --prune   (prune orphans/stale + merge dupes)
@@ -50,9 +51,9 @@ resolve_shapa() {
   local vbin="$REPO_DIR/.venv/bin/shapa"
   if [ -x "$vbin" ]; then echo "$vbin"; return; fi
   if [ "$NO_EMBEDDINGS" -eq 0 ] && [ "$DRY_RUN" -eq 0 ]; then
-    echo "Setting up repo .venv with shapa + embeddings (one-time)..." >&2
+    echo "Setting up repo .venv with shapa + semantic extras (one-time)..." >&2
     python3 -m venv "$REPO_DIR/.venv" >&2 2>&1 || true
-    "$REPO_DIR/.venv/bin/pip" install --quiet -e "$REPO_DIR"'[embeddings]' >&2 2>&1 || \
+    "$REPO_DIR/.venv/bin/pip" install --quiet -e "$REPO_DIR"'[semantic]' >&2 2>&1 || \
       "$REPO_DIR/.venv/bin/pip" install --quiet -e "$REPO_DIR" >&2 2>&1 || true
     [ -x "$vbin" ] && { echo "$vbin"; return; }
   fi
@@ -64,12 +65,13 @@ INV="$(resolve_shapa)"
 # shapa/config.py). We deliberately do NOT bake SHAPA_MEMORY into the hook
 # command: that way a later `shapa init /new/path` moves the wiki and the hooks
 # follow it automatically, instead of silently reading the old baked-in path.
+BOOTSTRAP_CMD="$INV bootstrap"
 FETCH_CMD="$INV fetch"
 CAPTURE_CMD="$INV capture"
 MAINTAIN_CMD="$INV maintain --prune"
 
-EVENTS=("UserPromptSubmit" "Stop"         "Stop"          "SubagentStop")
-CMDS=(  "$FETCH_CMD"        "$CAPTURE_CMD" "$MAINTAIN_CMD" "$CAPTURE_CMD")
+EVENTS=("SessionStart"    "UserPromptSubmit" "Stop"         "Stop"          "SubagentStop")
+CMDS=(  "$BOOTSTRAP_CMD"  "$FETCH_CMD"        "$CAPTURE_CMD" "$MAINTAIN_CMD" "$CAPTURE_CMD")
 
 mkdir -p "$(dirname "$SETTINGS")"; [ -f "$SETTINGS" ] || echo '{}' > "$SETTINGS"
 
@@ -131,6 +133,7 @@ wire_obsidian
 
 [ "$DRY_RUN" -eq 1 ] && exit 0
 echo "Installed shapa hooks into $SETTINGS (memory: $MEMORY):"
+echo "  SessionStart     -> $INV bootstrap"
 echo "  UserPromptSubmit -> $INV fetch"
 echo "  Stop             -> $INV capture ; $INV maintain --prune"
 echo "  SubagentStop     -> $INV capture"

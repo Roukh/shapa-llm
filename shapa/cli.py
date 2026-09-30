@@ -18,7 +18,7 @@ from pathlib import Path
 
 from shapa import __version__, config
 
-_SUBMODULES = ("fetch", "capture", "maintain", "heartbeat", "score", "validate")
+_SUBMODULES = ("bootstrap", "fetch", "capture", "maintain", "heartbeat", "score", "validate")
 
 #: Docs shipped with the tool and installed into a wiki by ``shapa init``:
 #: the ``AGENTS.md`` rules and the ``arch/`` project templates.
@@ -36,6 +36,8 @@ commands:
                  dot-folder wiki instead — discovery checks .shapa/ before
                  the legacy shapa/ name at every ancestor directory.
   where          print the memory directory path
+  bootstrap      session-start metadata-only overview of every wiki in
+                 scope (SessionStart hook; id/type/summary only, no bodies)
   fetch          surface relevant memory for a prompt (read path)
   capture        distil a finished session into a note (write path)
   maintain       self-heal: auto-merge dupes, prune orphans/stale
