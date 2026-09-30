@@ -10,6 +10,15 @@ requests as a memory, it does not call a language model to judge salience. A
 smarter LLM-distilled mode could be layered on later. It is write-only toward
 the agent and always exits 0, so it never blocks.
 
+Where the note lands is scope-aware (spec §8 Slice 7): ``--scope
+{global,repo,external}`` picks the target explicitly (``external`` needs
+``--applies-to REPO``), and is inferred - unambiguously, never guessed -
+when omitted: ``repo`` if the cwd sits inside a repo-local wiki, else
+``global``. Unlike ``shapa save`` (the explicit, agent-invoked write path,
+``shapa/save.py``), an unresolvable target here never errors out - it
+degrades to the ordinary repo/global fallback so the hook still never
+blocks the agent.
+
 Hook usage (stdin JSON from Stop/SubagentStop):
     echo '{"transcript_path":"...","session_id":"abc"}' | python3 -m shapa.capture
 """
@@ -29,6 +38,14 @@ from shapa.nodes import load_nodes
 from shapa.validate import validate_node
 
 DEDUP_THRESHOLD = 0.9  # containment: skip if this much of the new note already exists
+
+#: The scopes a manual capture invocation may target (spec §8 Slice 7). This
+#: is the Stop-hook's own scope-aware write path - see `shapa/save.py` for
+#: the explicit, agent-invoked equivalent (`shapa save`), which shares the
+#: same "external" convenience but surfaces a bad target as a clear error
+#: instead of falling back, since a manual save is not a hook that must
+#: never block.
+CAPTURE_SCOPES = ("global", "repo", "external")
 
 _WORD_RE = re.compile(r"[a-z][a-z0-9-]{2,}")
 
@@ -85,10 +102,38 @@ def _topic_links(summary: str, existing_ids: set[str], k: int = 6) -> list[str]:
     return hits[:k]
 
 
+def _resolve_scope_root(scope: str | None, applies_to: str | None,
+                        start: str | None = None) -> Path:
+    """Resolve where a capture note should land for *scope*, inferring it
+    (unambiguously - the same rule ``shapa.save.infer_scope`` uses) when
+    not given: ``repo`` if *start* sits inside a repo-local wiki, else
+    ``global``. Never raises, and never leaves the hook with nowhere to
+    write: an ``external`` target with no ``--applies-to``, or a named repo
+    that can't be found, falls back to the ordinary repo/global resolution
+    rather than blocking - unlike `shapa save`, this is a hook, not a
+    manual write, and must never fail loudly (module docstring)."""
+    if scope is None:
+        scope = "repo" if config.discover(start) is not None else "global"
+    if scope == "global":
+        return config.global_root()
+    if scope == "external" and applies_to:
+        repo_path = config.find_sibling_repo(applies_to, start)
+        if repo_path is not None:
+            return config.discover(repo_path) or (repo_path / ".shapa")
+    # scope == "repo", or an unresolvable "external" target.
+    return config.discover(start) or config.global_root()
+
+
 def capture_session(transcript_path: str, session_id: str, root=None,
-                    now: datetime | None = None) -> Path | None:
-    """Write/update the per-session memory note. Returns the path, or None."""
-    root = config.resolve(root)
+                    now: datetime | None = None,
+                    scope: str | None = None, applies_to: str | None = None) -> Path | None:
+    """Write/update the per-session memory note. Returns the path, or None.
+
+    *root*, when given, is an explicit override (used by tests/manual runs)
+    that bypasses scope resolution entirely - unchanged from before *scope*
+    existed. Otherwise the target is resolved from *scope* (default:
+    inferred - see :func:`_resolve_scope_root`)."""
+    root = config.resolve(root) if root is not None else _resolve_scope_root(scope, applies_to)
     root.mkdir(parents=True, exist_ok=True)
     now = now or datetime.now(timezone.utc)
 
@@ -159,7 +204,15 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--transcript", help="Transcript .jsonl path (manual test).")
     parser.add_argument("--session", default="manual", help="Session id (manual test).")
     parser.add_argument("--root", default=None,
-                        help="Memory directory (default: $SHAPA_MEMORY or ~/.shapa/memory).")
+                        help="Memory directory (default: $SHAPA_MEMORY or ~/.shapa/memory). "
+                             "Overrides --scope entirely when given.")
+    parser.add_argument("--scope", choices=CAPTURE_SCOPES, default=None,
+                        help="Where the note is written (manual test/override). Default: "
+                             "infer - 'repo' if cwd is inside a repo-local wiki, else "
+                             "'global'. Ignored when --root is given.")
+    parser.add_argument("--applies-to", default=None, metavar="REPO",
+                        help="With --scope external: write into a different repo's own "
+                             "wiki by name.")
     args = parser.parse_args(argv)
 
     transcript = args.transcript
@@ -175,7 +228,8 @@ def main(argv: list[str] | None = None) -> None:
 
     try:
         if transcript:
-            capture_session(transcript, session, root=args.root)
+            capture_session(transcript, session, root=args.root,
+                            scope=args.scope, applies_to=args.applies_to)
     except Exception:
         pass  # never block the agent
     sys.exit(0)

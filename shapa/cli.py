@@ -19,7 +19,7 @@ from pathlib import Path
 from shapa import __version__, config
 
 _SUBMODULES = (
-    "bootstrap", "fetch", "capture", "maintain", "heartbeat", "score",
+    "bootstrap", "fetch", "capture", "save", "maintain", "heartbeat", "score",
     "validate", "serve", "mcp",
 )
 
@@ -43,6 +43,8 @@ commands:
                  scope (SessionStart hook; id/type/summary only, no bodies)
   fetch          surface relevant memory for a prompt (read path)
   capture        distil a finished session into a note (write path)
+  save           write one note explicitly (--scope global|repo|external,
+                 --applies-to REPO for external; see shapa/assets/placement.md)
   maintain       self-heal: auto-merge dupes, prune orphans/stale
                  (--prune, --resolve, --dry-run, --merge-threshold)
   heartbeat      prune orphan notes (--dry-run)

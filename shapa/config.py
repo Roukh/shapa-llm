@@ -241,3 +241,31 @@ def wiki_roots(start: str | Path | None = None) -> list[WikiRoot]:
         roots.append(WikiRoot(path=g_root, kind="global"))
 
     return roots
+
+
+def find_sibling_repo(name: str, start: str | Path | None = None) -> Path | None:
+    """Find another repo's checkout by *name* - no hardcoded repo list
+    anywhere (spec §10 decision 4's ``--applies-to``/``scope: external``).
+
+    Looks for a directory literally named *name* that is itself a git
+    checkout (has ``.git``), one level above *start*'s own git checkout -
+    the flat multi-repo workspace layout ``wiki_roots()``'s ``external/``
+    bucket already assumed (or, if *start* is not itself inside a git
+    checkout, one level above *start*). Returns ``None`` - never guesses,
+    never falls back to the global wiki - if no such directory exists.
+    """
+    if not name:
+        return None
+    try:
+        here = Path(start).resolve() if start is not None else Path.cwd().resolve()
+    except OSError:
+        return None
+    git_root = _git_toplevel(here)
+    workspace = git_root.parent if git_root is not None else here
+    candidate = workspace / name
+    try:
+        if candidate.is_dir() and (candidate / ".git").exists():
+            return candidate.resolve()
+    except OSError:
+        return None
+    return None
