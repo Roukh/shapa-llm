@@ -284,6 +284,15 @@ wire_obsidian() {
   echo "Registered Obsidian vault: $MEMORY"
 }
 
+# Bootstrap the settings file's directory/contents before either path below
+# touches it - install writes hooks into it, uninstall reads-then-rewrites it
+# via write_settings()'s mktemp+mv, which fails if dirname($SETTINGS) doesn't
+# exist yet (e.g. a fresh machine, or one only ever wired for codex/opencode).
+# Runs for BOTH --uninstall and install, same as before harnesses existed.
+if harness_in_scope claude; then
+  mkdir -p "$(dirname "$SETTINGS")"; [ -f "$SETTINGS" ] || echo '{}' > "$SETTINGS"
+fi
+
 if [ "$UNINSTALL" -eq 1 ]; then
   if harness_in_scope claude; then
     MERGED="$(cat "$SETTINGS" 2>/dev/null || echo '{}')"
@@ -306,7 +315,6 @@ fi
 [ "$DRY_RUN" -eq 0 ] && { mkdir -p "$MEMORY"; "$INV" init "$MEMORY" >/dev/null 2>&1 || true; }
 
 if harness_in_scope claude; then
-  mkdir -p "$(dirname "$SETTINGS")"; [ -f "$SETTINGS" ] || echo '{}' > "$SETTINGS"
   MERGED="$(cat "$SETTINGS")"
   for i in "${!EVENTS[@]}"; do
     ev="${EVENTS[$i]}"; cmd="${CMDS[$i]}"

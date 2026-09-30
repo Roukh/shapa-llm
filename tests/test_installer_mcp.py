@@ -292,6 +292,26 @@ class TestUninstall(InstallShTestCase):
         self.run_install(["--uninstall", "--no-mcp"])
         self.assertTrue(self.claude_marker.exists(), "--no-mcp on --uninstall must skip MCP cleanup")
 
+    def test_uninstall_when_settings_parent_dir_does_not_exist(self):
+        # Regression: a fresh machine that never ran plain install (or one
+        # only ever wired for codex/opencode) has no ~/.claude dir at all.
+        # write_settings()'s mktemp+mv would fail with "No such file or
+        # directory" under set -euo pipefail unless the settings dir is
+        # bootstrapped before the uninstall branch runs, same as install.
+        missing_parent_settings = self.tmp / "no-such-dir" / "settings.json"
+        self.assertFalse(missing_parent_settings.parent.exists())
+        cmd = ["bash", str(INSTALL_SH), "--settings", str(missing_parent_settings),
+               "--uninstall", "--no-embeddings"]
+        result = subprocess.run(
+            cmd, env=self._env(), cwd=str(self.tmp), input="",
+            capture_output=True, text=True, timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(missing_parent_settings.exists())
+        self.assertEqual(
+            json.loads(missing_parent_settings.read_text(encoding="utf-8")), {}
+        )
+
 
 # --- bootstrap.sh: flag forwarding only (never a real network install) -----
 
