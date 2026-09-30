@@ -192,6 +192,87 @@ class TestRootShareNeverStarves(FetchMultirootTestCase):
         self._assert_every_root_represented(5)
 
 
+class TestGlobalFusedRelevanceOrderNotPreempted(FetchMultirootTestCase):
+    """2026-09-30 regression: the per-root proportional-floor fill used to
+    reserve each root's share, in per-root order, BEFORE any cross-root
+    relevance comparison ran at all - so a strong global match could be
+    pushed below weaker repo-local notes just because the repo root was
+    processed (and filled its reserve) first. Measured against the real
+    global wiki + per-repo wikis (7 real prompts, 16 on-topic prompt/repo
+    pairs, repo processed before global - matching real discovery order):
+    the globally-best note landed outside the top 3 in 15 of 16 cases.
+
+    Fix: output order is the global fused-relevance order across every
+    root; the per-root floor is only a guarantee that a root with a
+    relevant note is represented SOMEWHERE in the ``k`` results (never
+    zero), applied by displacing the lowest-ranked tail item(s) already
+    selected - never pre-empting a higher-scoring note from the top ranks.
+
+    Fixture: a repo root (processed FIRST, as real discovery orders it -
+    most-specific first) holds one weak, barely-relevant note (shares only
+    "rollback" with the query, diluted by padding words) plus one
+    unrelated decoy; the global root (processed second) holds the single
+    best match plus two partial-overlap fillers that outscore the repo's
+    note on raw relevance. Pre-fix, repo-first processing would have put
+    the repo's own (weaker) note ahead of the global root's stronger
+    fillers/best match purely by iteration order; this asserts the
+    corrected contract instead."""
+
+    def _fixture(self):
+        global_wiki = self.tmp / "global"
+        config.set_memory_dir(global_wiki)
+        _note(global_wiki, "global-strong", "database migration rollback safety procedure")
+        _note(global_wiki, "global-filler-1", "database migration rollback procedure")
+        _note(global_wiki, "global-filler-2", "database migration safety")
+
+        repo = _make_git_repo(self.tmp / "repoA")
+        repo_wiki = _make_repo_wiki(repo)
+        _note(repo_wiki, "repo-weak",
+              "rollback mentioned briefly here for context padding words extra")
+        _note(repo_wiki, "repo-decoy", "unrelated decoy content about gardening")
+        return repo
+
+    def test_strong_global_match_ranks_first_above_weaker_repo_notes(self):
+        repo = self._fixture()
+        selection = fetch.select_multi(
+            "database migration rollback safety procedure", start=repo, k=3,
+        )
+        ids = [n.id for n, _ in selection.items]
+        self.assertEqual(ids[0], "global-strong")
+
+    def test_weaker_repo_local_note_still_appears_within_k(self):
+        # k=3 is smaller than the number of candidates that clear the
+        # confidence floor (4) and repo-weak ranks LAST of the four on raw
+        # relevance - without the inclusion guarantee it would be squeezed
+        # out entirely (the pre-fix per-root-reserve bug this regresses
+        # against ran the opposite direction: it could squeeze out the
+        # STRONGER global notes instead, by filling the repo's reserve
+        # first). Either failure mode is wrong; this asserts repo-weak is
+        # guaranteed a seat without displacing global-strong/global-filler-1
+        # (the two candidates that actually outrank it).
+        repo = self._fixture()
+        selection = fetch.select_multi(
+            "database migration rollback safety procedure", start=repo, k=3,
+        )
+        ids = [n.id for n, _ in selection.items]
+        self.assertIn("repo-weak", ids)
+        self.assertEqual(ids, ["global-strong", "global-filler-1", "repo-weak"])
+
+    def test_full_k_shows_pure_global_relevance_order(self):
+        # With k large enough for every candidate that clears the
+        # confidence floor, no displacement is needed at all - the result
+        # is exactly the global fused-relevance order, repo-weak included
+        # on its own (last-place) merit rather than any guarantee.
+        repo = self._fixture()
+        selection = fetch.select_multi(
+            "database migration rollback safety procedure", start=repo, k=8,
+        )
+        ids = [n.id for n, _ in selection.items]
+        self.assertEqual(
+            ids, ["global-strong", "global-filler-1", "global-filler-2", "repo-weak"],
+        )
+
+
 class TestConfidenceFloorNoPaddedFiller(FetchMultirootTestCase):
     """An off-topic prompt (no term overlap anywhere) gets the GAP F
     no-match fallback - at most ONE short locus:meta pointer line (never

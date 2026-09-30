@@ -35,10 +35,16 @@ DEFAULT_BUDGET = 4000  # max total characters of surfaced snippets
 SNIPPET_CHARS = 500    # per-note snippet length (a digest, not the whole doc)
 
 # --- multi-root merge (shapa-backend-spec.md §4.1) --------------------------
-#: Minimum characters guaranteed to each root's relevance-ranked fill before
-#: any leftover budget is handed to cross-root relevance - the proportional-
-#: floor fix for anchor/budget starvation as root count grows (§4.1). Actual
-#: per-root reservation is ``max(ROOT_FLOOR_CHARS, budget // len(roots))``.
+#: Minimum characters a root's OWN best "value" candidate may claim before
+#: the value-mode fill turns to cross-root value order (§4.1's original
+#: mechanism, kept for :func:`select_multi`'s ``mode == "value"`` branch
+#: only - the empty-query/manual-CLI path, never the live per-prompt hook,
+#: which always carries prompt text). Actual per-root reservation is
+#: ``max(ROOT_FLOOR_CHARS, budget // len(roots))``.
+#:
+#: ``mode == "relevance"`` (every real per-prompt fetch) does NOT use this
+#: constant at all - see :func:`select_multi`'s 2026-09-30 fix note below
+#: (the floor there is a rank-inclusion guarantee, not a char reservation).
 ROOT_FLOOR_CHARS = 500
 #: Confidence floor (operator decision, 2026-09-30 §10.2): percentile-
 #: relative, not a fixed score. A candidate must score at least this fraction
@@ -375,10 +381,29 @@ def select_multi(query: str, start=None, roots: list[WikiRoot] | None = None,
     unconditionally, at session start by ``shapa.bootstrap``, so re-showing
     the identical note on every single per-prompt fetch regardless of
     relevance would only burn budget a genuinely relevant note could use
-    instead. The relevance-ranked fill is proportional-with-a-floor: each
-    root gets ``max(ROOT_FLOOR_CHARS, budget // len(roots))`` of guaranteed
-    room *before* any leftover budget goes to cross-root relevance, so no
-    root's share collapses to zero as root count grows. Candidates below
+    instead.
+
+    **2026-09-30 fix (post-GAP-F, see the module-level docstring above on
+    that fix):** the relevance-ranked fill's output order IS the global
+    fused-relevance order - every candidate that clears the confidence
+    floor, from every root, ranked together by ``(rel, value)`` and walked
+    once. The per-root guarantee ("every root that has a relevant note gets
+    at least one seen somewhere among the ``k`` results") is exactly that -
+    an INCLUSION guarantee, never a pre-emption of rank: it only acts when
+    the global walk would otherwise leave a root at zero, and it acts by
+    displacing the lowest-ranked tail item(s) already selected, never a
+    higher-scoring one. The old mechanism (kept below for ``mode ==
+    "value"`` only) reserved each root a proportional CHARACTER budget and
+    filled it in per-root order *before* any cross-root comparison ran at
+    all - so with ``k`` small enough that the first-processed root's own
+    reserve alone filled it (the common case: 2 roots, ``DEFAULT_K=8``,
+    ~4 short notes per root's reserve), the second root's candidates never
+    even entered the comparison, regardless of how much more relevant they
+    were than the first root's. Measured against the real global wiki +
+    per-repo wikis (7 real prompts, 16 on-topic prompt/repo pairs): that bug
+    put the globally-best note outside the top 3 in 15 of 16 cases (still
+    inside the top 8 in all 16 - the old floor's inclusion guarantee itself
+    was never broken, only its RANK). Candidates below
     the percentile-relative confidence floor (:data:`MIN_RELEVANCE_FRACTION`
     of the single best fused score) never enter the fill at all, AND the
     single best RAW per-modality score anywhere must clear
@@ -502,45 +527,117 @@ def select_multi(query: str, start=None, roots: list[WikiRoot] | None = None,
             candidates.sort(key=lambda nid: (-data.value[nid], nid))
         rest_by_root[wr] = candidates
 
-    # Phase 1: each root's proportional-floor reserve, ignoring the total
-    # budget - this is the guarantee that a root's share never hits zero.
-    n_roots = len(wiki_roots)
-    per_root_reserve = max(ROOT_FLOOR_CHARS, budget // n_roots) if n_roots else budget
-    leftover: list[tuple[WikiRoot, str]] = []
-    for wr in wiki_roots:
-        data = per_root[wr]
-        cands = rest_by_root[wr]
-        root_used = 0
-        i = 0
-        while i < len(cands) and len(out) < k:
-            nid = cands[i]
-            snip_len = len(_snippet(data.bodies[nid].strip()))
-            if root_used + snip_len > per_root_reserve and root_used > 0:
-                break
-            out.append((data.nodes[nid], _snippet(data.bodies[nid].strip())))
-            item_roots[data.nodes[nid].id] = Path(wr.path)
-            used += snip_len
-            root_used += snip_len
-            i += 1
-        leftover.extend((wr, nid) for nid in cands[i:])
+    def _slen(wr: WikiRoot, nid: str) -> int:
+        return len(_snippet(per_root[wr].bodies[nid].strip()))
 
-    # Phase 2: whatever total budget remains, filled by cross-root relevance
-    # (or value, in "value" mode) - the remainder §4.1 describes.
     if mode == "relevance":
-        leftover.sort(key=lambda pair: (-per_root[pair[0]].rel[pair[1]],
-                                         -per_root[pair[0]].value[pair[1]]))
-    else:  # mode == "value"
+        # --- 2026-09-30 fix: global fused-relevance order, per-root floor
+        # is an INCLUSION guarantee only (see the docstring above) --------
+        # One flat candidate list across every root, already filtered to
+        # the confidence floor by `rest_by_root` above, sorted by the exact
+        # same key each root used locally - now compared cross-root. Ties
+        # break toward the most-specific root (`wiki_roots.index`), then id.
+        ranked: list[tuple[WikiRoot, str]] = [
+            (wr, nid) for wr in wiki_roots for nid in rest_by_root[wr]
+        ]
+        ranked.sort(key=lambda p: (
+            -per_root[p[0]].rel[p[1]], -per_root[p[0]].value[p[1]],
+            wiki_roots.index(p[0]), p[1],
+        ))
+
+        included: list[tuple[WikiRoot, str]] = []
+        for wr, nid in ranked:
+            if len(included) >= k:
+                break
+            slen = _slen(wr, nid)
+            if included and used + slen > budget:
+                continue
+            included.append((wr, nid))
+            used += slen
+
+        # Inclusion guarantee: any root with at least one candidate that
+        # cleared the confidence floor gets one of them somewhere in `k` -
+        # never zero - even if every one of its candidates ranked below the
+        # global top-`k` cutoff above. Applied by displacing the LOWEST-
+        # ranked tail item(s) already included (preferring a tail item
+        # whose root already has more than one representative, so this
+        # guarantee for one root never silently zeroes another); it never
+        # touches - never even looks at - anything ranked ahead of it.
+        represented = {wr for wr, _ in included}
+        for wr in wiki_roots:
+            if wr in represented or not rest_by_root[wr]:
+                continue
+            best_nid = rest_by_root[wr][0]
+            best_len = _slen(wr, best_nid)
+            if len(included) < k:
+                included.append((wr, best_nid))
+                used += best_len
+                represented.add(wr)
+                continue
+            counts: dict[WikiRoot, int] = {}
+            for iwr, _ in included:
+                counts[iwr] = counts.get(iwr, 0) + 1
+            displace_at = None
+            for i in range(len(included) - 1, -1, -1):
+                if counts[included[i][0]] > 1:
+                    displace_at = i
+                    break
+            if displace_at is None:
+                # Every current item is its own root's sole representative
+                # (e.g. k == n_roots) - there is no tail item to displace
+                # without zeroing a DIFFERENT root instead. Still honor
+                # this root's own guarantee via the lowest-ranked slot;
+                # see the docstring's "never a higher-scoring one" - that
+                # invariant holds here too, this is still the tail.
+                displace_at = len(included) - 1
+            removed_wr, removed_nid = included.pop(displace_at)
+            used -= _slen(removed_wr, removed_nid)
+            included.append((wr, best_nid))
+            used += best_len
+            represented.add(wr)
+
+        included_set = set(included)
+        # Re-derive the final order from `ranked` (global order), not from
+        # the order items were appended above, so a floor-guaranteed item
+        # lands at its own rank rather than at the tail.
+        for wr, nid in ranked:
+            if (wr, nid) in included_set:
+                out.append((per_root[wr].nodes[nid], _snippet(per_root[wr].bodies[nid].strip())))
+                item_roots[per_root[wr].nodes[nid].id] = Path(wr.path)
+    else:  # mode == "value" - unchanged §4.1 proportional-floor fill: the
+        # empty-query/manual-CLI path only (a live per-prompt hook call
+        # always carries prompt text, so this branch never sees that path).
+        n_roots = len(wiki_roots)
+        per_root_reserve = max(ROOT_FLOOR_CHARS, budget // n_roots) if n_roots else budget
+        leftover: list[tuple[WikiRoot, str]] = []
+        for wr in wiki_roots:
+            data = per_root[wr]
+            cands = rest_by_root[wr]
+            root_used = 0
+            i = 0
+            while i < len(cands) and len(out) < k:
+                nid = cands[i]
+                snip_len = _slen(wr, nid)
+                if root_used + snip_len > per_root_reserve and root_used > 0:
+                    break
+                out.append((data.nodes[nid], _snippet(data.bodies[nid].strip())))
+                item_roots[data.nodes[nid].id] = Path(wr.path)
+                used += snip_len
+                root_used += snip_len
+                i += 1
+            leftover.extend((wr, nid) for nid in cands[i:])
+
         leftover.sort(key=lambda pair: -per_root[pair[0]].value[pair[1]])
-    for wr, nid in leftover:
-        if len(out) >= k:
-            break
-        data = per_root[wr]
-        snip = _snippet(data.bodies[nid].strip())
-        if out and used + len(snip) > budget:
-            continue
-        out.append((data.nodes[nid], snip))
-        item_roots[data.nodes[nid].id] = Path(wr.path)
-        used += len(snip)
+        for wr, nid in leftover:
+            if len(out) >= k:
+                break
+            data = per_root[wr]
+            snip = _snippet(data.bodies[nid].strip())
+            if out and used + len(snip) > budget:
+                continue
+            out.append((data.nodes[nid], snip))
+            item_roots[data.nodes[nid].id] = Path(wr.path)
+            used += len(snip)
 
     return Selection(items=out, no_match=no_match, collisions=collisions, item_roots=item_roots)
 
