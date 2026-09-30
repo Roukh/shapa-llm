@@ -158,6 +158,30 @@ class TestValueRankedRest(BootstrapTestCase):
         selected = bootstrap.select(start=wiki, budget=10)
         self.assertEqual([n.id for n, _ in selected], ["big"])
 
+    def test_selected_lines_stay_within_budget_with_long_realistic_ids(self):
+        # Regression: budgeting must count the REAL rendered line
+        # (`- [{kind}] {id} ({type}): {summary}`), not a fixed per-line
+        # overhead constant plus the summary alone. Short uniform ids like
+        # "n0".."n29" (test_budget_truncates_the_rest, above) make that
+        # undercount negligible; long, varied ids - as real wikis actually
+        # have - do not, and a fixed constant overshoots the stated budget.
+        wiki = self.tmp / "wiki"
+        config.set_memory_dir(wiki)
+        for i in range(40):
+            _note(
+                wiki,
+                f"long-descriptive-memory-note-identifier-{i:02d}-detail",
+                "a fairly typical one-line summary sentence for this note",
+                consequence=5,
+            )
+
+        budget = 2000
+        selected = bootstrap.select(start=wiki, budget=budget)
+        rendered_total = sum(
+            len(bootstrap._render_line(node, root)) for node, root in selected
+        )
+        self.assertLessEqual(rendered_total, budget)
+
 
 class TestSummaryOnlyNeverBody(BootstrapTestCase):
     def test_summary_used_when_present(self):

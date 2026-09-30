@@ -52,11 +52,6 @@ META_ANCHOR_CAP_PER_ROOT = 2
 #: one bad note.
 MAX_SUMMARY_CHARS = 160
 
-#: Rough per-line rendering overhead (the ``- [kind] id (type): `` prefix)
-#: added on top of the summary text itself when budgeting a line.
-_LINE_OVERHEAD_CHARS = 24
-
-
 def _summary(node: Node) -> str:
     """The note's one-line ``summary``, or a plain fallback built from its id
     when missing (an unvalidated/legacy note, or one written before schema
@@ -66,6 +61,21 @@ def _summary(node: Node) -> str:
     if raw:
         return raw[:MAX_SUMMARY_CHARS]
     return node.id.replace("-", " ")
+
+
+def _render_line(node: Node, root: WikiRoot) -> str:
+    """The exact text bootstrap prints for one note.
+
+    Budgeting must use this - not a fixed per-line overhead constant plus
+    the summary length - because the rendered line's non-summary portion
+    (``- [{kind}] {id} ({type}): ``) scales with the note's own ``id`` and
+    ``type``, which vary per note and per wiki (a prior fixed-overhead
+    approximation undercounted real ids on wikis with long, descriptive
+    id strings, letting the selected set overshoot *budget*). Sharing this
+    helper between selection and rendering also means the two can never
+    drift apart.
+    """
+    return f"- [{root.kind}] {node.id} ({node.type}): {_summary(node)}"
 
 
 def _load_root(root: WikiRoot) -> dict[str, Node]:
@@ -109,14 +119,14 @@ def _select_from_loaded(
     # not disappear because another root's notes filled the budget first.
     for node, root in anchors:
         out.append((node, root))
-        used += len(_summary(node)) + _LINE_OVERHEAD_CHARS
+        used += len(_render_line(node, root))
 
     # The rest is ranked purely by value (score_meta): there is no prompt at
     # session start, so there is no relevance signal to rank by yet - that
     # is Tier 2's job (fetch.py). The very first item overall always fits,
     # same as fetch.py's ``_fill``.
     for node, root in rest:
-        line_len = len(_summary(node)) + _LINE_OVERHEAD_CHARS
+        line_len = len(_render_line(node, root))
         if out and used + line_len > budget:
             continue
         out.append((node, root))
@@ -178,7 +188,7 @@ def build_context(
         lines.append(f"wiki[{wr.kind}{tag}]: {wr.path} - {n} note{'s' if n != 1 else ''}")
     lines.append("")
     for node, root in selected:
-        lines.append(f"- [{root.kind}] {node.id} ({node.type}): {_summary(node)}")
+        lines.append(_render_line(node, root))
     lines.append("</shapa-memory>")
     return "\n".join(lines)
 
