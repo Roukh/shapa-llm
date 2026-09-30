@@ -1,0 +1,39 @@
+name: test
+
+# Runs the full suite twice per Python version: once against the bare core
+# install (pure stdlib, no optional deps - the unchanged default per
+# shapa-backend-spec.md §3) and once with every optional extra installed
+# ([semantic,mcp] - model2vec embeddings + the MCP SDK). Slice 0's fix
+# (shapa-backend-spec.md §8, row 0) exists specifically because these two
+# environments used to disagree on 3 tests in test_maintain.py; this matrix
+# is what would have caught that, and is what catches it if it regresses.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+        extras: ["", "semantic,mcp"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install shapa (core only)
+        if: matrix.extras == ''
+        run: pip install -e .
+
+      - name: Install shapa[${{ matrix.extras }}]
+        if: matrix.extras != ''
+        run: pip install -e ".[${{ matrix.extras }}]"
+
+      - name: Run test suite
+        run: python -m pytest -q
