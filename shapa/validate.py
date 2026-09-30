@@ -12,10 +12,14 @@ Rules:
   S01  consequence is an integer 1-10
   S02  locus is one of: output, output-meta, meta
   S03  uses is a non-negative integer
+  F09  duplicate id across two roots in one wiki_roots() result (error) -
+       checked only by --all-roots, since a single-root scan has nothing to
+       compare against
 
 CLI::
 
     python3 -m shapa.validate FILE [FILE ...]
+    python3 -m shapa.validate --all-roots [START]
 """
 
 from __future__ import annotations
@@ -26,6 +30,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from shapa import config, frontmatter
+from shapa.nodes import load_nodes
 from shapa.score import LOCUS_WEIGHTS
 
 VALID_TYPES = {"memory", "rule", "issue", "reference"}
@@ -106,6 +111,35 @@ def validate_node(path) -> ValidationResult:
     return ValidationResult(valid=not has_error, violations=violations)
 
 
+def check_cross_root_duplicates(roots) -> list[Violation]:
+    """F09: a note ``id`` that exists in more than one of *roots* (a
+    :func:`shapa.config.wiki_roots` result, or any iterable of
+    ``WikiRoot``/path-likes) is a hard error - it is the one correctness
+    property the whole multi-root read merge depends on (§4.1 of the spec:
+    a silent keep-higher-scored pick is exactly the ambiguity this guards
+    against). Reports every colliding id once, naming every root kind it
+    was found in."""
+    by_id: dict[str, list[str]] = {}
+    for root in roots:
+        path = getattr(root, "path", root)
+        kind = getattr(root, "kind", str(path))
+        try:
+            nodes = load_nodes(path)
+        except OSError:
+            continue
+        for nid in nodes:
+            by_id.setdefault(nid, []).append(kind)
+
+    violations = []
+    for nid, kinds in sorted(by_id.items()):
+        if len(kinds) > 1:
+            violations.append(Violation(
+                "F09", 0,
+                f"id '{nid}' exists in {len(kinds)} roots ({', '.join(kinds)}) - ambiguous",
+            ))
+    return violations
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         prog="python3 -m shapa.validate",
@@ -113,7 +147,29 @@ def main(argv: list[str] | None = None) -> None:
     )
     parser.add_argument("paths", metavar="PATH", nargs="*",
                         help="One or more .md files (default: all notes in the memory dir).")
+    parser.add_argument("--all-roots", action="store_true",
+                        help="Also check for F09 duplicate ids across every "
+                             "wiki_roots() root (global/repo/external), instead "
+                             "of validating a single directory's files.")
     args = parser.parse_args(argv)
+
+    if args.all_roots:
+        start = args.paths[0] if args.paths else None
+        roots = config.wiki_roots(start)
+        any_invalid = False
+        for root in roots:
+            for raw in sorted(str(p) for p in root.path.rglob("*.md")) if root.path.is_dir() else []:
+                result = validate_node(raw)
+                if not result.valid:
+                    any_invalid = True
+                print(f"[{root.kind}] {raw}: {'OK' if result.valid and not result.violations else ('OK (with warnings)' if result.valid else 'INVALID')}")
+                for v in result.violations:
+                    print(f"  [{v.rule}] {v.severity.upper()}: {v.message}")
+        dupes = check_cross_root_duplicates(roots)
+        for v in dupes:
+            any_invalid = True
+            print(f"[{v.rule}] {v.severity.upper()}: {v.message}")
+        sys.exit(1 if any_invalid else 0)
 
     paths = args.paths or [str(p) for p in sorted(config.memory_dir().rglob("*.md"))]
     any_invalid = False

@@ -20,7 +20,9 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 ENV_VAR = "SHAPA_MEMORY"
 DEFAULT_DIR = Path.home() / ".shapa" / "memory"
@@ -111,3 +113,131 @@ def set_memory_dir(path) -> Path:
 def resolve(root=None) -> Path:
     """Use *root* if given (expanding ``~``), else the configured memory directory."""
     return Path(root).expanduser() if root is not None else memory_dir()
+
+
+# ---------------------------------------------------------------------------
+# Multi-root resolution (reads fan out across every wiki in scope; writes
+# stay single-target - see shapa/capture.py's ``--scope``). Additive: the
+# single-root API above (``discover``/``memory_dir``/``resolve``) is
+# untouched, so ``init``/``where``/every existing single-root caller keeps
+# working unchanged. See docs/design's shapa-backend-spec.md §4.1.
+# ---------------------------------------------------------------------------
+
+#: Directory under the global wiki holding per-repo notes for a repo that has
+#: no wiki of its own (`kind="external"` below). No hardcoded repo list - the
+#: repo name is read off the git checkout's own directory name.
+EXTERNAL_DIRNAME = "external"
+
+
+@dataclass(frozen=True)
+class WikiRoot:
+    """One wiki directory a read should search.
+
+    ``kind`` says why it is in scope: ``"repo"`` (this checkout's own wiki),
+    ``"external"`` (a bucket for a repo with no wiki of its own, filed under
+    the global wiki's ``external/<repo>/``), or ``"global"`` (the
+    cwd-independent default/shared wiki). ``repo`` is the checkout's
+    directory name, set for ``"repo"`` and ``"external"``, ``None`` for
+    ``"global"``.
+    """
+
+    path: Path
+    kind: Literal["repo", "external", "global"]
+    repo: str | None = None
+
+
+def global_root() -> Path:
+    """The cwd-independent global wiki: ``$SHAPA_MEMORY`` > the ``shapa init``
+    pointer > ``~/.shapa/memory``. Unlike :func:`memory_dir`, this never
+    prefers a repo-local wiki - it is always the *global* one, the anchor
+    every :func:`wiki_roots` result falls back to."""
+    env = os.environ.get(ENV_VAR)
+    if env:
+        return Path(env).expanduser()
+    pointer = _pointer()
+    if pointer is not None:
+        return pointer
+    return DEFAULT_DIR
+
+
+def _git_toplevel(start: Path) -> Path | None:
+    """Walk up from *start* to the nearest ancestor containing ``.git``
+    (worktree or plain checkout), without shelling out to ``git`` - a repo
+    name is just that directory's basename, so no hardcoded repo list is
+    needed anywhere in this module."""
+    for d in (start, *start.parents):
+        try:
+            if (d / ".git").exists():
+                return d
+        except OSError:
+            continue
+    return None
+
+
+def wiki_roots(start: str | Path | None = None) -> list[WikiRoot]:
+    """Every wiki a read should search, most-specific first.
+
+    1. ``$SHAPA_MEMORY`` set -> a single ``kind="global"`` root (the explicit
+       override escape hatch used by ``--root``/CI; the hooks/MCP path never
+       sets this itself).
+    2. Else, a repo-local wiki found by :func:`discover` from *start*
+       (default: cwd) -> ``kind="repo"``, *unless* its resolved path is the
+       same directory as :func:`global_root` (a repo whose own wiki *is* the
+       global wiki gets exactly one entry below, not two).
+    3. Else, if *start* sits inside a git checkout with no wiki of its own,
+       and ``<global_root>/external/<repo-name>/`` exists on disk ->
+       ``kind="external"``.
+    4. The global wiki is always appended last, with ``kind="global"``,
+       unless step 2 already added that same path (dedup).
+
+    Missing directories are tolerated throughout - this returns *paths to
+    search*, not a guarantee any of them exist; callers already treat a
+    non-existent/empty root as "no notes" (see ``fetch.select``).
+    """
+    env = os.environ.get(ENV_VAR)
+    if env:
+        return [WikiRoot(path=Path(env).expanduser(), kind="global")]
+
+    try:
+        here = Path(start).resolve() if start is not None else Path.cwd().resolve()
+    except OSError:
+        here = None
+
+    g_root = global_root()
+    try:
+        g_resolved = g_root.resolve()
+    except OSError:
+        g_resolved = g_root
+
+    roots: list[WikiRoot] = []
+    seen: set[Path] = set()
+
+    repo_name: str | None = None
+    if here is not None:
+        git_root = _git_toplevel(here)
+        if git_root is not None:
+            repo_name = git_root.name
+
+    local = discover(here) if here is not None else None
+    if local is not None:
+        try:
+            local_resolved = local.resolve()
+        except OSError:
+            local_resolved = local
+        if local_resolved != g_resolved:
+            roots.append(WikiRoot(path=local_resolved, kind="repo", repo=repo_name))
+            seen.add(local_resolved)
+    elif repo_name is not None:
+        external = g_root / EXTERNAL_DIRNAME / repo_name
+        if external.is_dir():
+            try:
+                ext_resolved = external.resolve()
+            except OSError:
+                ext_resolved = external
+            roots.append(WikiRoot(path=ext_resolved, kind="external", repo=repo_name))
+            seen.add(ext_resolved)
+
+    if g_resolved not in seen:
+        roots.append(WikiRoot(path=g_root, kind="global"))
+
+    return roots
