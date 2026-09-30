@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from shapa import fetch, score, store
+from shapa import embed, fetch, score, store
 
 FIX = Path(__file__).parent / "fixtures" / "fetch"
 
@@ -96,10 +96,25 @@ class TestFetch(unittest.TestCase):
         selected = fetch.select("", root=FIX, k=5)
         self.assertEqual(selected[0][0].id, "f-meta")
 
+    @unittest.skipUnless(embed.available(), "semantic channel required: see comment below")
     def test_bm25_relevance_steers(self):
         # 'git' prompt (plus "word" so f-long's filler body also clears the
         # GAP C absolute floor, keeping both non-anchor notes in the fill):
         # after the meta anchor, the git note outranks the filler.
+        #
+        # This needs the [semantic] extra, not just BM25, despite the test's
+        # name (kept for history - it predates GAP C's fusion rework): with
+        # 600-ish repeated "word" tokens, f-long's raw BM25 score for "word"
+        # (tf=200, near the k1 saturation ceiling) legitimately outranks
+        # f-out's raw BM25 score for "git" (tf=2, well short of it) - BM25
+        # has no notion of "topically empty filler that repeats one query
+        # term" vs. "a topically dense match," by design (shapa-backend-
+        # spec.md §9's accepted bare-core risk). Only the embedding channel
+        # (shapa.rank.fuse, GAP C) tells the two apart, by giving f-out's
+        # actually-about-git body a much higher cosine score than f-long's
+        # semantically-empty filler - so this assertion, like the other
+        # embed-dependent acceptance checks in test_embed.py and
+        # test_retrieval_eval.py, is guarded the same way.
         ids = [n.id for n, _ in fetch.select("git commit word", root=FIX, k=5)]
         self.assertEqual(ids[0], "f-meta")  # meta anchor
         self.assertLess(ids.index("f-out"), ids.index("f-long"))
