@@ -196,6 +196,23 @@ class TestSaveScopeGating(_StubWiki):
         self.assertNotIn("error", fetched)
         self.assertIn("Body content.", fetched["body"])
 
+    def test_save_rejects_a_path_traversal_id_before_writing_anywhere(self):
+        outside = self.tmp / "tmp" / "pwned-shapa-test.md"
+        out = mcp.tool_save(
+            {"scope": "repo", "summary": "x", "body": "y",
+             "id": "../../../../tmp/pwned-shapa-test"},
+            str(self.repo),
+        )
+        self.assertIn("error", out)
+        self.assertFalse(outside.exists())
+        # A bare '..'/'.' id, or one carrying a NUL byte, must be rejected
+        # too - not just multi-segment traversal.
+        for bad_id in ("..", ".", "a/b", "a\\b", "a\x00b"):
+            out = mcp.tool_save(
+                {"scope": "repo", "summary": "x", "body": "y", "id": bad_id}, str(self.repo)
+            )
+            self.assertIn("error", out, f"id {bad_id!r} should have been rejected")
+
     def test_save_defaults_type_to_memory_and_slugifies_a_missing_id(self):
         out = mcp.tool_save(
             {"scope": "repo", "summary": "Some Summary, With Punctuation!", "body": "x"},

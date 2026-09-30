@@ -73,6 +73,19 @@ def _slugify(text: str) -> str:
     return slug[:60] if slug else f"note-{uuid.uuid4().hex[:8]}"
 
 
+def _is_safe_note_id(note_id: str) -> bool:
+    """Reject anything that could turn ``root / f"{note_id}.md"`` into a
+    path outside ``root`` - a caller-supplied ``id`` is attacker/agent
+    -controlled input reaching a filesystem write, so this must run
+    *before* that path is built (and before anything is written), not be
+    left to ``validate_node()``'s F01 check to catch after the fact."""
+    if not note_id or note_id in (".", ".."):
+        return False
+    if "/" in note_id or "\\" in note_id or "\x00" in note_id:
+        return False
+    return True
+
+
 # --- tool implementations ---------------------------------------------------
 # Each takes (arguments, cwd) and returns a plain JSON-able dict. A dict
 # containing an "error" key is the tool-level error convention every caller
@@ -181,6 +194,11 @@ def tool_save(args: dict[str, Any], cwd: str | None) -> dict[str, Any]:
         root = found
 
     note_id = str(args.get("id") or "").strip() or _slugify(summary)
+    if not _is_safe_note_id(note_id):
+        return {
+            "error": f"invalid id {note_id!r} - ids may not contain '/', '\\\\', a NUL "
+                     "byte, or be exactly '.' or '..' (path-traversal guard)",
+        }
     path = root / f"{note_id}.md"
     if path.exists():
         return {
