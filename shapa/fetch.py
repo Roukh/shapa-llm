@@ -48,9 +48,53 @@ ROOT_FLOOR_CHARS = 500
 #: relative, not a fixed score. A candidate must score at least this fraction
 #: of the single best fused-relevance score seen across every root to clear
 #: the floor; below it, it is dropped from the relevance-ranked fill rather
-#: than padding the result with a low-confidence guess. Needs calibration
-#: against a real prompt set (tracked as a follow-up - see the slice report).
+#: than padding the result with a low-confidence guess. Calibrated against
+#: tests/fixtures/retrieval_eval's prompt set (GAP C, see the slice report).
 MIN_RELEVANCE_FRACTION = 0.3
+#: GAP C - absolute minimum relevance guard, layered ON TOP of the
+#: percentile-relative floor above. A percentile-relative floor alone is
+#: relative to itself: the single best-scoring candidate always clears
+#: ``top_rel * MIN_RELEVANCE_FRACTION`` trivially (it IS top_rel), no
+#: matter how small top_rel is in absolute terms - so a clearly off-topic
+#: prompt whose "best" match is pure noise still counted as "relevance"
+#: mode and surfaced that noise instead of the no-match marker.
+#:
+#: This guard is deliberately checked against each modality's RAW,
+#: pre-fusion score (:attr:`_RootData.bm25_rel`/``emb_rel``), never
+#: against :func:`rank.fuse`'s output. ``fuse`` min-max-normalizes each
+#: active ranking by ITS OWN top score, so the single best candidate
+#: anywhere is always at (or very near) 1.0 on the fused scale whenever
+#: at least one modality found anything positive at all, no matter how
+#: weak that raw match actually was - normalization erases the exact
+#: absolute signal this guard needs.
+#:
+#: The two raw channels are NOT combined with a simple OR, on purpose:
+#: BM25's raw magnitude is corpus-size-dependent (its idf term grows with
+#: ``log(N)`` over the number of notes) - a threshold calibrated against
+#: a 29-note wiki does not transfer to a 2-note test fixture, and a
+#: constant loose enough to pass small fixtures (e.g. `> 0`, "found any
+#: shared non-stopword term at all") is exactly the "stray shared word"
+#: failure mode GAP C targets, so letting it ALSO satisfy the guard
+#: whenever the semantic channel is live would silently defeat the fix
+#: for any corpus size. cosine similarity has no such corpus-size
+#: dependence (it is bounded and purely query-vs-one-note), so it is
+#: the sole, authoritative channel whenever :func:`shapa.embed.available`
+#: is True; :data:`MIN_ABSOLUTE_BM25_BARE_CORE` only ever applies when
+#: there is no semantic channel to ask instead (a bare-core install with
+#: no ``[semantic]`` extra) - see shapa-backend-spec.md §9's risk on
+#: embeddings being optional. A query that is on-topic purely by
+#: paraphrase with zero shared vocabulary (e.g. "how should you respond
+#: to me") is undetectable by BM25 alone in that mode, regardless of
+#: this constant - an accepted limitation of running without embeddings.
+#:
+#: :data:`MIN_ABSOLUTE_EMBED` is calibrated against
+#: tests/fixtures/retrieval_eval's prompt set (GAP C, see the slice
+#: report): off-topic cosine tops out at ~0.15 there, on-topic never
+#: drops below ~0.29. :data:`MIN_ABSOLUTE_BM25_BARE_CORE` is left low
+#: (near the "found anything at all" floor) since no single constant is
+#: portable across corpus sizes in bare-core mode.
+MIN_ABSOLUTE_BM25_BARE_CORE = 0.5
+MIN_ABSOLUTE_EMBED = 0.22
 
 
 def _snippet(body: str, limit: int = SNIPPET_CHARS) -> str:
@@ -75,6 +119,12 @@ class _RootData:
     bodies: dict[str, str] = field(default_factory=dict)
     rel: dict[str, float] = field(default_factory=dict)
     value: dict[str, float] = field(default_factory=dict)
+    #: GAP C - the RAW, pre-fusion score each modality gave every note
+    #: (never min-max-normalized). :data:`MIN_ABSOLUTE_BM25_BARE_CORE`/
+    #: :data:`MIN_ABSOLUTE_EMBED` are checked against these, never against
+    #: ``rel`` - see the absolute-guard note on :func:`select_multi`.
+    bm25_rel: dict[str, float] = field(default_factory=dict)
+    emb_rel: dict[str, float] = field(default_factory=dict)
 
 
 def _load_root_data(root: Path, query: str, *, read_only: bool = False) -> _RootData:
@@ -82,12 +132,19 @@ def _load_root_data(root: Path, query: str, *, read_only: bool = False) -> _Root
 
     Relevance fuses BM25 (lexical, always available) with local-embedding
     cosine similarity (semantic, when ``shapa.embed`` is available) via
-    Reciprocal Rank Fusion (``shapa.rank.rrf``, §5) - both vote whenever
-    both exist, and this degrades gracefully to BM25-only when the semantic
-    backend is not installed. ``rel`` is always returned as a *complete*
+    score-normalized fusion (``shapa.rank.fuse``, §5, GAP C) - both vote
+    whenever both exist, and this degrades gracefully to BM25-only when the
+    semantic backend is not installed. Unlike plain Reciprocal Rank Fusion
+    (``shapa.rank.rrf``, kept for callers that want pure rank-position
+    fusion), ``fuse`` min-max-normalizes each ranking's raw scores before
+    combining them - this is what keeps a strong semantic-only match (a
+    query that paraphrases a note with zero shared vocabulary, so BM25
+    contributes nothing at all) from being buried under two backends'
+    lukewarm agreement on a different, merely-mediocre note; see
+    ``rank.fuse``'s docstring. ``rel`` is always returned as a *complete*
     dict over every note id (missing/zero-relevance ids explicit at 0.0),
-    matching the contract every caller here already relies on - RRF itself
-    only returns the ids it positively ranked.
+    matching the contract every caller here already relies on - ``fuse``
+    itself only returns the ids it positively ranked.
 
     ``read_only=True`` skips every disk-writing side effect this lookup
     would otherwise make (the embedding cache, the usage-index db) - same
@@ -101,21 +158,30 @@ def _load_root_data(root: Path, query: str, *, read_only: bool = False) -> _Root
 
     docs = {}
     bodies = {}
+    embed_texts = {}
     for nid, node in nodes.items():
         body = frontmatter.parse(node.path).body
         bodies[nid] = body
         id_topic = node.id.replace("-", " ") + " " + " ".join(node.outlinks)
         docs[nid] = _words(body + " " + id_topic)
+        # GAP C: embed the same id-enriched text BM25 already scores, not
+        # the bare body. A note's own id/title (e.g. "response-style") is
+        # often the exact phrase a query paraphrases ("how should you
+        # respond to me") - leaving it out of the embedded text silently
+        # under-weighted title-relevant semantic matches relative to
+        # BM25's view of the same note, which already includes it.
+        embed_texts[nid] = id_topic + "\n" + body
 
     bm25_rel = _bm25_scores(query, docs)
     if embed.available():
-        vecs = embed.note_vectors(root, bodies, read_only=read_only)
+        vecs = embed.note_vectors(root, embed_texts, read_only=read_only)
         qv = embed.embed_one(query) if query.strip() else None
         emb_rel = {nid: (max(0.0, embed.cosine(qv, vecs[nid])) if qv is not None else 0.0)
                    for nid in nodes}
-        fused = rank.rrf([bm25_rel, emb_rel])
+        fused = rank.fuse([bm25_rel, emb_rel])
         rel = {nid: fused.get(nid, 0.0) for nid in nodes}
     else:
+        emb_rel = {nid: 0.0 for nid in nodes}
         rel = bm25_rel
 
     # Value scoring reads the ``uses``/``last_used`` signal from the index
@@ -135,22 +201,8 @@ def _load_root_data(root: Path, query: str, *, read_only: bool = False) -> _Root
         if uses or last_used:
             meta = {**node.meta, "uses": uses, "last_used": last_used or node.meta.get("last_used")}
         value[nid] = score_meta(meta)[0]
-    return _RootData(nodes=nodes, bodies=bodies, rel=rel, value=value)
-
-
-def _fill(data: _RootData, order: list[str], out: list, used: int, budget: int, k: int) -> int:
-    """Append ``(node, snippet)`` for each id in *order* to *out*, respecting
-    *budget* (except the very first item overall, which always fits) and
-    *k*. Returns the updated *used* character count."""
-    for nid in order:
-        if len(out) >= k:
-            break
-        snip = _snippet(data.bodies[nid].strip())
-        if out and used + len(snip) > budget:
-            continue
-        out.append((data.nodes[nid], snip))
-        used += len(snip)
-    return used
+    return _RootData(nodes=nodes, bodies=bodies, rel=rel, value=value,
+                      bm25_rel=bm25_rel, emb_rel=emb_rel)
 
 
 def select(query: str, root=None, k: int = DEFAULT_K, budget: int = DEFAULT_BUDGET,
@@ -158,12 +210,17 @@ def select(query: str, root=None, k: int = DEFAULT_K, budget: int = DEFAULT_BUDG
     """Return up to *k* notes ranked by value-score x relevance to the
     prompt, within a character budget. Each item is ``(node, body)``.
 
-    With an explicit *root*, this is the original single-root behavior,
-    unchanged: one directory, resolved via :func:`config.resolve`. With no
-    *root* (the live hook default), it fans out across every wiki in scope
-    instead - see :func:`select_multi` and shapa-backend-spec.md §4.1 - and
-    returns just the merged item list (drop ``no_match``/``collisions``; use
-    :func:`select_multi` directly to see those).
+    With an explicit *root*, this now goes through :func:`select_multi` with
+    that single directory as its only root (GAP C fix, shapa-backend-spec.md
+    §4.1/§10.2) - previously this branch had its own hand-rolled merge that
+    never applied the confidence floor at all, so an explicit-root caller
+    (the CLI's ``--root``, ``shapa search``, and every single-root test)
+    never got the "off-topic query -> anchors only, no padded guess" fix,
+    only the no-``root`` multi-root fan-out did. With no *root* (the live
+    hook default), it fans out across every wiki in scope instead - see
+    :func:`select_multi` - and returns just the merged item list (drop
+    ``no_match``/``collisions``; use :func:`select_multi` directly to see
+    those).
 
     With an empty prompt it falls back to pure value ranking (the standing
     high-value rules still surface); a non-empty prompt with no relevant
@@ -176,30 +233,10 @@ def select(query: str, root=None, k: int = DEFAULT_K, budget: int = DEFAULT_BUDG
         return select_multi(query, k=k, budget=budget, read_only=read_only).items
 
     root = config.resolve(root)
-    data = _load_root_data(root, query, read_only=read_only)
-    if not data.nodes:
-        return []
-
-    has_query = (
-        max(data.rel.values(), default=0.0) > 0 if not embed.available()
-        else bool(query.strip())
-    )
-
-    anchors = sorted(
-        (nid for nid, node in data.nodes.items() if node.meta.get("locus") == "meta"),
-        key=lambda nid: (-data.value[nid], nid),
-    )[:2]
-    anchor_set = set(anchors)
-
-    rest = [nid for nid in data.nodes if nid not in anchor_set]
-    if has_query:
-        rest.sort(key=lambda nid: (-data.rel[nid], -data.value[nid], nid))
-    else:
-        rest.sort(key=lambda nid: (-data.value[nid], nid))
-
-    out: list = []
-    _fill(data, anchors + rest, out, 0, budget, k)
-    return out
+    return select_multi(
+        query, roots=[WikiRoot(path=root, kind="repo")], k=k, budget=budget,
+        read_only=read_only,
+    ).items
 
 
 @dataclass
@@ -242,8 +279,15 @@ def select_multi(query: str, start=None, roots: list[WikiRoot] | None = None,
     relevance, so no root's share collapses to zero as root count grows.
     Candidates below the percentile-relative confidence floor
     (:data:`MIN_RELEVANCE_FRACTION` of the single best fused score) never
-    enter the fill at all - a genuinely off-topic prompt surfaces anchors
-    only, plus ``no_match=True``, never a padded guess.
+    enter the fill at all, AND the single best RAW per-modality score
+    anywhere must clear :data:`MIN_ABSOLUTE_EMBED` (or
+    :data:`MIN_ABSOLUTE_BM25_BARE_CORE` with no semantic backend
+    installed) - GAP C's absolute guard, checked on the raw scores. A
+    percentile-relative floor alone can never reject an
+    off-topic prompt whose "best" match is pure noise, since the top
+    *fused* score always clears a fraction of itself once min-max
+    normalized) - a genuinely off-topic prompt surfaces anchors only, plus
+    ``no_match=True``, never a padded guess.
 
     ``read_only`` forwards to :func:`_load_root_data` for every root - see
     its docstring.
@@ -299,17 +343,28 @@ def select_multi(query: str, start=None, roots: list[WikiRoot] | None = None,
     # (pure value fallback, exactly like the single-root path); a real
     # prompt that matches nothing (top score 0) gets anchors-only fill.
     query_has_text = bool(query.strip())
-    non_anchor_rels = [
-        data.rel.get(nid, 0.0)
+    non_anchor_ids = [
+        (wr, nid)
         for wr, data in per_root.items()
         for nid in data.nodes
         if (wr, nid) not in anchor_keys
     ]
-    top_rel = max(non_anchor_rels, default=0.0)
+    top_rel = max((per_root[wr].rel.get(nid, 0.0) for wr, nid in non_anchor_ids), default=0.0)
+    # GAP C absolute guard: checked on each modality's RAW score, never on
+    # the min-max-normalized `rel` above - see MIN_ABSOLUTE_BM25_BARE_CORE/_EMBED's
+    # docstring on why the fused scale can't carry this signal. The
+    # semantic channel (bounded, corpus-size-independent) is authoritative
+    # whenever it exists; BM25's raw magnitude scales with corpus size
+    # (its idf term grows with log(N)), so it is only trusted as a guard
+    # on its own when there is no semantic channel to ask instead.
+    top_bm25 = max((per_root[wr].bm25_rel.get(nid, 0.0) for wr, nid in non_anchor_ids), default=0.0)
+    top_emb = max((per_root[wr].emb_rel.get(nid, 0.0) for wr, nid in non_anchor_ids), default=0.0)
+    strong_enough = (top_emb >= MIN_ABSOLUTE_EMBED if embed.available()
+                      else top_bm25 >= MIN_ABSOLUTE_BM25_BARE_CORE)
 
     if not query_has_text:
         mode = "value"
-    elif top_rel > 0:
+    elif top_rel > 0 and strong_enough:
         mode = "relevance"
     else:
         mode = "none"
@@ -391,19 +446,23 @@ def fetch_context(query: str, root=None, start=None, roots: list[WikiRoot] | Non
     """Build the context block for *query* and (optionally) record a use of
     each surfaced note.
 
-    With an explicit *root*, searches just that one directory (unchanged).
-    Otherwise fans out across every wiki in scope via :func:`select_multi`
+    With an explicit *root*, searches just that one directory, now via
+    :func:`select_multi` with that directory as its sole root (GAP C fix -
+    see :func:`select`) so the confidence floor and ``no_match`` marker
+    apply there too, not just on the multi-root fan-out below. Otherwise
+    fans out across every wiki in scope via :func:`select_multi`
     (*start*/*roots* forwarded to it) - the live hook default."""
     resolved_root = None
     item_roots: dict[str, Path] = {}
     if root is not None:
         resolved_root = config.resolve(root)
-        selected = select(query, root=root, k=k, budget=budget)
-        no_match, collisions = False, []
+        selection = select_multi(
+            query, roots=[WikiRoot(path=resolved_root, kind="repo")], k=k, budget=budget,
+        )
     else:
         selection = select_multi(query, start=start, roots=roots, k=k, budget=budget)
-        selected, no_match, collisions = selection.items, selection.no_match, selection.collisions
-        item_roots = selection.item_roots
+    selected, no_match, collisions = selection.items, selection.no_match, selection.collisions
+    item_roots = selection.item_roots
 
     if not selected and not no_match and not collisions:
         return ""

@@ -21,6 +21,15 @@ _STOP = {
     "the", "and", "for", "with", "that", "this", "are", "but", "not", "you",
     "its", "from", "into", "then", "they", "have", "has", "was", "will", "can",
     "use", "uses", "used", "when", "where", "which", "what", "how", "any", "all",
+    # Modal auxiliaries (GAP C, shapa-backend-spec.md): common enough in
+    # ordinary English that a single note happening to use one is not
+    # evidence of topical relevance. Unfiltered, one of these can be the
+    # ONLY shared term between a query and a note, making that note BM25's
+    # sole positive hit - which then out-competes a genuinely strong
+    # semantic-only match after fusion, exactly the "buried" failure mode
+    # GAP C targets, since a lone hit trivially looks like a perfect
+    # lexical match to any per-ranking normalization.
+    "should", "would", "could", "must", "may", "might", "shall",
 }
 _BM25_K1 = 1.5
 _BM25_B = 0.75

@@ -12,10 +12,26 @@ FIX = Path(__file__).parent / "fixtures" / "fetch"
 
 class TestFetch(unittest.TestCase):
     def test_high_value_ranks_first(self):
-        selected = fetch.select("testing discipline", root=FIX, k=5)
+        # A query relevant to both notes (GAP C: a query that only weakly
+        # touches f-out, e.g. bare "testing discipline", now correctly
+        # clears the absolute confidence floor for f-meta alone and drops
+        # f-out from the fill rather than padding it in - see
+        # test_absolute_relevance_floor_drops_a_weak_match below).
+        selected = fetch.select("testing discipline and git workflow", root=FIX, k=5)
         ids = [n.id for n, _ in selected]
         self.assertEqual(ids[0], "f-meta")  # meta + consequence 9 + relevance
         self.assertIn("f-out", ids)
+
+    def test_absolute_relevance_floor_drops_a_weak_match(self):
+        # GAP C acceptance: even though f-out is a real note that BM25/embed
+        # both give SOME nonzero signal to, "testing discipline" is not
+        # actually about f-out's content ("a minor low-value fact"/git) -
+        # its fused relevance never clears MIN_ABSOLUTE_RELEVANCE, so it is
+        # correctly dropped from the fill rather than padded in just because
+        # k=5 has room. Only the unconditional meta anchor remains.
+        selected = fetch.select("testing discipline", root=FIX, k=5)
+        ids = [n.id for n, _ in selected]
+        self.assertEqual(ids, ["f-meta"])
 
     def test_snippet_is_bounded(self):
         selected = fetch.select("word", root=FIX, k=5)
@@ -63,7 +79,11 @@ class TestFetch(unittest.TestCase):
             for f in FIX.glob("*.md"):
                 shutil.copy(f, tmp / f.name)
             for _ in range(60):
-                fetch.fetch_context("testing", root=tmp, record=True)
+                # GAP C: bare "testing" no longer clears f-out's absolute
+                # confidence floor (see test_absolute_relevance_floor_drops_
+                # a_weak_match) - use a query that does, so f-out is still
+                # in the fill every call and its use count keeps climbing.
+                fetch.fetch_context("testing discipline and git workflow", root=tmp, record=True)
             uses, _ = store.get_use(tmp, "f-out")
             self.assertGreaterEqual(uses, 50)
             data = fetch._load_root_data(tmp, "")
@@ -77,8 +97,10 @@ class TestFetch(unittest.TestCase):
         self.assertEqual(selected[0][0].id, "f-meta")
 
     def test_bm25_relevance_steers(self):
-        # 'git' prompt: after the meta anchor, the git note outranks the filler.
-        ids = [n.id for n, _ in fetch.select("git repository commit", root=FIX, k=5)]
+        # 'git' prompt (plus "word" so f-long's filler body also clears the
+        # GAP C absolute floor, keeping both non-anchor notes in the fill):
+        # after the meta anchor, the git note outranks the filler.
+        ids = [n.id for n, _ in fetch.select("git commit word", root=FIX, k=5)]
         self.assertEqual(ids[0], "f-meta")  # meta anchor
         self.assertLess(ids.index("f-out"), ids.index("f-long"))
 
