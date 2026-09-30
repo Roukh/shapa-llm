@@ -273,6 +273,57 @@ class TestGlobalFusedRelevanceOrderNotPreempted(FetchMultirootTestCase):
         )
 
 
+class TestInclusionGuaranteeNeverEvictsTopRank(FetchMultirootTestCase):
+    """2026-09-30 regression in the *fix above*: the inclusion-guarantee
+    fallback (when every item currently in `included` is already its own
+    root's sole representative - the `displace_at is None` branch) used to
+    force a displacement anyway, picking `included[-1]` unconditionally.
+    In global rank order `included[-1]` is whatever is CURRENTLY the
+    lowest-ranked included item - which, at this exact boundary (k equal
+    to the number of roots still needing a guaranteed seat, e.g. k=1 with
+    2 roots), can be the single highest-ranked candidate overall, not a
+    tail item. That directly violates this fix's own stated invariant
+    ("the per-root floor ... never pre-empts higher-scoring notes from the
+    top ranks"). Correct behavior: leave the root ungoverned in this
+    boundary case (safe degradation), never evict the global #1."""
+
+    def test_k1_two_roots_keeps_the_single_best_match(self):
+        rootA = self.tmp / "rootA"
+        rootB = self.tmp / "rootB"
+        _note(rootA, "a-strong", "rollback safety")
+        _note(rootB, "b-weak",
+              "rollback padding words extra unrelated filler content here more words")
+
+        roots = [WikiRoot(path=rootA, kind="repo"), WikiRoot(path=rootB, kind="external")]
+        selection = fetch.select_multi("rollback safety", roots=roots, k=1)
+        ids = [n.id for n, _ in selection.items]
+        self.assertEqual(ids, ["a-strong"])
+
+    def test_k_smaller_than_root_count_never_swaps_out_top_items(self):
+        # 3 roots, k=2: rootA and rootB are both strong exact matches that
+        # legitimately fill k on merit (each its own sole representative);
+        # rootC clears the confidence floor but only weakly and ranks
+        # below both. rootC's guarantee has no safe tail to displace
+        # without evicting one of the two top matches - it must go
+        # unrepresented rather than knocking out a higher-scoring match.
+        rootA = self.tmp / "rootA"
+        rootB = self.tmp / "rootB"
+        rootC = self.tmp / "rootC"
+        _note(rootA, "a-strong", "rollback safety procedure")
+        _note(rootB, "b-strong", "rollback safety migration")
+        _note(rootC, "c-weak",
+              "rollback padding words extra unrelated filler content here more words")
+
+        roots = [
+            WikiRoot(path=rootA, kind="repo"),
+            WikiRoot(path=rootB, kind="external"),
+            WikiRoot(path=rootC, kind="global"),
+        ]
+        selection = fetch.select_multi("rollback safety procedure migration", roots=roots, k=2)
+        ids = {n.id for n, _ in selection.items}
+        self.assertEqual(ids, {"a-strong", "b-strong"})
+
+
 class TestConfidenceFloorNoPaddedFiller(FetchMultirootTestCase):
     """An off-topic prompt (no term overlap anywhere) gets the GAP F
     no-match fallback - at most ONE short locus:meta pointer line (never

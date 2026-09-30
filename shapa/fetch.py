@@ -556,13 +556,19 @@ def select_multi(query: str, start=None, roots: list[WikiRoot] | None = None,
             used += slen
 
         # Inclusion guarantee: any root with at least one candidate that
-        # cleared the confidence floor gets one of them somewhere in `k` -
-        # never zero - even if every one of its candidates ranked below the
-        # global top-`k` cutoff above. Applied by displacing the LOWEST-
-        # ranked tail item(s) already included (preferring a tail item
-        # whose root already has more than one representative, so this
-        # guarantee for one root never silently zeroes another); it never
-        # touches - never even looks at - anything ranked ahead of it.
+        # cleared the confidence floor gets one of them somewhere in `k`
+        # when that can be done safely - even if every one of its
+        # candidates ranked below the global top-`k` cutoff above.
+        # Applied by displacing the LOWEST-ranked tail item(s) already
+        # included (preferring a tail item whose root already has more
+        # than one representative, so this guarantee for one root never
+        # silently zeroes another); it never touches - never even looks
+        # at - anything ranked ahead of it. At the boundary where every
+        # included item is already its own root's sole representative,
+        # there is no such safe tail item; the guarantee is skipped for
+        # that root rather than evicting a higher-scoring note (see the
+        # `displace_at is None` branch below) - the "never zero" property
+        # is best-effort, not absolute, when k is tight.
         represented = {wr for wr, _ in included}
         for wr in wiki_roots:
             if wr in represented or not rest_by_root[wr]:
@@ -584,12 +590,19 @@ def select_multi(query: str, start=None, roots: list[WikiRoot] | None = None,
                     break
             if displace_at is None:
                 # Every current item is its own root's sole representative
-                # (e.g. k == n_roots) - there is no tail item to displace
-                # without zeroing a DIFFERENT root instead. Still honor
-                # this root's own guarantee via the lowest-ranked slot;
-                # see the docstring's "never a higher-scoring one" - that
-                # invariant holds here too, this is still the tail.
-                displace_at = len(included) - 1
+                # (e.g. k == n_roots, or k exhausted with more than one
+                # root still needing a seat) - there is no tail item to
+                # displace without EITHER zeroing a different root or,
+                # worse, evicting the single highest-ranked item itself
+                # (the tail of `included` in this state can be the global
+                # #1 - e.g. k=1 with 2 roots). The floor is an inclusion
+                # guarantee only; it never pre-empts a higher-scoring note
+                # from the top ranks, so when honoring it here is only
+                # possible by doing exactly that, this root goes
+                # unrepresented instead - the same safe degradation the
+                # pre-fix per-root fill fell back to whenever k ran out
+                # before every root got a turn.
+                continue
             removed_wr, removed_nid = included.pop(displace_at)
             used -= _slen(removed_wr, removed_nid)
             included.append((wr, best_nid))
