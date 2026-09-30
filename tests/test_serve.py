@@ -8,9 +8,11 @@ file written to disk between two requests against the SAME running daemon
 
 import shutil
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from shapa import serve, store
 
@@ -108,6 +110,139 @@ class TestDaemonStaleness(unittest.TestCase):
             store.record_use(self.tmp, "n0")
             uses, _ = store.get_use(self.tmp, "n0")
         self.assertEqual(uses, 2)
+
+
+class TestDaemonRelevance(unittest.TestCase):
+    """GAP D (shapa-backend-spec.md §5): the daemon's "relevance" command
+    must return the exact same scores `fetch.raw_relevance` would compute
+    in-process - it's the SAME function, just called on a long-lived
+    process that already has the embedding model loaded, not a second,
+    independently-written scorer that could silently drift."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        _note(self.tmp, "a", "git workflow testing discipline")
+        _note(self.tmp, "b", "an unrelated note about lunch")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_relevance_matches_in_process_scoring(self):
+        from shapa import fetch, frontmatter
+        from shapa.nodes import load_nodes
+
+        nodes = load_nodes(self.tmp)
+        bodies = {nid: frontmatter.parse(n.path).body for nid, n in nodes.items()}
+        expected_bm25, expected_emb, expected_used = fetch.raw_relevance(
+            self.tmp, nodes, bodies, "git workflow"
+        )
+
+        with serve.Daemon(self.tmp):
+            reply = serve.request(self.tmp, {"cmd": "relevance", "query": "git workflow"})
+
+        self.assertTrue(reply["ok"])
+        self.assertEqual(reply["embed_available"], expected_used)
+        for nid in nodes:
+            self.assertAlmostEqual(reply["bm25_rel"].get(nid, 0.0), expected_bm25[nid], places=6)
+            self.assertAlmostEqual(reply["emb_rel"].get(nid, 0.0), expected_emb[nid], places=4)
+
+    def test_fetch_select_is_identical_with_and_without_the_daemon(self):
+        # The full acceptance for this slice: select()'s output (ranking +
+        # snippets) must not change depending on whether a daemon happens
+        # to be running for the root - the daemon is latency-only (§5).
+        from shapa import fetch
+
+        cold = fetch.select("git workflow testing discipline", root=self.tmp, k=5)
+        with serve.Daemon(self.tmp):
+            warm = fetch.select("git workflow testing discipline", root=self.tmp, k=5)
+
+        self.assertEqual([n.id for n, _ in cold], [n.id for n, _ in warm])
+        self.assertEqual([snip for _, snip in cold], [snip for _, snip in warm])
+
+    def test_read_only_callers_never_use_the_daemon(self):
+        # shapa.mcp's search tool passes read_only=True precisely so a plain
+        # search never leaves a byte behind - that must hold even when a
+        # daemon IS running and would happily answer; read_only skips the
+        # daemon round-trip entirely (fetch.py's own contract), not just
+        # the cache write.
+        from shapa import fetch
+
+        with serve.Daemon(self.tmp):
+            with mock.patch.object(serve, "request") as mock_request:
+                fetch.select("git workflow", root=self.tmp, k=5, read_only=True)
+        mock_request.assert_not_called()
+
+
+class TestEnsureRunning(unittest.TestCase):
+    """GAP D autostart: `ensure_running` pings first and only spawns a
+    background process on a real miss - and the spawn itself never blocks
+    or raises, matching every other entrypoint in this module's
+    never-blocks contract. Popen is mocked throughout so this test never
+    leaves a real background process behind."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_does_not_spawn_when_already_running(self):
+        with serve.Daemon(self.tmp):
+            with mock.patch("subprocess.Popen") as mock_popen:
+                result = serve.ensure_running(self.tmp)
+        self.assertTrue(result)
+        mock_popen.assert_not_called()
+
+    def test_spawns_a_detached_serve_process_when_not_running(self):
+        with mock.patch("subprocess.Popen") as mock_popen:
+            result = serve.ensure_running(self.tmp, idle_timeout=123.0)
+        self.assertTrue(result)
+        mock_popen.assert_called_once()
+        argv, kwargs = mock_popen.call_args
+        cmd = argv[0]
+        self.assertIn("shapa.serve", cmd)
+        self.assertIn(str(self.tmp), cmd)
+        self.assertIn("--idle-timeout", cmd)
+        self.assertIn("123.0", cmd)
+        self.assertTrue(kwargs.get("start_new_session"))
+
+    def test_a_failed_spawn_never_raises(self):
+        with mock.patch("subprocess.Popen", side_effect=OSError("no fork for you")):
+            result = serve.ensure_running(self.tmp)
+        self.assertFalse(result)
+
+
+class TestIdleWatchdog(unittest.TestCase):
+    """GAP D: an autostarted daemon must not run forever - `_idle_watchdog`
+    sets the stop event once the server has gone idle past the timeout."""
+
+    def test_sets_stop_event_after_idle_timeout(self):
+        server = mock.Mock()
+        server.last_activity = time.monotonic()
+        stop_event = threading.Event()
+
+        t = threading.Thread(
+            target=serve._idle_watchdog, args=(server, stop_event, 0.05), daemon=True
+        )
+        t.start()
+        self.assertTrue(stop_event.wait(timeout=2.0))
+        t.join(timeout=2.0)
+
+    def test_a_recent_request_resets_the_idle_clock(self):
+        server = mock.Mock()
+        server.last_activity = time.monotonic()
+        stop_event = threading.Event()
+
+        t = threading.Thread(
+            target=serve._idle_watchdog, args=(server, stop_event, 0.2), daemon=True
+        )
+        t.start()
+        time.sleep(0.1)
+        server.last_activity = time.monotonic()  # a request "just arrived"
+        # Still well inside the (reset) idle window - must not have fired yet.
+        self.assertFalse(stop_event.wait(timeout=0.05))
+        stop_event.set()
+        t.join(timeout=2.0)
 
 
 if __name__ == "__main__":

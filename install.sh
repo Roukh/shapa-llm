@@ -90,7 +90,16 @@ INV="$(resolve_shapa)"
 # shapa/config.py). We deliberately do NOT bake SHAPA_MEMORY into the hook
 # command: that way a later `shapa init /new/path` moves the wiki and the hooks
 # follow it automatically, instead of silently reading the old baked-in path.
-BOOTSTRAP_CMD="$INV bootstrap"
+#
+# SHAPA_SERVE_AUTOSTART=1 (GAP D, shapa-backend-spec.md §5): the SessionStart
+# hook autostarts each in-scope wiki's `shapa serve` daemon detached in the
+# background (idle-timeout, never blocks session start on any failure - see
+# bootstrap.py's `_maybe_autostart_daemons`), so `shapa fetch`'s per-prompt
+# embedding lookups skip reloading the model2vec model on every single
+# invocation once the daemon is up. Bare `shapa serve`/`bootstrap.main()`
+# calls (tests, manual runs) stay opt-out by default - only this installed
+# hook command turns it on.
+BOOTSTRAP_CMD="SHAPA_SERVE_AUTOSTART=1 $INV bootstrap"
 FETCH_CMD="$INV fetch"
 CAPTURE_CMD="$INV capture"
 MAINTAIN_CMD="$INV maintain --prune"
@@ -335,7 +344,7 @@ fi
 [ "$DRY_RUN" -eq 1 ] && exit 0
 if harness_in_scope claude; then
   echo "Installed shapa hooks into $SETTINGS (memory: $MEMORY):"
-  echo "  SessionStart     -> $INV bootstrap"
+  echo "  SessionStart     -> $BOOTSTRAP_CMD"
   echo "  UserPromptSubmit -> $INV fetch"
   echo "  Stop             -> $INV capture ; $INV maintain --prune"
   echo "  SubagentStop     -> $INV capture"

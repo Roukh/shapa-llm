@@ -351,6 +351,64 @@ class TestHookMain(BootstrapTestCase):
         self.assertEqual(payload["hookSpecificOutput"]["additionalContext"], "")
 
 
+class TestAutostartGating(BootstrapTestCase):
+    """GAP D (shapa-backend-spec.md §5): SessionStart may autostart each
+    in-scope wiki's `shapa serve` daemon, but ONLY when
+    SHAPA_SERVE_AUTOSTART is set - unset (the default, and every OTHER test
+    in this file) must never touch `serve.ensure_running` at all, so the
+    rest of this suite's many direct/subprocess `bootstrap.main()` calls
+    never spawn a real background process."""
+
+    def _run_main(self, stdin_text: str, argv=None):
+        old_stdin, old_stdout = sys.stdin, sys.stdout
+        sys.stdin = io.StringIO(stdin_text)
+        sys.stdout = io.StringIO()
+        try:
+            with self.assertRaises(SystemExit):
+                bootstrap.main(argv or [])
+        finally:
+            sys.stdin, sys.stdout = old_stdin, old_stdout
+
+    def test_autostart_skipped_when_env_var_unset(self):
+        wiki = self.tmp / "wiki"
+        config.set_memory_dir(wiki)
+        _note(wiki, "n1", "a note")
+        os.environ.pop(bootstrap.AUTOSTART_ENV_VAR, None)
+
+        with mock.patch("shapa.serve.ensure_running") as mock_ensure:
+            self._run_main(json.dumps({"cwd": str(wiki)}))
+        mock_ensure.assert_not_called()
+
+    def test_autostart_called_per_root_when_env_var_set(self):
+        wiki = self.tmp / "wiki"
+        config.set_memory_dir(wiki)
+        _note(wiki, "n1", "a note")
+        os.environ[bootstrap.AUTOSTART_ENV_VAR] = "1"
+
+        with mock.patch("shapa.serve.ensure_running") as mock_ensure:
+            self._run_main(json.dumps({"cwd": str(wiki)}))
+        mock_ensure.assert_called_once_with(wiki.resolve())
+
+    def test_a_failed_autostart_never_breaks_session_start(self):
+        wiki = self.tmp / "wiki"
+        config.set_memory_dir(wiki)
+        _note(wiki, "n1", "a note")
+        os.environ[bootstrap.AUTOSTART_ENV_VAR] = "1"
+
+        with mock.patch("shapa.serve.ensure_running", side_effect=RuntimeError("boom")):
+            old_stdout = sys.stdout
+            sys.stdin, sys.stdout = io.StringIO(json.dumps({"cwd": str(wiki)})), io.StringIO()
+            try:
+                with self.assertRaises(SystemExit) as exc:
+                    bootstrap.main([])
+                out = sys.stdout.getvalue()
+            finally:
+                sys.stdout = old_stdout
+        self.assertEqual(exc.exception.code, 0)
+        payload = json.loads(out)
+        self.assertIn("n1", payload["hookSpecificOutput"]["additionalContext"])
+
+
 class TestBootstrapSubprocess(unittest.TestCase):
     """One real end-to-end pass through `python -m shapa.bootstrap`, not just
     calling main() in-process - catches argv/stdin wiring bugs the in-process

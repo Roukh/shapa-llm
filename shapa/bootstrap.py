@@ -24,13 +24,26 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
-from shapa import config
+from shapa import config, serve
 from shapa.config import WikiRoot
 from shapa.nodes import Node, load_nodes
 from shapa.score import score_meta
+
+#: Opt-in switch (GAP D, shapa-backend-spec.md §5): when truthy, the
+#: SessionStart hook autostarts each in-scope wiki's `shapa serve` daemon in
+#: the background so the FIRST `shapa fetch` of the session already has it
+#: warm (or close to it) instead of every fetch in the session paying the
+#: ~0.5s embedding-model-load cold cost `serve.ensure_running` exists to
+#: amortize. Opt-in, not default-on, so importing/calling `bootstrap.main`
+#: from the test suite (which does so directly, in-process, many times)
+#: never spawns a real background process unless a test explicitly asks for
+#: that - see `_maybe_autostart_daemons`'s docstring. `install.sh` sets this
+#: for a real install's SessionStart hook command.
+AUTOSTART_ENV_VAR = "SHAPA_SERVE_AUTOSTART"
 
 # --- budget (shapa-backend-spec.md §4.2 Tier 1) -----------------------------
 #: ~1800 tokens, converted with a 4-chars/token heuristic - deliberately no
@@ -222,6 +235,24 @@ def build_context(
     return "\n".join(lines)
 
 
+def _maybe_autostart_daemons(wiki_roots: list[WikiRoot]) -> None:
+    """Best-effort daemon autostart, gated on :data:`AUTOSTART_ENV_VAR`
+    (GAP D). Called only from :func:`main` (the real SessionStart hook
+    entrypoint) - never from :func:`build_context`/:func:`select`, so
+    calling those directly (every existing test, and any future caller
+    that wants the pure metadata overview without side effects) never
+    spawns a background process regardless of the environment. Swallows
+    every exception: a failed autostart must never turn into a failed
+    session start, matching this module's own never-blocks contract."""
+    if not os.environ.get(AUTOSTART_ENV_VAR):
+        return
+    for wr in wiki_roots:
+        try:
+            serve.ensure_running(wr.path)
+        except Exception:
+            pass  # latency-only; never let this break SessionStart
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         prog="python3 -m shapa.bootstrap",
@@ -275,6 +306,11 @@ def main(argv: list[str] | None = None) -> None:
         text = build_context(start=start, budget=args.budget)
     except Exception:
         text = ""  # never block session start
+
+    try:
+        _maybe_autostart_daemons(config.wiki_roots(start))
+    except Exception:
+        pass  # latency-only (GAP D); never block session start
 
     print(json.dumps({
         "hookSpecificOutput": {

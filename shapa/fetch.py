@@ -23,7 +23,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from shapa import config, embed, frontmatter, rank, store
+from shapa import config, embed, frontmatter, rank, serve, store
 from shapa.bm25 import bm25_scores as _bm25_scores
 from shapa.bm25 import words as _words
 from shapa.config import WikiRoot
@@ -125,6 +125,60 @@ class _RootData:
     #: ``rel`` - see the absolute-guard note on :func:`select_multi`.
     bm25_rel: dict[str, float] = field(default_factory=dict)
     emb_rel: dict[str, float] = field(default_factory=dict)
+    #: GAP D - whether the semantic channel actually ran for THIS root's
+    #: scores above (via the daemon or the in-process cold path - either
+    #: way, the same outcome :func:`shapa.embed.available` would report).
+    #: :func:`select_multi` reads this instead of calling
+    #: ``embed.available()`` itself, which would otherwise force this
+    #: process to load the embedding model just to answer the absolute-
+    #: guard branch check, even when every root's relevance was already
+    #: answered by a warm daemon that never needed this process to touch
+    #: the model at all - see :func:`_load_root_data`'s GAP D note.
+    embed_used: bool = False
+
+
+def raw_relevance(root: Path, nodes: dict[str, Node], bodies: dict[str, str], query: str,
+                   *, read_only: bool = False) -> tuple[dict[str, float], dict[str, float], bool]:
+    """Compute BM25 + embedding RAW relevance for every id in *nodes* against
+    *query*. Pure scoring only - no fusion, no value/snippet/merge logic -
+    factored out of :func:`_load_root_data` so there is exactly ONE place
+    that builds the id-enriched BM25/embedding text (GAP C's fix) and scores
+    it, shared by the in-process cold path below AND ``shapa.serve``'s
+    ``"relevance"`` command (GAP D, shapa-backend-spec.md §5): a warm daemon
+    answering from its own long-lived process (the embedding model loaded
+    once at daemon start, never reloaded per request) must return
+    byte-identical scores to the cold path, never a second, divergent
+    implementation that could drift from this one.
+
+    Returns ``(bm25_rel, emb_rel, embed_used)`` - both dicts complete over
+    every id in *nodes* (0.0 explicit, never missing), and ``embed_used``
+    True iff the semantic backend actually ran (so a caller mirrors the
+    cold path's "fuse when both exist, else BM25-only" branch exactly).
+
+    ``read_only=True`` forwards to :func:`shapa.embed.note_vectors` - see
+    its docstring (never writes the embedding cache)."""
+    docs = {}
+    embed_texts = {}
+    for nid, node in nodes.items():
+        body = bodies[nid]
+        id_topic = node.id.replace("-", " ") + " " + " ".join(node.outlinks)
+        docs[nid] = _words(body + " " + id_topic)
+        # GAP C: embed the same id-enriched text BM25 already scores, not
+        # the bare body. A note's own id/title (e.g. "response-style") is
+        # often the exact phrase a query paraphrases ("how should you
+        # respond to me") - leaving it out of the embedded text silently
+        # under-weighted title-relevant semantic matches relative to
+        # BM25's view of the same note, which already includes it.
+        embed_texts[nid] = id_topic + "\n" + body
+
+    bm25_rel = _bm25_scores(query, docs)
+    if embed.available():
+        vecs = embed.note_vectors(root, embed_texts, read_only=read_only)
+        qv = embed.embed_one(query) if query.strip() else None
+        emb_rel = {nid: (max(0.0, embed.cosine(qv, vecs[nid])) if qv is not None else 0.0)
+                   for nid in nodes}
+        return bm25_rel, emb_rel, True
+    return bm25_rel, {nid: 0.0 for nid in nodes}, False
 
 
 def _load_root_data(root: Path, query: str, *, read_only: bool = False) -> _RootData:
@@ -146,6 +200,20 @@ def _load_root_data(root: Path, query: str, *, read_only: bool = False) -> _Root
     matching the contract every caller here already relies on - ``fuse``
     itself only returns the ids it positively ranked.
 
+    **GAP D (per-prompt latency, shapa-backend-spec.md §5):** before scoring
+    in-process, this tries the warm ``shapa serve`` daemon for *root* via
+    :func:`shapa.serve.request` - a ~0.25s-timeout socket round-trip against
+    a process that already has the embedding model loaded, instead of this
+    process loading it fresh (empirically ~0.5s of ``model2vec`` import +
+    ``from_pretrained``, dwarfing every other step here). Skipped entirely
+    when ``read_only`` (the daemon's ``"relevance"`` handler writes the
+    embedding cache same as the cold path would, which a read-only caller
+    like ``shapa.mcp``'s search tool must never do - see that flag's
+    existing contract below). Any daemon failure (not running, stale, a
+    malformed reply) is silently ignored and falls through to the identical
+    in-process computation :func:`raw_relevance` always did - the daemon is
+    latency-only, per §5, never a correctness dependency.
+
     ``read_only=True`` skips every disk-writing side effect this lookup
     would otherwise make (the embedding cache, the usage-index db) - same
     scores, computed in memory instead of persisted, for a caller that
@@ -155,33 +223,20 @@ def _load_root_data(root: Path, query: str, *, read_only: bool = False) -> _Root
     if not root.is_dir():
         return _RootData()
     nodes = load_nodes(root)
+    bodies = {nid: frontmatter.parse(node.path).body for nid, node in nodes.items()}
 
-    docs = {}
-    bodies = {}
-    embed_texts = {}
-    for nid, node in nodes.items():
-        body = frontmatter.parse(node.path).body
-        bodies[nid] = body
-        id_topic = node.id.replace("-", " ") + " " + " ".join(node.outlinks)
-        docs[nid] = _words(body + " " + id_topic)
-        # GAP C: embed the same id-enriched text BM25 already scores, not
-        # the bare body. A note's own id/title (e.g. "response-style") is
-        # often the exact phrase a query paraphrases ("how should you
-        # respond to me") - leaving it out of the embedded text silently
-        # under-weighted title-relevant semantic matches relative to
-        # BM25's view of the same note, which already includes it.
-        embed_texts[nid] = id_topic + "\n" + body
+    daemon_reply = None if read_only else serve.request(root, {"cmd": "relevance", "query": query})
+    if daemon_reply is not None and daemon_reply.get("ok"):
+        bm25_rel = {nid: float(daemon_reply.get("bm25_rel", {}).get(nid, 0.0)) for nid in nodes}
+        emb_rel = {nid: float(daemon_reply.get("emb_rel", {}).get(nid, 0.0)) for nid in nodes}
+        embed_used = bool(daemon_reply.get("embed_available", False))
+    else:
+        bm25_rel, emb_rel, embed_used = raw_relevance(root, nodes, bodies, query, read_only=read_only)
 
-    bm25_rel = _bm25_scores(query, docs)
-    if embed.available():
-        vecs = embed.note_vectors(root, embed_texts, read_only=read_only)
-        qv = embed.embed_one(query) if query.strip() else None
-        emb_rel = {nid: (max(0.0, embed.cosine(qv, vecs[nid])) if qv is not None else 0.0)
-                   for nid in nodes}
+    if embed_used:
         fused = rank.fuse([bm25_rel, emb_rel])
         rel = {nid: fused.get(nid, 0.0) for nid in nodes}
     else:
-        emb_rel = {nid: 0.0 for nid in nodes}
         rel = bm25_rel
 
     # Value scoring reads the ``uses``/``last_used`` signal from the index
@@ -202,7 +257,7 @@ def _load_root_data(root: Path, query: str, *, read_only: bool = False) -> _Root
             meta = {**node.meta, "uses": uses, "last_used": last_used or node.meta.get("last_used")}
         value[nid] = score_meta(meta)[0]
     return _RootData(nodes=nodes, bodies=bodies, rel=rel, value=value,
-                      bm25_rel=bm25_rel, emb_rel=emb_rel)
+                      bm25_rel=bm25_rel, emb_rel=emb_rel, embed_used=embed_used)
 
 
 def select(query: str, root=None, k: int = DEFAULT_K, budget: int = DEFAULT_BUDGET,
@@ -359,7 +414,15 @@ def select_multi(query: str, start=None, roots: list[WikiRoot] | None = None,
     # on its own when there is no semantic channel to ask instead.
     top_bm25 = max((per_root[wr].bm25_rel.get(nid, 0.0) for wr, nid in non_anchor_ids), default=0.0)
     top_emb = max((per_root[wr].emb_rel.get(nid, 0.0) for wr, nid in non_anchor_ids), default=0.0)
-    strong_enough = (top_emb >= MIN_ABSOLUTE_EMBED if embed.available()
+    # GAP D: which branch to check is read off each root's OWN
+    # _RootData.embed_used (set by _load_root_data from either the daemon's
+    # answer or the cold path's real embed.available() result) rather than
+    # calling embed.available() again here - that second call would force
+    # THIS process to load the embedding model just to pick a branch, even
+    # on every root's score having come from a warm daemon that never
+    # needed this process to touch the model at all.
+    embed_used_anywhere = any(per_root[wr].embed_used for wr in wiki_roots)
+    strong_enough = (top_emb >= MIN_ABSOLUTE_EMBED if embed_used_anywhere
                       else top_bm25 >= MIN_ABSOLUTE_BM25_BARE_CORE)
 
     if not query_has_text:

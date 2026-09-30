@@ -32,12 +32,15 @@ import os
 import signal
 import socket
 import socketserver
+import subprocess
 import sys
 import tempfile
 import threading
+import time
 from pathlib import Path
 
-from shapa import config, store
+from shapa import config, frontmatter, store
+from shapa.nodes import load_nodes
 
 #: NOT ``<root>/.shapa-daemon.sock``: ``AF_UNIX`` socket paths are capped at
 #: ~108 bytes on Linux (``sizeof(sun_path)``), and a wiki root nested inside
@@ -55,6 +58,13 @@ CONNECT_TIMEOUT = 0.25
 #: Once connected, a real request may take longer than the connect probe
 #: (a cold sync on a large wiki) - generous but bounded.
 READ_TIMEOUT = 5.0
+#: Default ``--idle-timeout`` for a daemon started by :func:`ensure_running`
+#: (GAP D, shapa-backend-spec.md §5) - a per-root daemon nobody has queried
+#: in this long exits on its own, so an autostarted daemon never outlives
+#: the session that spawned it indefinitely. ``main()``'s own default (no
+#: flag passed) stays "run forever", matching a human running
+#: ``shapa serve`` in a terminal on purpose.
+DEFAULT_IDLE_TIMEOUT = 900.0
 
 
 def _root_key(root) -> str:
@@ -90,6 +100,24 @@ def _answer(root: Path, payload: dict) -> dict:
             k = payload.get("k")
             results = store.search(root, query, k=k, conn=conn)
             return {"ok": True, "results": [{"id": nid, "score": s} for nid, s in results]}
+        if cmd == "relevance":
+            # GAP D (shapa-backend-spec.md §5): the whole point of this
+            # command is a warm embedding model - :func:`shapa.embed.available`
+            # loads it once on this long-lived process's first call and
+            # keeps it in the module-level cache for every request after,
+            # instead of ``fetch.py``'s cold path paying ~0.5s of
+            # ``model2vec`` import + ``from_pretrained`` on every single
+            # invocation. Lazy import to avoid a module-level import cycle
+            # with ``fetch.py`` (which imports ``shapa.serve`` to reach
+            # :func:`request`) - safe here since this only runs once the
+            # whole package has already finished importing.
+            from shapa.fetch import raw_relevance
+            query = str(payload.get("query", ""))
+            nodes = load_nodes(root)
+            bodies = {nid: frontmatter.parse(node.path).body for nid, node in nodes.items()}
+            bm25_rel, emb_rel, embed_used = raw_relevance(root, nodes, bodies, query, read_only=False)
+            return {"ok": True, "bm25_rel": bm25_rel, "emb_rel": emb_rel,
+                    "embed_available": embed_used}
         return {"ok": False, "error": f"unknown cmd {cmd!r}"}
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
@@ -99,6 +127,7 @@ def _answer(root: Path, payload: dict) -> dict:
 
 class _Handler(socketserver.BaseRequestHandler):
     def handle(self) -> None:
+        self.server.last_activity = time.monotonic()  # GAP D idle watchdog
         try:
             self.request.settimeout(READ_TIMEOUT)
             chunks = []
@@ -143,6 +172,11 @@ class Daemon:
         server = socketserver.ThreadingUnixStreamServer(str(self.sock_path), _Handler)
         server.daemon_threads = True
         server.shapa_root = self.root
+        # Read by _Handler.handle() on every request and by main()'s idle
+        # watchdog (GAP D) - a fresh timestamp at start so a daemon that
+        # never receives a single request still idles out on schedule
+        # rather than being treated as "just used" forever.
+        server.last_activity = time.monotonic()
         os.chmod(self.sock_path, 0o600)  # owner-checked (§5)
 
         self._server = server
@@ -197,6 +231,63 @@ def request(root, payload: dict, timeout: float = CONNECT_TIMEOUT) -> dict | Non
         return None
 
 
+def ensure_running(root, *, idle_timeout: float | None = DEFAULT_IDLE_TIMEOUT) -> bool:
+    """Best-effort: make sure *root*'s warm daemon is answering, starting it
+    detached in the background if it isn't (GAP D, shapa-backend-spec.md
+    §5). Returns True if a daemon was already up or a spawn was attempted,
+    False only on an unexpected local failure - never raises, and never
+    waits for the spawned process to finish starting (fire-and-forget: the
+    very first request after a fresh spawn simply falls through to the cold
+    path via :func:`request`'s own short connect timeout, same as any other
+    daemon-absent case; the NEXT request finds it warm).
+
+    Deliberately called only from the live hook entrypoints
+    (``bootstrap.main``), never from a pure selection function - so tests
+    calling ``build_context()``/``select()``/etc. directly, or the test
+    suite's own use of :class:`Daemon` as a context manager, stay
+    side-effect-free and never spawn a real background process."""
+    try:
+        if request(root, {"cmd": "ping"}) is not None:
+            return True  # already up and answering - nothing to spawn
+    except Exception:
+        pass
+    try:
+        SOCKET_DIR.mkdir(parents=True, exist_ok=True)
+        os.chmod(SOCKET_DIR, 0o700)
+    except OSError:
+        return False
+    argv = [sys.executable, "-m", "shapa.serve", str(root)]
+    if idle_timeout is not None:
+        argv += ["--idle-timeout", str(idle_timeout)]
+    try:
+        # start_new_session detaches the child from this process's session
+        # so it survives past the short-lived hook process that spawned it
+        # (a `shapa bootstrap` invocation exits almost immediately after
+        # this call returns) instead of being reaped as an orphaned child
+        # of a process group that's about to disappear.
+        subprocess.Popen(
+            argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL, start_new_session=True,
+        )
+    except OSError:
+        return False
+    return True
+
+
+def _idle_watchdog(server, stop_event: threading.Event, idle_timeout: float) -> None:
+    """Sets *stop_event* once *server* has gone ``idle_timeout`` seconds
+    with no request (GAP D) - checked against :attr:`last_activity`, bumped
+    by :meth:`_Handler.handle` on every request and seeded at
+    :meth:`Daemon.start`. Runs as a daemon thread; exits on its own once it
+    sets the event, or immediately if the event is set from elsewhere
+    first (a real SIGTERM/SIGINT)."""
+    poll = max(0.1, min(5.0, idle_timeout / 4))
+    while not stop_event.wait(poll):
+        if time.monotonic() - server.last_activity >= idle_timeout:
+            stop_event.set()
+            return
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         prog="python3 -m shapa.serve",
@@ -204,6 +295,14 @@ def main(argv: list[str] | None = None) -> None:
     )
     parser.add_argument("root", nargs="?", default=None,
                         help="Wiki root (default: $SHAPA_MEMORY or the discovered wiki).")
+    parser.add_argument(
+        "--idle-timeout", type=float, default=None,
+        help="Exit on its own after this many idle seconds with no requests "
+             "(default: run forever - for a human running `shapa serve` on "
+             "purpose; ensure_running()'s autostart passes "
+             f"{DEFAULT_IDLE_TIMEOUT:.0f}s so an autostarted daemon never "
+             "outlives its session indefinitely).",
+    )
     args = parser.parse_args(argv)
 
     root = Path(args.root).expanduser() if args.root else config.resolve(None)
@@ -218,6 +317,13 @@ def main(argv: list[str] | None = None) -> None:
 
     signal.signal(signal.SIGTERM, _handle_signal)
     signal.signal(signal.SIGINT, _handle_signal)
+
+    if args.idle_timeout:
+        threading.Thread(
+            target=_idle_watchdog, args=(daemon._server, stop_event, args.idle_timeout),
+            daemon=True,
+        ).start()
+
     try:
         stop_event.wait()
     finally:
