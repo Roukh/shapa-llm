@@ -31,7 +31,17 @@ from shapa.heartbeat import find_orphans
 from shapa.nodes import build_graph, is_protected, load_nodes
 from shapa.score import _parse_ts, score_meta
 
-MERGE_THRESHOLD = 0.9   # >= this similarity -> auto-merge (near-duplicate)
+MERGE_THRESHOLD_JACCARD = 0.9   # >= this token-Jaccard similarity -> auto-merge
+# Embedding cosine similarity runs "hotter" than shingle-Jaccard on short notes
+# that merely share topic/wording (e.g. two "old" notes about the same linked
+# note scored ~0.92 cosine but ~0.3 Jaccard) - a single shared threshold picked
+# for one backend false-merges under the other. Calibrated with headroom above
+# that kind of same-topic-different-content pair and below true near-duplicates
+# (verbatim-identical bodies score 1.0).
+MERGE_THRESHOLD_EMBED = 0.95    # >= this cosine similarity -> auto-merge
+# Back-compat alias: existing callers importing MERGE_THRESHOLD keep working,
+# pointed at the lexical (always-available, dependency-free) default.
+MERGE_THRESHOLD = MERGE_THRESHOLD_JACCARD
 CONTRA_LOW = 0.6        # [LOW, MERGE) rule-vs-rule -> contradiction candidate
 _TOKEN_RE = re.compile(r"[a-z][a-z0-9]{2,}")
 _STOP = {"the", "and", "for", "with", "that", "this", "are", "but", "not",
@@ -53,6 +63,13 @@ def _jaccard(a: set, b: set) -> float:
     if not a or not b:
         return 0.0
     return len(a & b) / len(a | b)
+
+
+def default_merge_threshold() -> float:
+    """The backend-appropriate auto-merge threshold for the *current* similarity
+    source (embeddings when available, else token-Jaccard) - see the two
+    MERGE_THRESHOLD_* constants for why they differ."""
+    return MERGE_THRESHOLD_EMBED if embed.available() else MERGE_THRESHOLD_JACCARD
 
 
 def find_stale(nodes: dict, now: datetime, max_age_days: int) -> list[str]:
@@ -113,14 +130,18 @@ def _repoint(directory, old_id: str, new_id: str) -> None:
             p.write_text(pat.sub(f"[[{new_id}", t), encoding="utf-8")
 
 
-def merge_duplicates(directory, threshold: float = MERGE_THRESHOLD,
+def merge_duplicates(directory, threshold: float | None = None,
                      dry_run: bool = False) -> list[tuple]:
     """Auto-merge near-duplicate pairs. Returns [(dropped, kept, sim)].
 
     With dry_run=True, computes what would merge but changes nothing.
+    threshold defaults to the backend-appropriate value (see
+    default_merge_threshold) - callers that pin a value opt out of that.
     """
     from pathlib import Path
     directory = Path(directory)
+    if threshold is None:
+        threshold = default_merge_threshold()
     nodes = load_nodes(directory)
     pairs = _similarity_pairs(nodes, directory, threshold)
     merged = []
@@ -155,17 +176,21 @@ def _looks_like_note(out: str, ba: str, bb: str) -> bool:
 
 
 def resolve_contradictions(directory, low: float = CONTRA_LOW,
-                           high: float = MERGE_THRESHOLD, timeout: int = 180) -> list[tuple]:
+                           high: float | None = None, timeout: int = 180) -> list[tuple]:
     """LLM-reconcile similar rule-vs-rule pairs via the local ``claude`` CLI.
 
     Returns [(dropped, kept)] for pairs that were reconciled into one note.
     No-op (returns []) if the claude CLI is not available. The CLI is invoked
     with stdin closed, hooks disabled (``--settings {hooks:{}}``), and a neutral
     cwd, so it runs as a clean LLM call uncontaminated by global/project hooks.
+    high defaults to the backend-appropriate merge threshold (see
+    default_merge_threshold).
     """
     import tempfile
     from pathlib import Path
     directory = Path(directory)
+    if high is None:
+        high = default_merge_threshold()
     if not shutil.which("claude"):
         return []
     neutral_cwd = tempfile.gettempdir()
@@ -223,7 +248,7 @@ def resolve_contradictions(directory, low: float = CONTRA_LOW,
 
 def maintain(directory, prune: bool = False, resolve: bool = False,
              max_age_days: int = 90, now: datetime | None = None,
-             dry_run: bool = False, merge_threshold: float = MERGE_THRESHOLD) -> dict:
+             dry_run: bool = False, merge_threshold: float | None = None) -> dict:
     from pathlib import Path
     directory = Path(directory)
     now = now or datetime.now(timezone.utc)
@@ -262,8 +287,11 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--dry-run", action="store_true", dest="dry_run",
                         help="Show what would merge/prune; change nothing.")
     parser.add_argument("--max-age-days", type=int, default=90, dest="max_age_days")
-    parser.add_argument("--merge-threshold", type=float, default=MERGE_THRESHOLD,
-                        dest="merge_threshold", help="Similarity >= this auto-merges (default 0.9).")
+    parser.add_argument("--merge-threshold", type=float, default=None,
+                        dest="merge_threshold",
+                        help="Similarity >= this auto-merges (default: backend-appropriate - "
+                             f"{MERGE_THRESHOLD_EMBED} for embeddings, {MERGE_THRESHOLD_JACCARD} "
+                             "for token-Jaccard).")
     args = parser.parse_args(argv)
 
     r = maintain(config.resolve(args.directory), prune=args.prune, resolve=args.resolve,
