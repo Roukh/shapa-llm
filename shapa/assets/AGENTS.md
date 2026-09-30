@@ -75,17 +75,45 @@ A node's value to the consuming agent is scored from four fields (see §6.5; ful
 
 Score = `locus_weight × (consequence / 10) × freshness × use_factor`, where freshness decays since `last_used` with a stability that grows with consequence, and `use_factor` rises with `uses`. Run `shapa score` (or `python3 -m shapa.score $SHAPA_MEMORY`) to rank notes.
 
+### 3.1 Progressive-disclosure fields (required for memory/rule/issue; recommended for reference)
+
+- `summary` — one line, <=160 characters, no embedded newline. This is the
+  ONLY thing a session-start bootstrap loads for a note; write it so it is
+  useful on its own, the way a Claude Code skill's `description` is. Missing
+  or oversized is warning F04 (error once backfilled).
+- `scope` — `global` (true in any repo) or `repo` (true only in this wiki's
+  own repo). Must match physical location (F06, auto-fixable). Placement is
+  an agent decision, not automatic — see `placement.md`.
+- `applies_to` — repo name (or list); used only as a capture-time routing
+  flag (`--scope external --applies-to <repo>`) that files the note into
+  that other repo's own wiki. The note's own stored `scope` is then `repo`
+  (physically in that repo) — `external` is not a value `scope` itself
+  takes; see decision 4/6 in the shapa-backend spec.
+- `tags` — optional kebab-case list for keyword boosting.
+- `status` — `active` (default), `superseded`, or `draft` (S04).
+- `supersedes` — optional id of a note this one replaces; dangling ref is F08.
+
 ---
 
-## 4. Node body (LLM autonomy — not enforced)
+## 4. Node body
 
-The body is everything after the closing `---` of the frontmatter. **Its format is the maintaining LLM's discretion.** The two former hard rules — the 400-word plain-prose limit and the links-only-in-metadata ban — have been removed in favour of autonomy: the agent that owns this memory decides how a node reads and may use whatever markdown serves it.
+The body is everything after the closing `---`. Format is the maintaining
+LLM's discretion, but SIZE is not free:
 
-Guidance (not enforced):
+- `memory` / `rule` / `issue`: target 150-300 words. A note needing more
+  splits into two linked notes rather than growing one file — this keeps
+  every note inside the range fetch/embed retrieval performs best at
+  (roughly 100-400 tokens; matches this engine's own SNIPPET_CHARS=500 /
+  DEFAULT_BUDGET=4000 constants). Past 300 words: warning F07.
+- `reference` (installed into `arch/`): may run long, but MUST open with a
+  1-2 sentence abstract immediately below the frontmatter, and MUST use `##`
+  headings past ~500 words. Past 2000 words: F07 (split into
+  `arch/<topic>-<n>.md` + an index note).
 
-- Keep a note focused on one operational point; brevity still helps recall, but there is no hard word cap.
-- **Connections to other files appear as Obsidian `[[wikilinks]]` in the body.** This is the only connection mechanism; it is what Obsidian renders in its graph view and what `nodes.py` uses to build the link graph for the heartbeat.
-- Headings, lists, tables, and emphasis are allowed when they aid clarity.
+**Connections to other files appear as Obsidian `[[wikilinks]]` in the
+body.** This is the only connection mechanism; it is what Obsidian renders in
+its graph view and what `nodes.py` uses to build the link graph for the
+heartbeat.
 
 Interlinked operational notes live at the root of the connected wiki; they connect to each other and to type/topic nodes directly (no central index), so clusters form organically. Design docs live in the wiki's `arch/` subdirectory and are a separate cluster. Both use the same uniform frontmatter schema.
 
@@ -141,6 +169,22 @@ It checks:
 - **S02** — `locus` is one of `output`, `output-meta`, or `meta`.
 - **S03** — `uses` is a non-negative integer.
 
+Schema v2 (§3.1) adds warnings-only checks for one release, promoted to
+errors after a one-time backfill — a note missing these never fails
+validation today:
+
+- **F04** — `summary` present, <=160 chars, single line.
+- **F05** — `scope` present, one of `global`/`repo`.
+- **F06** — `scope` matches the file's physical bucket (global vs. repo).
+- **F07** — body past the type's word ceiling (300 memory/rule/issue, 2000 reference).
+- **F08** — `supersedes` names an id that does not exist.
+- **F09** — duplicate `id` across two roots in one `wiki_roots()` result. **Error**, not a warning — checked only by `--all-roots`.
+- **S04** — `status` is one of `active`/`superseded`/`draft`.
+
+```
+python3 -m shapa.validate --all-roots [START]   # also checks F09 across every wiki_roots() root
+```
+
 ---
 
 ## 8. Capture workflow ("always meta")
@@ -187,6 +231,15 @@ shapa tool's own repo:
 There is no central index. Notes connect peer-to-peer and to type/topic
 nodes, so clusters form organically as topics recur. The `arch/` docs are a
 separate cluster and are not wired into the memory graph.
+
+### 10.1 Reading spans more than one wiki
+
+A session's memory is not one directory. `shapa bootstrap`/`fetch`/`search`
+resolve and search ALL of: the global wiki, this repo's own wiki (if
+distinct), and this repo's `external/<repo>/` bucket (if it has no wiki of
+its own). Writing is narrower and agent-gated: a new note declares exactly
+one `scope` and lands in exactly one place — see `placement.md`. Never
+assume a single resolved directory is the whole picture when reading.
 
 ## 11. Privacy invariant (memory is never inside the *tool's* repo)
 
