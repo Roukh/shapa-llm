@@ -38,6 +38,13 @@ commands:
                  repo resolves automatically). Pass ./.shapa for a hidden
                  dot-folder wiki instead — discovery checks .shapa/ before
                  the legacy shapa/ name at every ancestor directory.
+  init --upgrade-docs [DIR]
+                 refresh an EXISTING wiki's AGENTS.md + placement.md from
+                 the bundled assets only — never arch/ templates, never a
+                 user-written note. DIR defaults to the wiki already in
+                 scope (discovery/pointer/default); errors if DIR isn't an
+                 existing wiki. Does not scaffold a new wiki — run plain
+                 `init` first if none exists yet.
   where          print the memory directory path
   bootstrap      session-start metadata-only overview of every wiki in
                  scope (SessionStart hook; id/type/summary only, no bodies)
@@ -81,14 +88,59 @@ def _install_docs(target: Path) -> list[str]:
     return installed
 
 
+#: Docs `--upgrade-docs` is allowed to overwrite: the schema/rules file and
+#: the placement decision rule. Deliberately excludes arch/ (curated project
+#: templates a user may have filled in) and, obviously, any note - this is
+#: the schema-refresh path for an existing wiki (shapa-backend-spec.md §6/§10),
+#: never a way to touch content the agent/operator authored.
+UPGRADABLE_DOCS = ("AGENTS.md", "placement.md")
+
+
+def _upgrade_docs(target: Path) -> list[str]:
+    """Force-overwrite ONLY :data:`UPGRADABLE_DOCS` in *target* from the
+    bundled assets - refreshing an existing wiki's schema docs without
+    touching arch/ templates or any user/agent-written note."""
+    updated: list[str] = []
+    for name in UPGRADABLE_DOCS:
+        src = ASSETS_DIR / name
+        if not src.is_file():
+            continue
+        shutil.copyfile(src, target / name)
+        updated.append(name)
+    return updated
+
+
 def _init(argv: list[str]) -> None:
+    upgrade_docs = "--upgrade-docs" in argv
+    positional = [a for a in argv if a != "--upgrade-docs"]
+
+    if upgrade_docs:
+        # Refresh, not scaffold: default target is whatever wiki is already
+        # in scope (discovery/pointer/default), not a fresh ./shapa - an
+        # explicit DIR still overrides that, same as plain `init`.
+        target = Path(positional[0]).expanduser().resolve() if positional else config.memory_dir()
+        if not (target / config.WIKI_MARKER).is_file():
+            print(
+                f"shapa: no wiki found at {target} ({config.WIKI_MARKER} missing) - "
+                f"run `shapa init {target}` first, then `shapa init --upgrade-docs {target}` "
+                "to refresh its docs. --upgrade-docs never scaffolds a new wiki.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        updated = _upgrade_docs(target)
+        if updated:
+            print(f"shapa: refreshed {len(updated)} doc(s) at {target}: {', '.join(updated)}")
+        else:
+            print(f"shapa: nothing to refresh (bundled assets missing?) at {target}")
+        return
+
     # No argument -> scaffold a wiki at the repo root: ./shapa. A session in this
     # repo then resolves that wiki automatically (config.discover walks up for
     # the shapa/AGENTS.md marker). An explicit DIR overrides the location AND
     # becomes the recorded default; a bare init relies on discovery and leaves
     # the recorded default (e.g. the global LLM-rules wiki) untouched.
-    explicit = bool(argv)
-    target = Path(argv[0]).expanduser() if explicit else Path.cwd() / config.WIKI_DIRNAME
+    explicit = bool(positional)
+    target = Path(positional[0]).expanduser() if explicit else Path.cwd() / config.WIKI_DIRNAME
 
     # Refuse to scaffold into a pre-existing directory that holds unrelated
     # content (e.g. a Python package literally named ``shapa/``, or a namespace

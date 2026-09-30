@@ -7,18 +7,30 @@
 # (a repo .venv is created with embeddings). Memory is EXTERNAL to the tool:
 # $SHAPA_MEMORY or ~/.shapa/memory - private notes never live in the repo.
 #
-# Hooks installed (idempotent):
+# Hooks installed (idempotent, --harness claude|all only):
 #   SessionStart     -> shapa bootstrap         (read: metadata-only overview, once/session)
 #   UserPromptSubmit -> shapa fetch             (read: relevant memory)
 #   Stop             -> shapa capture           (write: distil the session)
 #   Stop             -> shapa maintain --prune   (prune orphans/stale + merge dupes)
 #   SubagentStop     -> shapa capture
 #
+# MCP server registration (--mcp, gated per --harness; skipped for any
+# harness whose binary isn't on PATH - see the mcp_* functions below for the
+# exact config surface + doc citation each one targets):
+#   claude   -> `claude mcp add`/`remove` --scope user (user-scope, all projects)
+#   codex    -> ~/.codex/config.toml [mcp_servers.shapa] (BEGIN/END-marked block)
+#   opencode -> opencode.json's "mcp" key (jq merge)
+#
 # Obsidian: scaffolds the memory dir as a vault and registers it if installed.
 #
 # Usage:
 #   ./install.sh                 # install (memory at ~/.shapa/memory)
 #   ./install.sh --memory DIR    # use a specific memory directory
+#   ./install.sh --harness claude|codex|opencode|all   # default: claude
+#   ./install.sh --mcp | --no-mcp                      # wire/skip MCP registration
+#                                 # (unspecified: prompts on a TTY, else skips
+#                                 # and prints the exact command; --dry-run
+#                                 # always previews the plan as if --mcp)
 #   ./install.sh --dry-run | --settings PATH | --no-obsidian | --no-embeddings | --uninstall
 
 set -euo pipefail
@@ -26,6 +38,7 @@ set -euo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 SETTINGS=""; DRY_RUN=0; UNINSTALL=0; NO_OBSIDIAN=0; NO_EMBEDDINGS=0; MEMORY=""
+HARNESS="claude"; MCP=""   # MCP: "" = auto (TTY prompt / no-TTY skip), "1"/"0" = pinned
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run)       DRY_RUN=1 ;;
@@ -34,11 +47,23 @@ while [ $# -gt 0 ]; do
     --no-embeddings) NO_EMBEDDINGS=1 ;;
     --memory)        MEMORY="$2"; shift ;;
     --settings)      SETTINGS="$2"; shift ;;
-    -h|--help)       sed -n '2,24p' "$0"; exit 0 ;;
+    --harness)       HARNESS="$2"; shift ;;
+    --mcp)           MCP=1 ;;
+    --no-mcp)        MCP=0 ;;
+    -h|--help)       sed -n '2,32p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
   shift
 done
+
+case "$HARNESS" in
+  claude|codex|opencode|all) ;;
+  *) echo "unknown --harness value: '$HARNESS' (expected claude|codex|opencode|all)" >&2; exit 2 ;;
+esac
+# True when *harness* ($1) is the one selected, or "all" was: the single
+# predicate every hook/MCP block below gates on, so --harness routes
+# registration to the right surface without duplicating this check.
+harness_in_scope() { [ "$HARNESS" = "$1" ] || [ "$HARNESS" = "all" ]; }
 
 [ -z "$SETTINGS" ] && SETTINGS="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json"
 [ -z "$MEMORY" ] && MEMORY="${SHAPA_MEMORY:-$HOME/.shapa/memory}"
@@ -73,7 +98,164 @@ MAINTAIN_CMD="$INV maintain --prune"
 EVENTS=("SessionStart"    "UserPromptSubmit" "Stop"         "Stop"          "SubagentStop")
 CMDS=(  "$BOOTSTRAP_CMD"  "$FETCH_CMD"        "$CAPTURE_CMD" "$MAINTAIN_CMD" "$CAPTURE_CMD")
 
-mkdir -p "$(dirname "$SETTINGS")"; [ -f "$SETTINGS" ] || echo '{}' > "$SETTINGS"
+# The argv a harness should run to speak to the shapa MCP server: the same
+# invocation as the hooks above plus a trailing "mcp" subcommand. $INV is
+# always either a single path/name ("shapa", or an absolute .venv path) or
+# the two-word fallback "python3 -m shapa" (see resolve_shapa() above) - both
+# are safe to word-split on whitespace, which is exactly what an unquoted
+# here-string read does; this is never attacker-controlled input.
+read -ra MCP_ARGV <<< "$INV mcp"
+MCP_SERVER_NAME="shapa"
+
+have_bin() { command -v "$1" >/dev/null 2>&1; }
+
+# --- Claude Code: `claude mcp add`/`remove --scope user` --------------------
+# Source: https://code.claude.com/docs/en/mcp-quickstart ("Add a local
+# server" + "Change server scope"). A local stdio server is registered with
+# `claude mcp add <name> -- <command> [args...]`; `--scope user` makes it
+# active in every project (else it defaults to `local`, tied to the project
+# it was added from). `claude mcp get <name>` reports which scope (if any)
+# already holds the name, across all scopes - the idempotency check below.
+mcp_claude() {  # $1 = add|remove
+  have_bin claude || { echo "claude CLI not found on PATH - skipping Claude Code MCP registration."; return 0; }
+  if [ "$1" = "remove" ]; then
+    if [ "$DRY_RUN" -eq 1 ]; then echo "# would run: claude mcp remove $MCP_SERVER_NAME --scope user"; return 0; fi
+    claude mcp remove "$MCP_SERVER_NAME" --scope user >/dev/null 2>&1 || true
+    echo "Removed Claude Code MCP registration for '$MCP_SERVER_NAME' (if present)."
+    return 0
+  fi
+  if claude mcp get "$MCP_SERVER_NAME" >/dev/null 2>&1; then
+    echo "Claude Code MCP server '$MCP_SERVER_NAME' already registered - skipping (idempotent)."
+    return 0
+  fi
+  if [ "$DRY_RUN" -eq 1 ]; then
+    echo "# would run: claude mcp add $MCP_SERVER_NAME --scope user -- ${MCP_ARGV[*]}"
+    return 0
+  fi
+  claude mcp add "$MCP_SERVER_NAME" --scope user -- "${MCP_ARGV[@]}"
+  echo "Registered Claude Code MCP server '$MCP_SERVER_NAME' (user scope)."
+}
+
+# --- Codex: ~/.codex/config.toml [mcp_servers.<name>] -----------------------
+# Source: https://developers.openai.com/codex/config-reference and
+# https://github.com/openai/codex/blob/main/docs/config.md - a stdio MCP
+# server is declared as a `[mcp_servers.<id>]` table with `command` (string)
+# and `args` (string array) keys; there is no documented `codex mcp add` CLI,
+# so this edits the TOML file directly. The block is wrapped in BEGIN/END
+# marker comments so re-running is idempotent (skip if the markers are
+# already present) and --uninstall can delete exactly this block - never any
+# other hand-written `[mcp_servers.*]` entry - with a plain line-range `sed`.
+CODEX_CONFIG="${CODEX_HOME:-$HOME/.codex}/config.toml"
+CODEX_BEGIN="# BEGIN shapa-mcp"
+CODEX_END="# END shapa-mcp"
+
+_toml_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+
+mcp_codex() {  # $1 = add|remove
+  have_bin codex || { echo "codex CLI not found on PATH - skipping Codex MCP registration."; return 0; }
+  if [ "$1" = "remove" ]; then
+    if [ "$DRY_RUN" -eq 1 ]; then echo "# would remove the shapa-mcp block from $CODEX_CONFIG"; return 0; fi
+    if [ -f "$CODEX_CONFIG" ]; then
+      sed -i "/^${CODEX_BEGIN}\$/,/^${CODEX_END}\$/d" "$CODEX_CONFIG"
+    fi
+    echo "Removed shapa MCP block from $CODEX_CONFIG (if present)."
+    return 0
+  fi
+  if [ -f "$CODEX_CONFIG" ] && grep -qF "$CODEX_BEGIN" "$CODEX_CONFIG"; then
+    echo "Codex MCP server '$MCP_SERVER_NAME' already registered at $CODEX_CONFIG - skipping (idempotent)."
+    return 0
+  fi
+  local cmd_esc args_toml arg esc BLOCK
+  cmd_esc="$(_toml_escape "${MCP_ARGV[0]}")"
+  args_toml=""
+  for arg in "${MCP_ARGV[@]:1}"; do
+    esc="$(_toml_escape "$arg")"
+    args_toml="${args_toml}\"${esc}\", "
+  done
+  args_toml="[${args_toml%, }]"
+  BLOCK="$CODEX_BEGIN
+# managed by \`shapa install.sh\` - edit via --mcp/--uninstall, not by hand
+[mcp_servers.$MCP_SERVER_NAME]
+command = \"$cmd_esc\"
+args = $args_toml
+$CODEX_END"
+  if [ "$DRY_RUN" -eq 1 ]; then
+    echo "# would append to $CODEX_CONFIG:"
+    printf '%s\n' "$BLOCK"
+    return 0
+  fi
+  mkdir -p "$(dirname "$CODEX_CONFIG")"
+  touch "$CODEX_CONFIG"
+  if [ -s "$CODEX_CONFIG" ]; then printf '\n' >> "$CODEX_CONFIG"; fi
+  printf '%s\n' "$BLOCK" >> "$CODEX_CONFIG"
+  echo "Registered Codex MCP server '$MCP_SERVER_NAME' in $CODEX_CONFIG."
+}
+
+# --- OpenCode: opencode.json's "mcp" key ------------------------------------
+# Source: https://opencode.ai/docs/mcp-servers/ - each server is a key
+# directly under the top-level "mcp" object (NOT "mcp.servers"); a local
+# stdio server is `{"type": "local", "command": [...]}`. Config path per the
+# same docs' Config page: global config at
+# "$XDG_CONFIG_HOME/opencode/opencode.json" (default ~/.config/opencode/...).
+OPENCODE_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/opencode/opencode.json"
+
+mcp_opencode() {  # $1 = add|remove
+  have_bin opencode || { echo "opencode CLI not found on PATH - skipping OpenCode MCP registration."; return 0; }
+  local cmd_json OC_MERGED OC_TMP
+  if [ "$1" = "remove" ]; then
+    if [ "$DRY_RUN" -eq 1 ]; then echo "# would remove .mcp.$MCP_SERVER_NAME from $OPENCODE_CONFIG"; return 0; fi
+    if [ -f "$OPENCODE_CONFIG" ]; then
+      OC_MERGED="$(jq --arg n "$MCP_SERVER_NAME" 'if .mcp then .mcp |= del(.[$n]) else . end' "$OPENCODE_CONFIG")"
+      OC_TMP="$(mktemp)"; printf '%s\n' "$OC_MERGED" > "$OC_TMP" && mv "$OC_TMP" "$OPENCODE_CONFIG"
+    fi
+    echo "Removed OpenCode MCP registration for '$MCP_SERVER_NAME' (if present)."
+    return 0
+  fi
+  if [ -f "$OPENCODE_CONFIG" ] && jq -e --arg n "$MCP_SERVER_NAME" '(.mcp // {}) | .[$n] != null' "$OPENCODE_CONFIG" >/dev/null 2>&1; then
+    echo "OpenCode MCP server '$MCP_SERVER_NAME' already registered at $OPENCODE_CONFIG - skipping (idempotent)."
+    return 0
+  fi
+  cmd_json="$(printf '%s\n' "${MCP_ARGV[@]}" | jq -R . | jq -s .)"
+  if [ "$DRY_RUN" -eq 1 ]; then
+    echo "# would set .mcp.$MCP_SERVER_NAME in $OPENCODE_CONFIG to:"
+    jq -n --argjson cmd "$cmd_json" '{type:"local", command:$cmd}'
+    return 0
+  fi
+  mkdir -p "$(dirname "$OPENCODE_CONFIG")"
+  [ -f "$OPENCODE_CONFIG" ] || echo '{}' > "$OPENCODE_CONFIG"
+  OC_MERGED="$(jq --arg n "$MCP_SERVER_NAME" --argjson cmd "$cmd_json" \
+    '.mcp = (.mcp // {}) | .mcp[$n] = {type:"local", command:$cmd}' "$OPENCODE_CONFIG")"
+  OC_TMP="$(mktemp)"; printf '%s\n' "$OC_MERGED" > "$OC_TMP" && mv "$OC_TMP" "$OPENCODE_CONFIG"
+  echo "Registered OpenCode MCP server '$MCP_SERVER_NAME' in $OPENCODE_CONFIG."
+}
+
+run_mcp() {  # $1 = add|remove - dispatches to every harness in scope
+  harness_in_scope claude   && mcp_claude   "$1"
+  harness_in_scope codex    && mcp_codex    "$1"
+  harness_in_scope opencode && mcp_opencode "$1"
+  return 0
+}
+
+# --- resolve MCP=auto: a TTY gets asked, a pipe gets skipped + told how -----
+# (decision 3's bootstrap.sh prompt pattern, applied here to registration
+# rather than pip extras: never guess, never block on a read that would just
+# get EOF.) --uninstall defaults an unset flag to "yes, clean up" since
+# removal is idempotent and safe to attempt even where nothing was wired.
+# --dry-run defaults an unset flag to "yes, preview" so the plan is visible;
+# pass --no-mcp explicitly to preview with MCP left out.
+if [ -z "$MCP" ]; then
+  if [ "$UNINSTALL" -eq 1 ] || [ "$DRY_RUN" -eq 1 ]; then
+    MCP=1
+  elif [ -t 0 ] && [ -r /dev/tty ]; then
+    printf 'shapa: register the shapa MCP server for %s now (user scope)? [y/N] ' "$HARNESS" >&2
+    read -r reply < /dev/tty || reply=""
+    case "$reply" in y|Y|yes|YES) MCP=1 ;; *) MCP=0 ;; esac
+  else
+    MCP=0
+    echo "shapa: no TTY - not wiring MCP registration. Add it later with:" >&2
+    echo "  $0 --mcp --harness $HARNESS" >&2
+  fi
+fi
 
 write_settings() { if [ "$DRY_RUN" -eq 1 ]; then echo "$1"; else
   TMP="$(mktemp)"; echo "$1" > "$TMP" && mv "$TMP" "$SETTINGS"; fi; }
@@ -103,39 +285,54 @@ wire_obsidian() {
 }
 
 if [ "$UNINSTALL" -eq 1 ]; then
-  MERGED="$(cat "$SETTINGS")"
-  for i in "${!EVENTS[@]}"; do
-    MERGED="$(printf '%s' "$MERGED" | jq --arg ev "${EVENTS[$i]}" --arg cmd "${CMDS[$i]}" '
-      if .hooks[$ev] then .hooks[$ev] |= map(.hooks |= map(select(.command != $cmd)))
-        | .hooks[$ev] |= map(select((.hooks | length) > 0)) else . end')"
-  done
-  write_settings "$MERGED"; echo "shapa hooks removed from $SETTINGS"; exit 0
+  if harness_in_scope claude; then
+    MERGED="$(cat "$SETTINGS" 2>/dev/null || echo '{}')"
+    for i in "${!EVENTS[@]}"; do
+      MERGED="$(printf '%s' "$MERGED" | jq --arg ev "${EVENTS[$i]}" --arg cmd "${CMDS[$i]}" '
+        if .hooks[$ev] then .hooks[$ev] |= map(.hooks |= map(select(.command != $cmd)))
+          | .hooks[$ev] |= map(select((.hooks | length) > 0)) else . end')"
+    done
+    write_settings "$MERGED"
+    echo "shapa hooks removed from $SETTINGS"
+  fi
+  [ "$MCP" -eq 1 ] && run_mcp remove
+  exit 0
 fi
 
 # Connect the wiki before wiring anything at it: `shapa init` creates the dir,
-# installs the design docs (arch/ + AGENTS.md), and records the path.
+# installs the design docs (arch/ + AGENTS.md), and records the path. This
+# runs regardless of --harness: Codex/OpenCode's MCP tools read/write this
+# same wiki, so it must exist before any harness is wired to reach it.
 [ "$DRY_RUN" -eq 0 ] && { mkdir -p "$MEMORY"; "$INV" init "$MEMORY" >/dev/null 2>&1 || true; }
 
-MERGED="$(cat "$SETTINGS")"
-for i in "${!EVENTS[@]}"; do
-  ev="${EVENTS[$i]}"; cmd="${CMDS[$i]}"
-  present="$(printf '%s' "$MERGED" | jq --arg ev "$ev" --arg cmd "$cmd" \
-    '[.hooks[$ev][]?.hooks[]? | select(.command == $cmd)] | length')"
-  [ "$present" != "0" ] && continue
-  MERGED="$(printf '%s' "$MERGED" | jq --arg ev "$ev" --arg cmd "$cmd" '
-    .hooks = (.hooks // {})
-    | .hooks[$ev] = ((.hooks[$ev] // []) + [
-        { "matcher": "", "hooks": [ { "type": "command", "command": $cmd, "timeout": 60 } ] } ])')"
-done
-write_settings "$MERGED"
+if harness_in_scope claude; then
+  mkdir -p "$(dirname "$SETTINGS")"; [ -f "$SETTINGS" ] || echo '{}' > "$SETTINGS"
+  MERGED="$(cat "$SETTINGS")"
+  for i in "${!EVENTS[@]}"; do
+    ev="${EVENTS[$i]}"; cmd="${CMDS[$i]}"
+    present="$(printf '%s' "$MERGED" | jq --arg ev "$ev" --arg cmd "$cmd" \
+      '[.hooks[$ev][]?.hooks[]? | select(.command == $cmd)] | length')"
+    [ "$present" != "0" ] && continue
+    MERGED="$(printf '%s' "$MERGED" | jq --arg ev "$ev" --arg cmd "$cmd" '
+      .hooks = (.hooks // {})
+      | .hooks[$ev] = ((.hooks[$ev] // []) + [
+          { "matcher": "", "hooks": [ { "type": "command", "command": $cmd, "timeout": 60 } ] } ])')"
+  done
+  write_settings "$MERGED"
+  wire_obsidian
+fi
 
-wire_obsidian
+[ "$MCP" -eq 1 ] && run_mcp add
 
 [ "$DRY_RUN" -eq 1 ] && exit 0
-echo "Installed shapa hooks into $SETTINGS (memory: $MEMORY):"
-echo "  SessionStart     -> $INV bootstrap"
-echo "  UserPromptSubmit -> $INV fetch"
-echo "  Stop             -> $INV capture ; $INV maintain --prune"
-echo "  SubagentStop     -> $INV capture"
-echo "maintain --prune deletes orphan/stale notes and auto-merges duplicates."
-echo "Preview anytime:  SHAPA_MEMORY=$MEMORY $INV maintain --dry-run"
+if harness_in_scope claude; then
+  echo "Installed shapa hooks into $SETTINGS (memory: $MEMORY):"
+  echo "  SessionStart     -> $INV bootstrap"
+  echo "  UserPromptSubmit -> $INV fetch"
+  echo "  Stop             -> $INV capture ; $INV maintain --prune"
+  echo "  SubagentStop     -> $INV capture"
+  echo "maintain --prune deletes orphan/stale notes and auto-merges duplicates."
+  echo "Preview anytime:  SHAPA_MEMORY=$MEMORY $INV maintain --dry-run"
+else
+  echo "shapa memory wiki connected (memory: $MEMORY); --harness $HARNESS skips Claude Code hooks."
+fi

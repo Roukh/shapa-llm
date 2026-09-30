@@ -17,6 +17,17 @@
 #
 #   curl -fsSL .../bootstrap.sh | sh -s -- --with-semantic   # or --with-mcp / --full
 #
+# MCP *registration* (wiring the shapa MCP server into a harness's own
+# config, as opposed to installing the `[mcp]` SDK extra above) is a
+# separate decision, forwarded to install.sh: --mcp/--no-mcp pin it,
+# --harness claude|codex|opencode|all (default claude) picks the harness(es).
+# Saying yes to "install MCP server support" at the interactive prompt also
+# wires it by default (pass --no-mcp after to install the extra without
+# wiring it). install.sh's own rule applies when neither is passed: prompt on
+# a TTY, skip + print the exact command otherwise.
+#
+#   curl -fsSL .../bootstrap.sh | sh -s -- --with-mcp --harness codex
+#
 # Env overrides:
 #   SHAPA_REF=main            git ref to install from
 #   SHAPA_MEMORY=~/.shapa/memory   default (global) wiki location
@@ -46,14 +57,20 @@ have curl    || die "curl is required."
 WITH_SEMANTIC=0
 WITH_MCP=0
 PROMPTED_OR_SKIPPED=0
+MCP_WIRE=""     # "" = defer to install.sh's own auto logic; "--mcp"/"--no-mcp" pins it
+HARNESS_ARG=""  # forwarded as install.sh's --harness (its own default: claude)
 
-for arg in "$@"; do
-  case "$arg" in
+while [ $# -gt 0 ]; do
+  case "$1" in
     --with-semantic) WITH_SEMANTIC=1; PROMPTED_OR_SKIPPED=1 ;;
     --with-mcp)      WITH_MCP=1; PROMPTED_OR_SKIPPED=1 ;;
     --full)          WITH_SEMANTIC=1; WITH_MCP=1; PROMPTED_OR_SKIPPED=1 ;;
-    *) die "unknown argument: $arg (expected --with-semantic / --with-mcp / --full)" ;;
+    --mcp)           MCP_WIRE="--mcp" ;;
+    --no-mcp)        MCP_WIRE="--no-mcp" ;;
+    --harness)       HARNESS_ARG="$2"; shift ;;
+    *) die "unknown argument: $1 (expected --with-semantic / --with-mcp / --full / --mcp / --no-mcp / --harness claude|codex|opencode|all)" ;;
   esac
+  shift
 done
 
 if [ "${SHAPA_FULL:-0}" = "1" ]; then WITH_SEMANTIC=1; WITH_MCP=1; PROMPTED_OR_SKIPPED=1; fi
@@ -82,6 +99,11 @@ if [ "$PROMPTED_OR_SKIPPED" -eq 0 ]; then
     say "or re-run this script with --with-semantic / --with-mcp / --full."
   fi
 fi
+
+# Saying yes to the MCP extra (flag, env var, or the prompt above) also
+# wires it into install.sh by default - an explicit --mcp/--no-mcp always
+# wins over this inference, checked first in the arg loop.
+if [ "$WITH_MCP" -eq 1 ] && [ -z "$MCP_WIRE" ]; then MCP_WIRE="--mcp"; fi
 
 # Package spec: install from the git ref, folding in whatever extras were
 # chosen above (comma-joined - pip/pipx read `pkg[a,b] @ url` as one extras
@@ -134,9 +156,13 @@ say "wiring Claude Code hooks (install.sh)..."
 INSTALL_SH="$(mktemp)"
 trap 'rm -f "$INSTALL_SH"' EXIT
 curl -fsSL "${RAW}/${REF}/install.sh" -o "$INSTALL_SH"
-# Pass --memory only when set, preserving a path that may contain spaces.
+# Pass --memory/--mcp/--no-mcp/--harness only when set, preserving a path
+# that may contain spaces (set -- is the POSIX-sh-safe way to build an argv
+# list without arrays).
 set --
 [ -n "${SHAPA_MEMORY:-}" ] && set -- --memory "$SHAPA_MEMORY"
+[ -n "$MCP_WIRE" ] && set -- "$@" "$MCP_WIRE"
+[ -n "$HARNESS_ARG" ] && set -- "$@" --harness "$HARNESS_ARG"
 # install.sh finds the pipx-installed `shapa` on PATH; no clone needed. This
 # unconditionally connects/inits the GLOBAL default wiki (§3) even when cwd
 # has its own repo-local wiki, closing the "resolves to a wiki that doesn't

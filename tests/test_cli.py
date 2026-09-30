@@ -71,6 +71,86 @@ class TestInit(unittest.TestCase):
         self.assertEqual(agents.read_text(encoding="utf-8"), "EDITED")
 
 
+class TestUpgradeDocs(unittest.TestCase):
+    """Tests for `shapa init --upgrade-docs [DIR]` (installer-hardening
+    GAP B): refreshes only AGENTS.md/placement.md from the bundled assets,
+    never arch/ templates, never a user/agent-written note."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.wiki = self.tmp / "wiki"
+        self.cfg = self.tmp / "config.json"
+        self.patches = [
+            mock.patch.object(config, "CONFIG_FILE", self.cfg),
+            mock.patch.dict("os.environ", {}, clear=False),
+            mock.patch.object(config.Path, "cwd", staticmethod(lambda: self.tmp)),
+        ]
+        for p in self.patches:
+            p.start()
+        import os
+        os.environ.pop(config.ENV_VAR, None)
+
+    def tearDown(self):
+        for p in self.patches:
+            p.stop()
+        shutil.rmtree(self.tmp)
+
+    def test_upgrade_docs_overwrites_edited_agents_and_placement(self):
+        cli._init([str(self.wiki)])
+        agents = self.wiki / "AGENTS.md"
+        placement = self.wiki / "placement.md"
+        agents.write_text("STALE SCHEMA", encoding="utf-8")
+        placement.write_text("STALE PLACEMENT", encoding="utf-8")
+
+        cli._init(["--upgrade-docs", str(self.wiki)])
+
+        self.assertNotEqual(agents.read_text(encoding="utf-8"), "STALE SCHEMA")
+        self.assertNotEqual(placement.read_text(encoding="utf-8"), "STALE PLACEMENT")
+        self.assertIn("AGENTS.md", agents.read_text(encoding="utf-8"))
+
+    def test_upgrade_docs_never_touches_arch_or_notes(self):
+        cli._init([str(self.wiki)])
+        prd = self.wiki / "arch" / "PRD.md"
+        prd_before = prd.read_text(encoding="utf-8")
+        prd.write_text(prd_before + "\nMY OWN NOTES ON THIS PROJECT", encoding="utf-8")
+        a_note = self.wiki / "my-memory.md"
+        a_note.write_text(
+            "---\nid: my-memory\ntype: memory\ncreated: \"2026-01-01T00:00:00Z\"\n"
+            "consequence: 5\nlocus: output\nuses: 0\n---\nsomething the agent wrote\n",
+            encoding="utf-8",
+        )
+
+        cli._init(["--upgrade-docs", str(self.wiki)])
+
+        self.assertIn("MY OWN NOTES ON THIS PROJECT", prd.read_text(encoding="utf-8"))
+        self.assertTrue(a_note.is_file())
+        self.assertIn("something the agent wrote", a_note.read_text(encoding="utf-8"))
+
+    def test_upgrade_docs_default_target_is_the_connected_wiki(self):
+        cli._init([str(self.wiki)])  # explicit DIR -> becomes the recorded pointer
+        agents = self.wiki / "AGENTS.md"
+        agents.write_text("STALE", encoding="utf-8")
+
+        cli._init(["--upgrade-docs"])  # no DIR -> config.memory_dir() resolves it
+
+        self.assertNotEqual(agents.read_text(encoding="utf-8"), "STALE")
+
+    def test_upgrade_docs_errors_on_a_directory_that_is_not_a_wiki(self):
+        not_a_wiki = self.tmp / "not-a-wiki"
+        not_a_wiki.mkdir()
+        with self.assertRaises(SystemExit) as ctx:
+            cli._init(["--upgrade-docs", str(not_a_wiki)])
+        self.assertEqual(ctx.exception.code, 2)
+        # Never scaffolds a new wiki as a side effect of the error.
+        self.assertFalse((not_a_wiki / "AGENTS.md").exists())
+
+    def test_upgrade_docs_is_idempotent(self):
+        cli._init([str(self.wiki)])
+        cli._init(["--upgrade-docs", str(self.wiki)])
+        cli._init(["--upgrade-docs", str(self.wiki)])  # re-run: no crash, same content
+        self.assertTrue((self.wiki / "AGENTS.md").is_file())
+
+
 class TestConfigResolution(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())

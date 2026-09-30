@@ -70,6 +70,31 @@ follow-up command instead of guessing. Skip the prompt outright:
 `sh -s -- --with-semantic` (or `--with-mcp` / `--full`). `SHAPA_NO_HOOKS=1`
 installs the tool only, no hooks. Or install by hand:
 
+### MCP server registration (Codex, OpenCode, and Claude Code's own MCP surface)
+
+Installing the `[mcp]` extra makes `shapa mcp` runnable; *registering* it
+with a harness so that harness actually starts it is a separate step, wired
+by `install.sh --mcp --harness claude|codex|opencode|all` (default harness:
+`claude`; `--no-mcp` skips it explicitly). Each harness is only ever touched
+if its binary is on `PATH`:
+
+| Harness | Surface | How |
+|---|---|---|
+| Claude Code | user-scope config | `claude mcp add shapa --scope user -- shapa mcp` (idempotent; `claude mcp remove` on `--uninstall`) |
+| Codex | `~/.codex/config.toml` | a marked `[mcp_servers.shapa]` block, inserted/removed in place |
+| OpenCode | `opencode.json`'s `"mcp"` key | `{"mcp": {"shapa": {"type": "local", "command": [...]}}}`, merged with `jq` |
+
+With neither flag, `install.sh` asks on a TTY and otherwise skips wiring and
+prints the exact command to run later; `--dry-run` always previews the plan.
+`bootstrap.sh` forwards `--mcp`/`--no-mcp`/`--harness` to `install.sh`, and
+answering yes to its own "install MCP server support?" prompt also wires it
+by default (add `--no-mcp` after to install the extra without wiring it).
+
+An existing wiki's `AGENTS.md`/`placement.md` (the schema/placement docs,
+never `arch/` templates or a note) can be refreshed to the version bundled
+with the installed `shapa` without touching anything else: `shapa init
+--upgrade-docs [DIR]` (DIR defaults to the wiki already in scope).
+
 ```
 pipx install shapa                # the tool (retrieval via BM25)
 pipx install "shapa[semantic]"    # + local embeddings (sentence-transformers)
