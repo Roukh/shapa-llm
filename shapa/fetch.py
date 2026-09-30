@@ -77,7 +77,7 @@ class _RootData:
     value: dict[str, float] = field(default_factory=dict)
 
 
-def _load_root_data(root: Path, query: str) -> _RootData:
+def _load_root_data(root: Path, query: str, *, read_only: bool = False) -> _RootData:
     """Load *root*'s notes and score their relevance to *query*.
 
     Relevance fuses BM25 (lexical, always available) with local-embedding
@@ -87,7 +87,14 @@ def _load_root_data(root: Path, query: str) -> _RootData:
     backend is not installed. ``rel`` is always returned as a *complete*
     dict over every note id (missing/zero-relevance ids explicit at 0.0),
     matching the contract every caller here already relies on - RRF itself
-    only returns the ids it positively ranked."""
+    only returns the ids it positively ranked.
+
+    ``read_only=True`` skips every disk-writing side effect this lookup
+    would otherwise make (the embedding cache, the usage-index db) - same
+    scores, computed in memory instead of persisted, for a caller that
+    must never leave a byte behind in a wiki it was only asked to search
+    (``shapa.mcp``'s ``search`` tool; see :func:`shapa.embed.note_vectors`
+    and :func:`shapa.store.get_all_uses`)."""
     if not root.is_dir():
         return _RootData()
     nodes = load_nodes(root)
@@ -102,7 +109,7 @@ def _load_root_data(root: Path, query: str) -> _RootData:
 
     bm25_rel = _bm25_scores(query, docs)
     if embed.available():
-        vecs = embed.note_vectors(root, bodies)
+        vecs = embed.note_vectors(root, bodies, read_only=read_only)
         qv = embed.embed_one(query) if query.strip() else None
         emb_rel = {nid: (max(0.0, embed.cosine(qv, vecs[nid])) if qv is not None else 0.0)
                    for nid in nodes}
@@ -120,7 +127,7 @@ def _load_root_data(root: Path, query: str) -> _RootData:
     # them back up so the use signal stays live without touching the file.
     # A note store.py hasn't indexed yet (uses=0, last_used=None) simply
     # falls back to whatever the frontmatter itself says.
-    live_uses = store.get_all_uses(root)
+    live_uses = store.get_all_uses(root, read_only=read_only)
     value = {}
     for nid, node in nodes.items():
         uses, last_used = live_uses.get(nid, (0, None))
@@ -146,7 +153,8 @@ def _fill(data: _RootData, order: list[str], out: list, used: int, budget: int, 
     return used
 
 
-def select(query: str, root=None, k: int = DEFAULT_K, budget: int = DEFAULT_BUDGET):
+def select(query: str, root=None, k: int = DEFAULT_K, budget: int = DEFAULT_BUDGET,
+           *, read_only: bool = False):
     """Return up to *k* notes ranked by value-score x relevance to the
     prompt, within a character budget. Each item is ``(node, body)``.
 
@@ -161,12 +169,14 @@ def select(query: str, root=None, k: int = DEFAULT_K, budget: int = DEFAULT_BUDG
     high-value rules still surface); a non-empty prompt with no relevant
     match yields no non-anchor results, not padded filler - see
     :func:`select_multi`'s confidence floor.
+
+    ``read_only`` forwards to :func:`_load_root_data` - see its docstring.
     """
     if root is None:
-        return select_multi(query, k=k, budget=budget).items
+        return select_multi(query, k=k, budget=budget, read_only=read_only).items
 
     root = config.resolve(root)
-    data = _load_root_data(root, query)
+    data = _load_root_data(root, query, read_only=read_only)
     if not data.nodes:
         return []
 
@@ -217,7 +227,8 @@ class Selection:
 
 
 def select_multi(query: str, start=None, roots: list[WikiRoot] | None = None,
-                  k: int = DEFAULT_K, budget: int = DEFAULT_BUDGET) -> Selection:
+                  k: int = DEFAULT_K, budget: int = DEFAULT_BUDGET,
+                  *, read_only: bool = False) -> Selection:
     """Rank and merge notes across every wiki in scope (§4.1).
 
     *roots* overrides discovery (mainly for tests); by default the roots are
@@ -233,6 +244,9 @@ def select_multi(query: str, start=None, roots: list[WikiRoot] | None = None,
     (:data:`MIN_RELEVANCE_FRACTION` of the single best fused score) never
     enter the fill at all - a genuinely off-topic prompt surfaces anchors
     only, plus ``no_match=True``, never a padded guess.
+
+    ``read_only`` forwards to :func:`_load_root_data` for every root - see
+    its docstring.
     """
     wiki_roots = list(roots) if roots is not None else config.wiki_roots(start)
     if not wiki_roots:
@@ -249,7 +263,7 @@ def select_multi(query: str, start=None, roots: list[WikiRoot] | None = None,
     # comment below already applies.
     id_roots: dict[str, set[WikiRoot]] = {}
     for wr in wiki_roots:
-        data = _load_root_data(Path(wr.path), query)
+        data = _load_root_data(Path(wr.path), query, read_only=read_only)
         per_root[wr] = data
         for nid in data.nodes:
             id_roots.setdefault(nid, set()).add(wr)

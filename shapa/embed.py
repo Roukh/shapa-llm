@@ -61,7 +61,8 @@ def _hash(text: str) -> str:
     return hashlib.sha1(text.encode("utf-8")).hexdigest()
 
 
-def note_vectors(directory, texts: dict[str, str]) -> dict[str, list[float]]:
+def note_vectors(directory, texts: dict[str, str],
+                  *, read_only: bool = False) -> dict[str, list[float]]:
     """Return {id: vector} for *texts*, caching by content hash in the dir.
 
     Only callable when available(); embeds just the notes whose content changed.
@@ -70,6 +71,13 @@ def note_vectors(directory, texts: dict[str, str]) -> dict[str, list[float]]:
     §5) must never silently mix incompatible vector spaces just because a
     note's content hash happens to still match; a stamp mismatch invalidates
     the whole cache rather than trusting per-note hashes across models.
+
+    ``read_only=True`` still reads an existing cache (freshest vectors it
+    has), and still computes vectors in memory for anything missing or
+    changed, but never writes ``.shapa-vectors.json`` back - for a caller
+    that must leave a wiki byte-for-byte untouched (e.g. ``shapa.mcp``'s
+    ``search`` tool; a stray sidecar cache file left behind by a plain
+    search was a real incident, shapa-backend-spec.md Slice 6 report).
     """
     directory = Path(directory)
     cache_path = directory / _CACHE_FILE
@@ -99,7 +107,7 @@ def note_vectors(directory, texts: dict[str, str]) -> dict[str, list[float]]:
     for gone in set(cache) - set(texts):
         cache.pop(gone, None)
         dirty = True
-    if dirty:
+    if dirty and not read_only:
         try:
             cache_path.write_text(
                 json.dumps({"model": _MODEL_NAME, "notes": cache}), encoding="utf-8"

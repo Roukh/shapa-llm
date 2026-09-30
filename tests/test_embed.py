@@ -107,6 +107,25 @@ class TestNoteVectorsCaching(unittest.TestCase):
         self.assertEqual(self.calls, ["hello"])
         self.assertNotEqual(out["a"], [999.0, 999.0])
 
+    def test_read_only_never_writes_the_cache_file_even_on_a_cold_directory(self):
+        # Regression (shapa-backend-spec.md Slice 6 report): a plain search
+        # against a wiki with no cache yet must not create one just because
+        # it had to embed something - a caller that must leave a wiki
+        # byte-for-byte untouched (shapa.mcp's search tool) sets this.
+        out = embed.note_vectors(self.tmp, {"a": "hello world"}, read_only=True)
+        self.assertEqual(self.calls, ["hello world"])  # still computed, in memory
+        self.assertEqual(out["a"], [11.0, 0.0])
+        self.assertFalse((self.tmp / embed._CACHE_FILE).exists())
+
+    def test_read_only_does_not_persist_a_content_change_to_an_existing_cache(self):
+        embed.note_vectors(self.tmp, {"a": "hello"})  # normal write establishes a cache
+        before = (self.tmp / embed._CACHE_FILE).read_text()
+        self.calls.clear()
+        out = embed.note_vectors(self.tmp, {"a": "hello CHANGED"}, read_only=True)
+        self.assertEqual(self.calls, ["hello CHANGED"])  # recomputed in memory
+        self.assertEqual(out["a"], [float(len("hello CHANGED")), 0.0])  # the fresh value, not the stale cache's
+        self.assertEqual((self.tmp / embed._CACHE_FILE).read_text(), before)  # cache on disk untouched
+
 
 @unittest.skipUnless(embed.available(), "model2vec ([semantic] extra) not installed")
 class TestRealModel2VecBackend(unittest.TestCase):

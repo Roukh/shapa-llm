@@ -86,6 +86,22 @@ class TestTools(_StubWiki):
         if "unrelated-fact" in ids:
             self.assertLess(ids.index("git-workflow"), ids.index("unrelated-fact"))
 
+    def test_search_never_writes_an_index_or_vector_sidecar_into_the_wiki(self):
+        # Regression: a plain `search` call previously left `.shapa-index.db`
+        # and, when the semantic extra is installed, `.shapa-vectors.json`
+        # behind in the searched wiki as an undocumented side effect - a
+        # real incident against a read-only wiki (shapa-backend-spec.md
+        # Slice 6 report). search/get are read tools in every intent (see
+        # this module's docstring); neither may ever leave a byte behind.
+        mcp.tool_search({"query": "branching and commits"}, str(self.repo))
+        mcp.tool_search({"query": "branching and commits"}, str(self.repo))  # twice: no first-call/cache-miss exemption either
+        from shapa import store as _store
+        from shapa import embed as _embed
+        self.assertFalse((self.wiki / _store.INDEX_FILENAME).exists())
+        self.assertFalse((self.wiki / _embed._CACHE_FILE).exists())
+        self.assertFalse((self.empty_global / _store.INDEX_FILENAME).exists())
+        self.assertFalse((self.empty_global / _embed._CACHE_FILE).exists())
+
     def test_get_returns_full_body_for_a_known_id(self):
         out = mcp.tool_get({"id": "git-workflow"}, str(self.repo))
         self.assertNotIn("error", out)

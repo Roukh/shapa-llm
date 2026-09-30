@@ -100,7 +100,12 @@ def tool_search(args: dict[str, Any], cwd: str | None) -> dict[str, Any]:
         return {"error": "k must be an integer"}
     start = args.get("root") or cwd
 
-    selection = fetch.select_multi(query, start=start, k=k)
+    # read_only=True: search is a read tool in every intent (see the module
+    # docstring) - it must never leave a `.shapa-index.db`/`.shapa-vectors.json`
+    # sidecar behind in a wiki it was only asked to search, which a plain
+    # search call previously did as an undocumented side effect (fixed
+    # here; shapa-backend-spec.md Slice 6 report).
+    selection = fetch.select_multi(query, start=start, k=k, read_only=True)
     results = []
     for node, snippet in selection.items:
         root_path = selection.item_roots.get(node.id)

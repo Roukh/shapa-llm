@@ -60,6 +60,51 @@ class TestOpenIndexAndSchema(unittest.TestCase):
             conn.close()
         self.assertEqual(has_fts is not None, store.fts5_available())
 
+    def test_open_index_read_only_raises_when_no_db_exists_and_never_creates_one(self):
+        with self.assertRaises(FileNotFoundError):
+            store.open_index(self.tmp, read_only=True)
+        self.assertFalse(store.db_path(self.tmp).is_file())
+
+    def test_open_index_read_only_reads_an_existing_db_but_cannot_write_to_it(self):
+        conn = store.open_index(self.tmp)
+        conn.close()
+        self.assertTrue(store.db_path(self.tmp).is_file())
+        ro = store.open_index(self.tmp, read_only=True)
+        try:
+            row = ro.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='notes'"
+            ).fetchone()
+            self.assertIsNotNone(row)
+            # sqlite's own read-only URI mode enforces this, not just a
+            # convention this module follows - proves the connection itself
+            # can't be written through, not just that nothing here tries to.
+            with self.assertRaises(sqlite3.OperationalError):
+                ro.execute("INSERT INTO notes (path, id, mtime_ns, size, body, meta_json) "
+                           "VALUES ('x', 'x', 0, 0, '', '{}')")
+        finally:
+            ro.close()
+
+    def test_open_index_read_only_leaves_no_shm_or_wal_sidecar_behind(self):
+        # Regression, found live against roukh-brain's real index during
+        # this fix's own verification (shapa-backend-spec.md Slice 6
+        # report): every index this module creates is journal_mode=WAL, and
+        # a plain `mode=ro` open of a WAL-mode database still makes SQLite
+        # materialize a `-shm` (and sometimes `-wal`) sidecar to coordinate
+        # with the WAL machinery - `mode=ro` alone does not fix the
+        # contamination this method exists to prevent; `immutable=1` does.
+        _note(self.tmp, "a", "some real content")
+        store.record_use(self.tmp, "a")  # a genuine write, so the WAL is exercised for real
+        db = store.db_path(self.tmp)
+        shm, wal = Path(str(db) + "-shm"), Path(str(db) + "-wal")
+        for _ in range(3):  # a single open/close can look clean by luck; repeat
+            ro = store.open_index(self.tmp, read_only=True)
+            try:
+                list(ro.execute("SELECT * FROM notes"))
+            finally:
+                ro.close()
+            self.assertFalse(shm.exists(), "-shm sidecar written by a read-only open")
+            self.assertFalse(wal.exists(), "-wal sidecar written by a read-only open")
+
     def test_open_index_skips_fts5_table_when_unavailable(self):
         real = store.fts5_available
         store.fts5_available = lambda: False
@@ -256,13 +301,26 @@ class TestRecordUse(unittest.TestCase):
         self.assertEqual(all_uses["b"], store.get_use(self.tmp, "b"))
         self.assertEqual(all_uses["b"][0], 0)
 
+    def test_get_all_uses_read_only_on_an_unindexed_root_never_creates_the_db(self):
+        # The exact contamination shape the incident had (shapa-backend-spec.md
+        # Slice 6 report): a wiki with no `.shapa-index.db` yet, asked a
+        # read-only question - must answer "no live-use data" without ever
+        # materializing the file, not fall back to the writable open path.
+        self.assertEqual(store.get_all_uses(self.tmp, read_only=True), {})
+        self.assertFalse(store.db_path(self.tmp).is_file())
+
+    def test_get_all_uses_read_only_still_sees_an_already_indexed_root(self):
+        _note(self.tmp, "a", "body a")
+        store.record_use(self.tmp, "a")  # normal (writable) path indexes + bumps it
+        self.assertEqual(store.get_all_uses(self.tmp, read_only=True)["a"][0], 1)
+
     def test_open_index_failure_returns_safe_defaults_not_a_crash(self):
         # A root that cannot hold a database file (e.g. read-only, or gone)
         # must degrade to "no counters," never raise - store.py is never a
         # hard dependency (§5).
         gone = self.tmp / "does" / "not" / "exist-and-is-unwritable"
         real_open = store.open_index
-        store.open_index = lambda root: (_ for _ in ()).throw(sqlite3.OperationalError("boom"))
+        store.open_index = lambda root, **kw: (_ for _ in ()).throw(sqlite3.OperationalError("boom"))
         try:
             self.assertEqual(store.get_use(gone, "x"), (0, None))
             self.assertEqual(store.get_all_uses(gone), {})

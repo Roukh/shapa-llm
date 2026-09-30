@@ -95,9 +95,40 @@ def db_path(root) -> Path:
     return Path(root) / INDEX_FILENAME
 
 
-def open_index(root) -> sqlite3.Connection:
-    """Open (creating if needed) the index for *root*. Caller closes it."""
+def open_index(root, *, read_only: bool = False) -> sqlite3.Connection:
+    """Open (creating if needed) the index for *root*. Caller closes it.
+
+    ``read_only=True`` never creates ``.shapa-index.db`` (or its
+    ``-wal``/``-shm`` siblings) as a side effect - it opens the file that
+    already exists, and raises :class:`FileNotFoundError` if there isn't
+    one. This is what a caller that must never leave a byte on disk in a
+    wiki it was only asked to *read* (e.g. ``shapa.mcp``'s ``search``/``get``
+    tools) needs: the normal path below unconditionally ``mkdir``s the
+    parent and opens a read-write connection, which is exactly how a stray
+    ``.shapa-index.db`` has previously ended up in a wiki a caller only
+    ever searched, never wrote to (shapa-backend-spec.md Slice 6 report).
+
+    The URI carries ``mode=ro`` *and* ``immutable=1`` - ``mode=ro`` alone
+    is not enough: a database whose journal_mode is WAL (every index this
+    module has ever created is, see below) still makes SQLite materialize
+    an ``-shm`` (and sometimes ``-wal``) sidecar for a plain read-only
+    open, to coordinate with the WAL machinery in case another connection
+    is writing concurrently. ``immutable=1`` tells SQLite the file will not
+    change for the life of the connection, which is true here (this
+    connection never writes and closes almost immediately), so it skips
+    that machinery entirely and reads pages straight from the main file -
+    confirmed against a real WAL-mode index in this slice's regression
+    test and the live Claude Code MCP check (see the slice report): the
+    first cut of this fix (``mode=ro`` only) still left ``-shm``/``-wal``
+    behind against roukh-brain's real WAL-mode index.
+    """
     path = db_path(root)
+    if read_only:
+        if not path.is_file():
+            raise FileNotFoundError(str(path))
+        conn = sqlite3.connect(f"file:{path}?mode=ro&immutable=1", uri=True)
+        conn.row_factory = sqlite3.Row
+        return conn
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
@@ -329,16 +360,23 @@ def get_use(root, note_id: str, conn: sqlite3.Connection | None = None
             conn.close()
 
 
-def get_all_uses(root, conn: sqlite3.Connection | None = None
+def get_all_uses(root, conn: sqlite3.Connection | None = None,
+                  *, read_only: bool = False
                   ) -> dict[str, tuple[int, str | None]]:
     """``{note id: (uses, last_used)}`` for every indexed note in *root* -
     one query, for callers (``fetch.py``'s value scoring) that need every
-    note's live count rather than one at a time."""
+    note's live count rather than one at a time.
+
+    ``read_only=True`` (ignored when *conn* is passed explicitly) never
+    creates the index file: a root nothing has indexed yet simply
+    contributes no live-use data (identical to the existing "not indexed
+    yet" fallback), instead of ``open_index`` materializing an empty
+    ``.shapa-index.db`` just to answer that."""
     root = Path(root)
     owns_conn = conn is None
     try:
-        conn = conn or open_index(root)
-    except (OSError, sqlite3.Error):
+        conn = conn or open_index(root, read_only=read_only)
+    except (OSError, sqlite3.Error, FileNotFoundError):
         return {}
     try:
         return {
