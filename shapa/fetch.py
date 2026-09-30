@@ -253,13 +253,21 @@ def select_multi(query: str, start=None, roots: list[WikiRoot] | None = None,
         return Selection(items=[])
 
     per_root: dict[WikiRoot, _RootData] = {}
-    id_kinds: dict[str, set[str]] = {}
+    # Keyed by the WikiRoot itself (not just its ``kind``) - two distinct
+    # physical roots that happen to share a ``kind`` label (e.g. an
+    # explicit ``roots=`` call passing two "external" roots for different
+    # repos) must still be caught as a genuine collision; real discovery
+    # never repeats a kind, but the explicit-roots API surface (used by
+    # tests/test_fetch_multiroot.py scale tests) does, and this must
+    # stay correct either way - the same reasoning the anchor-keying
+    # comment below already applies.
+    id_roots: dict[str, set[WikiRoot]] = {}
     for wr in wiki_roots:
         data = _load_root_data(Path(wr.path), query)
         per_root[wr] = data
         for nid in data.nodes:
-            id_kinds.setdefault(nid, set()).add(wr.kind)
-    collisions = sorted(nid for nid, kinds in id_kinds.items() if len(kinds) > 1)
+            id_roots.setdefault(nid, set()).add(wr)
+    collisions = sorted(nid for nid, roots_seen in id_roots.items() if len(roots_seen) > 1)
 
     if not any(data.nodes for data in per_root.values()):
         # No notes anywhere (no wiki initialized yet, or every root is

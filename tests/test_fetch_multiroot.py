@@ -243,6 +243,28 @@ class TestCrossRootCollisionShowsBoth(FetchMultirootTestCase):
         self.assertIn("exists in more than one wiki root", block)
         self.assertIn("shared-id", block)
 
+    def test_duplicate_id_across_same_kind_roots_still_flagged(self):
+        # F09's collision detection is keyed on WikiRoot identity, not
+        # ``kind`` - two distinct physical roots that happen to share a
+        # ``kind`` label (only reachable via the explicit ``roots=`` API,
+        # since real discovery never repeats a kind) must still surface as
+        # a genuine collision, not be silently dropped.
+        root_x = self.tmp / "rootX"
+        root_y = self.tmp / "rootY"
+        _note(root_x, "dup-id", "database migration rollback safety - X version")
+        _note(root_y, "dup-id", "database migration rollback safety - Y version")
+
+        roots = [
+            WikiRoot(path=root_x, kind="external", repo="repoX"),
+            WikiRoot(path=root_y, kind="external", repo="repoY"),
+        ]
+        selection = fetch.select_multi(
+            "database migration rollback safety", roots=roots, k=10
+        )
+        self.assertEqual(selection.collisions, ["dup-id"])
+        matching = [n for n, _ in selection.items if n.id == "dup-id"]
+        self.assertEqual(len(matching), 2)
+
 
 class TestSelectRootParamUnaffected(FetchMultirootTestCase):
     """select(query, root=...) (explicit single directory) is completely
