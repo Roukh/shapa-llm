@@ -29,3 +29,7 @@ venv/
 *.egg-info/
 build/
 dist/
+
+# Worktrees live at the repo root
+.worktrees/
+.local/
