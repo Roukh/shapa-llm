@@ -4,7 +4,6 @@ type: reference
 created: "2026-06-30T20:00:00Z"
 consequence: 7
 locus: output
-uses: 0
 ---
 
 # PRD — <your project>

@@ -21,6 +21,9 @@
 #   codex    -> ~/.codex/config.toml [mcp_servers.shapa] (BEGIN/END-marked block)
 #   opencode -> opencode.json's "mcp" key (jq merge)
 #
+# Skill: installs the shapa-upgrade skill for every harness in scope, then
+# finishes with `shapa upgrade --all --check` - which wikis need that skill.
+#
 # Obsidian: scaffolds the memory dir as a vault and registers it if installed.
 #
 # Usage:
@@ -50,7 +53,7 @@ while [ $# -gt 0 ]; do
     --harness)       HARNESS="$2"; shift ;;
     --mcp)           MCP=1 ;;
     --no-mcp)        MCP=0 ;;
-    -h|--help)       sed -n '2,32p' "$0"; exit 0 ;;
+    -h|--help)       sed -n '2,35p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
   shift
@@ -238,6 +241,69 @@ mcp_opencode() {  # $1 = add|remove
   echo "Registered OpenCode MCP server '$MCP_SERVER_NAME' in $OPENCODE_CONFIG."
 }
 
+# --- the shapa-upgrade skill (shapa-backend-spec.md §11) -------------------
+# The skill text ships inside the installed package (shapa/assets/skills/),
+# so a curl install with no clone gets the same file: `shapa upgrade
+# --print-skill` prints it. Skill homes, per each harness's own docs:
+#   claude   -> <claude config dir>/skills/<name>/SKILL.md (next to $SETTINGS)
+#   codex    -> ~/.agents/skills/<name>/SKILL.md
+#               (https://learn.chatgpt.com/docs/build-skills, user scope)
+#   opencode -> $XDG_CONFIG_HOME/opencode/skills/<name>/SKILL.md
+#               (https://opencode.ai/docs/skills/)
+# codex/opencode are skipped when their binary isn't on PATH, like MCP.
+SKILL_NAME="shapa-upgrade"
+read -ra INV_ARGV <<< "$INV"
+
+skill_dir_for() {  # $1 = harness
+  case "$1" in
+    claude)   echo "$(dirname "$SETTINGS")/skills/$SKILL_NAME" ;;
+    codex)    echo "$HOME/.agents/skills/$SKILL_NAME" ;;
+    opencode) echo "${XDG_CONFIG_HOME:-$HOME/.config}/opencode/skills/$SKILL_NAME" ;;
+  esac
+}
+
+skill_one() {  # $1 = add|remove, $2 = harness
+  local dir text
+  [ "$2" = "claude" ] || have_bin "$2" || return 0
+  dir="$(skill_dir_for "$2")"
+  if [ "$1" = "remove" ]; then
+    if [ "$DRY_RUN" -eq 1 ]; then echo "# would remove $dir/SKILL.md"; return 0; fi
+    rm -f "$dir/SKILL.md"; rmdir "$dir" 2>/dev/null || true
+    echo "Removed the $SKILL_NAME skill for $2 (if present)."
+    return 0
+  fi
+  if [ "$DRY_RUN" -eq 1 ]; then echo "# would install the $SKILL_NAME skill to $dir/SKILL.md"; return 0; fi
+  text="$("${INV_ARGV[@]}" upgrade --print-skill 2>/dev/null)" || text=""
+  if [ -z "$text" ]; then
+    echo "shapa: this shapa has no bundled $SKILL_NAME skill - skipping $2." >&2
+    return 0
+  fi
+  mkdir -p "$dir"
+  printf '%s\n' "$text" > "$dir/SKILL.md"
+  echo "Installed the $SKILL_NAME skill for $2: $dir/SKILL.md"
+}
+
+run_skill() {  # $1 = add|remove - every harness in scope
+  local h
+  for h in claude codex opencode; do
+    harness_in_scope "$h" && skill_one "$1" "$h"
+  done
+  return 0
+}
+
+# Last step of every install/update: which known wikis are behind this
+# shapa's format. Informational - never fails the install.
+upgrade_check() {
+  if [ "$DRY_RUN" -eq 1 ]; then echo "# would run: $INV upgrade --all --check"; return 0; fi
+  echo "Checking every known wiki against this shapa's format:"
+  if "${INV_ARGV[@]}" upgrade --all --check; then
+    echo "Every known wiki is current."
+  else
+    echo "The wikis marked 'behind' above need the $SKILL_NAME skill: ask your agent to run it."
+  fi
+  return 0
+}
+
 run_mcp() {  # $1 = add|remove - dispatches to every harness in scope
   harness_in_scope claude   && mcp_claude   "$1"
   harness_in_scope codex    && mcp_codex    "$1"
@@ -314,6 +380,7 @@ if [ "$UNINSTALL" -eq 1 ]; then
     echo "shapa hooks removed from $SETTINGS"
   fi
   [ "$MCP" -eq 1 ] && run_mcp remove
+  run_skill remove
   exit 0
 fi
 
@@ -321,7 +388,7 @@ fi
 # installs the design docs (arch/ + AGENTS.md), and records the path. This
 # runs regardless of --harness: Codex/OpenCode's MCP tools read/write this
 # same wiki, so it must exist before any harness is wired to reach it.
-[ "$DRY_RUN" -eq 0 ] && { mkdir -p "$MEMORY"; "$INV" init "$MEMORY" >/dev/null 2>&1 || true; }
+[ "$DRY_RUN" -eq 0 ] && { mkdir -p "$MEMORY"; "${INV_ARGV[@]}" init "$MEMORY" >/dev/null 2>&1 || true; }
 
 if harness_in_scope claude; then
   MERGED="$(cat "$SETTINGS")"
@@ -340,8 +407,9 @@ if harness_in_scope claude; then
 fi
 
 [ "$MCP" -eq 1 ] && run_mcp add
+run_skill add
 
-[ "$DRY_RUN" -eq 1 ] && exit 0
+[ "$DRY_RUN" -eq 1 ] && { upgrade_check; exit 0; }
 if harness_in_scope claude; then
   echo "Installed shapa hooks into $SETTINGS (memory: $MEMORY):"
   echo "  SessionStart     -> $BOOTSTRAP_CMD"
@@ -353,3 +421,4 @@ if harness_in_scope claude; then
 else
   echo "shapa memory wiki connected (memory: $MEMORY); --harness $HARNESS skips Claude Code hooks."
 fi
+upgrade_check

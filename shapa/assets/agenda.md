@@ -4,7 +4,6 @@ type: memory
 created: "2026-09-30T00:00:00Z"
 consequence: 5
 locus: meta
-uses: 0
 summary: "Top 3 fires for this wiki - replace with what actually matters now."
 status: active
 ---

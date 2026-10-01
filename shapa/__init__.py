@@ -15,11 +15,13 @@ Public modules:
     fetch        the read path - relevant memory at prompt start
     capture      the write path - distil a finished session into a note
     maintain     expanded self-healing - prune + auto-merge + reconcile
+    registry     wiki format marker + the registry of every known wiki
+    upgrade      bring every wiki to the current format (shapa upgrade)
     cli          the unified ``shapa`` command
 """
 
 __all__ = [
     "config", "frontmatter", "nodes", "heartbeat", "validate", "score",
-    "fetch", "capture", "maintain", "cli",
+    "fetch", "capture", "maintain", "registry", "upgrade", "cli",
 ]
 __version__ = "0.6.0"

@@ -138,10 +138,23 @@ fi
 have shapa || die "install finished but 'shapa' is not on PATH. Add your user
   bin dir to PATH (pipx: 'pipx ensurepath') and re-run, or use SHAPA_NO_HOOKS=1."
 
+# Every install/update ends by checking each known wiki against the newly
+# installed format (shapa-backend-spec.md §11). install.sh runs this itself;
+# the two early exits below skip install.sh, so they run it here.
+upgrade_check() {
+  say "checking every known wiki against this shapa's format:"
+  if shapa upgrade --all --check; then
+    say "every known wiki is current."
+  else
+    say "the wikis marked 'behind' above need the shapa-upgrade skill: ask your agent to run it."
+  fi
+}
+
 # --- 2. wire the Claude Code hooks + default wiki ---------------------------
 if [ "${SHAPA_NO_HOOKS:-0}" = "1" ]; then
   say "tool installed; skipping hook wiring (SHAPA_NO_HOOKS=1)."
   say "Wire later with: curl -fsSL ${RAW}/${REF}/install.sh | bash"
+  upgrade_check
   exit 0
 fi
 
@@ -149,6 +162,7 @@ if ! have jq; then
   say "jq not found - it is required to wire hooks."
   say "Install jq, then run: curl -fsSL ${RAW}/${REF}/install.sh | bash"
   say "The 'shapa' tool itself is installed and usable now."
+  upgrade_check
   exit 0
 fi
 

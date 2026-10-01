@@ -23,7 +23,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from shapa import config, embed, frontmatter, rank, serve, store
+from shapa import config, embed, frontmatter, rank, registry, serve, store
 from shapa.bm25 import bm25_scores as _bm25_scores
 from shapa.bm25 import words as _words
 from shapa.config import WikiRoot
@@ -737,6 +737,12 @@ def main(argv: list[str] | None = None) -> None:
         block = fetch_context(query, root=args.root, k=args.k, record=not args.no_record)
     except Exception:
         block = ""  # never block the prompt
+
+    try:
+        seen = config.wiki_roots() if args.root is None else [config.resolve(args.root)]
+        registry.register(seen, via="fetch")
+    except Exception:
+        pass  # bookkeeping only; never block the prompt
 
     if block:
         print(block)

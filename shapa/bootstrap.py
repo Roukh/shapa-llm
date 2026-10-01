@@ -28,7 +28,7 @@ import os
 import sys
 from pathlib import Path
 
-from shapa import config, serve
+from shapa import config, registry, serve
 from shapa.config import WikiRoot
 from shapa.nodes import Node, load_nodes
 from shapa.score import score_meta
@@ -308,7 +308,26 @@ def main(argv: list[str] | None = None) -> None:
         text = ""  # never block session start
 
     try:
-        _maybe_autostart_daemons(config.wiki_roots(start))
+        roots = config.wiki_roots(start)
+    except Exception:
+        roots = []
+
+    # One line when the global or cwd wiki's format marker is behind this
+    # shapa (shapa-backend-spec.md §11) - marker-only, so it stays cheap.
+    try:
+        notice = registry.behind_notice(roots)
+    except Exception:
+        notice = ""
+    if notice:
+        text = f"{text}\n{notice}" if text else notice
+
+    try:
+        registry.register(roots, via="bootstrap")
+    except Exception:
+        pass  # bookkeeping only; never block session start
+
+    try:
+        _maybe_autostart_daemons(roots)
     except Exception:
         pass  # latency-only (GAP D); never block session start
 

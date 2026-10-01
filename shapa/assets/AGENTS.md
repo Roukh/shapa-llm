@@ -4,7 +4,6 @@ type: reference
 created: "2026-06-30T20:00:00Z"
 consequence: 8
 locus: output
-uses: 0
 ---
 
 # AGENTS.md — shapa Schema and Operating Rules
@@ -230,6 +229,9 @@ shapa tool's own repo:
 ```
 <wiki_root>/          (a `shapa/` dir — repo-root or global; never inside the tool repo)
   AGENTS.md           ← this file, installed by `shapa init`; also the wiki marker
+  .shapa-format       ← the wiki format this wiki is current at (tracked; see §11.2)
+  .gitignore          ← keeps the index/vector caches out of git
+  agenda.md           ← the top 3 fires (§11)
   arch/               ← project templates (type: reference), installed by `shapa init`
     PRD.md  architecture.md  system-design.md   ← fill these in for your project
   <id>.md             ← operational notes captured at the wiki root;
@@ -283,6 +285,18 @@ Both hold history; neither counts toward the F10 limits, and nothing under
 either is ever pruned, merged, fetched, or found by search. A note doesn't
 leave the wiki by being deleted — it leaves the *live* wiki by moving into
 one of these two directories.
+
+### 11.2 Format upgrades
+
+`.shapa-format` holds one integer: the wiki format this wiki was last brought
+fully current at. A wiki without it predates the marker (format 1). When a
+shapa update raises the format, the session start says so in one line, and
+`shapa upgrade` brings the wiki current. It applies the mechanical migrations
+itself: this file, `placement.md`, the cache `.gitignore`, legacy counters
+moved into the index, and derived `id`/`scope`. It then lists the judgment
+items, such as caps, duplicates, missing summaries and over-length notes,
+which the `shapa-upgrade` skill resolves. `shapa upgrade --check` changes
+nothing and exits 1 while anything is left.
 
 ## 12. Privacy invariant (memory is never inside the *tool's* repo)
 

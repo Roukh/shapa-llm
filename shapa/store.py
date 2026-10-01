@@ -347,6 +347,37 @@ def record_use(root, note_id: str, now: datetime | None = None,
             conn.close()
 
 
+def seed_uses(root, counters: dict[str, tuple[int, str | None]]) -> int:
+    """Carry legacy frontmatter counters into *root*'s index before
+    ``shapa upgrade`` strips them from the notes: each id's stored ``uses``
+    becomes the max of both, and ``last_used`` the later of both, so moving
+    the counter never loses scoring signal. Returns the rows updated."""
+    if not counters:
+        return 0
+    root = Path(root)
+    conn = open_index(root)
+    try:
+        sync(root, conn=conn)
+        updated = 0
+        for note_id, (uses, last_used) in sorted(counters.items()):
+            cur = conn.execute(
+                """
+                UPDATE notes SET
+                    uses = MAX(uses, ?),
+                    last_used = CASE
+                        WHEN ? IS NOT NULL AND (last_used IS NULL OR last_used < ?) THEN ?
+                        ELSE last_used END
+                WHERE id = ?
+                """,
+                (int(uses), last_used, last_used, last_used, note_id),
+            )
+            updated += cur.rowcount
+        conn.commit()
+        return updated
+    finally:
+        conn.close()
+
+
 def get_use(root, note_id: str, conn: sqlite3.Connection | None = None
             ) -> tuple[int, str | None]:
     """Return ``(uses, last_used)`` for *note_id* in *root*'s index, or

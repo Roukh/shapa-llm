@@ -289,3 +289,14 @@ Existing baseline: 65 tests / 9 files, 62 passing / 3 failing (`test_maintain.py
    - `scope` values are `global | repo` only. `external` is retired by decision 4.
 7. **Reads never write notes (found 2026-09-30).** Today `record_use` rewrites `uses`/`last_used` in a note's frontmatter on every fetch. That leaves counter-only diffs across every repo (26 dirty files in open-trader alone), which blocks upkeep and pollutes git. Usage counters move into the index store (`store.py`, slice 5), keyed by root and note id, and `score.py` reads them from there. Notes change only when their content does. `uses` and `last_used` stay tolerated as legacy frontmatter (ignored, no lint error) and `maintain --backfill` strips them. Acceptance: running fetch or bootstrap on a clean repo leaves `git status` clean.
 5. **No phases or roadmaps in any planning output (operator, 2026-09-29).** This covers spec prose, CLI output, and generated docs. Plans are written as options, stack, recommendation, open decisions and the next action. See roukh-llm/.shapa/no-phases-or-roadmaps.md.
+
+## 11. Upgrades: every wiki to the current format
+
+Operator directive (2026-10-01): every shapa update sends agents to bring each wiki to the current format.
+
+- **Format.** `CURRENT_FORMAT` in `shapa/registry.py`; a release bumps it whenever a conformant wiki changes (schema, lean shape, shipped `AGENTS.md`). Format 2 = schema v2 + lean shape (decisions 6/7).
+- **Marker.** `<wiki>/.shapa-format` holds one integer and is tracked, not a cache. Missing means format 1. `shapa upgrade` writes it only once nothing is left to fix, and never lowers it.
+- **Registry.** `~/.shapa/wikis.json` (`$SHAPA_REGISTRY` overrides) lists every wiki seen by `init`, `bootstrap`, `fetch` or `upgrade`. Writes hold an `flock` and land via temp file + `os.replace`. `upgrade --all` (apply) drops paths gone from disk.
+- **`shapa upgrade [PATH|--all] [--check] [--json]`.** Applies the mechanical steps: refresh `AGENTS.md`/`placement.md`, add cache entries to `.gitignore`, move `uses`/`last_used` into the store (max/latest wins) and strip them, derive `id`/`scope`. Reports the judgment items per wiki: F10/F11, F07, F04 on memory/rule/issue, duplicate ids, lexical near-duplicates at the merge threshold, invalid frontmatter, F06, and notes outside root/`arch/`. It is idempotent and exits 1 while any wiki is behind (marker, pending step, or work left). A wiki marked newer than the installed shapa is never touched.
+- **Prompts.** SessionStart appends one line when a wiki in scope has a marker behind. `install.sh`/`bootstrap.sh` end with `upgrade --all --check`.
+- **Skill.** `shapa/assets/skills/shapa-upgrade/SKILL.md` is installed per harness by `install.sh`. It gives one agent per behind wiki, which resolves the work list and commits in that repo, and it ends on a green check.

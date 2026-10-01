@@ -95,6 +95,20 @@ never `arch/` templates or a note) can be refreshed to the version bundled
 with the installed `shapa` without touching anything else: `shapa init
 --upgrade-docs [DIR]` (DIR defaults to the wiki already in scope).
 
+### Upgrades: every wiki stays on the current format
+
+Each wiki records its format in a tracked `.shapa-format` file. A wiki
+without one predates the marker and counts as format 1. shapa also keeps a
+registry of every wiki it has seen in `~/.shapa/wikis.json`. `shapa
+upgrade` applies the mechanical migrations itself: schema docs, the cache
+`.gitignore`, counters moved into the index, and derived `id`/`scope`. It
+also prints the judgment items an agent must resolve, such as lean-shape
+caps, duplicates, missing summaries and over-length notes. `install.sh` and
+`bootstrap.sh` finish with `shapa upgrade --all --check`, and the session
+start flags a wiki that is behind. They also install the `shapa-upgrade`
+skill for Claude Code, Codex and OpenCode, which gives one agent per wiki
+that is behind.
+
 ```
 pipx install shapa                # the tool (retrieval via BM25)
 pipx install "shapa[semantic]"    # + local embeddings (sentence-transformers)
@@ -133,6 +147,8 @@ shapa fetch --query "fix the git flow" # surface relevant memory (read path)
 shapa heartbeat --dry-run              # preview orphan pruning
 shapa maintain --dry-run               # preview merges/prunes (nothing changes)
 shapa maintain --prune                 # prune orphans/stale + auto-merge duplicates
+shapa upgrade --all --check            # which known wikis are behind the current format
+shapa upgrade PATH                     # apply mechanical migrations, list the judgment work
 shapa maintain --resolve               # LLM-reconcile contradictions (claude CLI)
 shapa score                            # rank notes by value
 shapa validate                         # validate every note's frontmatter
@@ -152,9 +168,11 @@ shapa-llm/
     cli.py               ← the unified `shapa` command (incl. `init`)
     frontmatter.py · nodes.py · heartbeat.py · validate.py · score.py
     bootstrap.py · fetch.py · capture.py · maintain.py · embed.py
+    registry.py · upgrade.py  ← format marker, wiki registry, `shapa upgrade`
     assets/              ← docs installed into every wiki by `shapa init`
       AGENTS.md          ← the schema and rules (also the wiki marker)
       arch/              ← generic project templates (PRD, architecture, system-design)
+      skills/            ← harness skills install.sh installs (shapa-upgrade), never into a wiki
   tests/                 ← regression suite
 ```
 

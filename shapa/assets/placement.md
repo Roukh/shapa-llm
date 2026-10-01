@@ -4,7 +4,6 @@ type: reference
 created: "2026-09-30T00:00:00Z"
 consequence: 7
 locus: output
-uses: 0
 ---
 
 # placement.md — where a new note belongs
