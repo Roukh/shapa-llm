@@ -329,7 +329,12 @@ class TestHookMain(BootstrapTestCase):
         self.assertIn("a standing note", ctx)
 
     def test_hook_never_blocks_on_garbage_stdin(self):
-        out = self._run_main("not valid json at all { { {")
+        # Garbage stdin falls back to the process cwd: pin it (and the global
+        # pointer) to empty dirs, so a wiki above the real cwd - this repo's
+        # own .shapa/ - can't leak into the context.
+        config.set_memory_dir(self.tmp / "empty-global")
+        with mock.patch.object(config.Path, "cwd", staticmethod(lambda: self.tmp)):
+            out = self._run_main("not valid json at all { { {")
         payload = json.loads(out)
         self.assertEqual(payload["hookSpecificOutput"]["additionalContext"], "")
 
