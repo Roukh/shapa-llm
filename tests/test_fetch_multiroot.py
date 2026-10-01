@@ -411,6 +411,22 @@ class TestCrossRootCollisionShowsBoth(FetchMultirootTestCase):
         self.assertIn("exists in more than one wiki root", block)
         self.assertIn("shared-id", block)
 
+    def test_per_wiki_convention_files_are_never_collisions(self):
+        # Each wiki's own agenda/ideas log is shown, but never annotated as
+        # an ambiguous id - only a genuinely shared note id is.
+        global_wiki = self.tmp / "global"
+        config.set_memory_dir(global_wiki)
+        repo = _make_git_repo(self.tmp / "repoF")
+        repo_wiki = _make_repo_wiki(repo)
+        for wiki, who in ((global_wiki, "global"), (repo_wiki, "repo")):
+            _note(wiki, "agenda", f"database migration rollback agenda - {who}")
+            _note(wiki, "ideas", f"database migration rollback ideas - {who}")
+            _note(wiki, "shared-id", f"database migration rollback safety - {who}")
+
+        selection = fetch.select_multi("database migration rollback", start=repo, k=10)
+        self.assertEqual(selection.collisions, ["shared-id"])
+        self.assertEqual(len([n for n, _ in selection.items if n.id == "ideas"]), 2)
+
     def test_duplicate_id_across_same_kind_roots_still_flagged(self):
         # F09's collision detection is keyed on WikiRoot identity, not
         # ``kind`` - two distinct physical roots that happen to share a

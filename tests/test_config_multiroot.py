@@ -6,10 +6,12 @@ the global wiki - most-specific first, deduped, missing directories
 tolerated. See shapa-backend-spec.md §4.1.
 """
 
+import io
 import os
 import shutil
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest import mock
 
@@ -236,6 +238,36 @@ class TestCrossRootDuplicateId(MultirootTestCase):
         roots = config.wiki_roots(repo)
         violations = validate.check_cross_root_duplicates(roots)
         self.assertEqual(violations, [])
+
+    def test_every_convention_file_is_exempt_from_f09(self):
+        # Every wiki carries its own agenda.md and ideas.md by convention,
+        # plus the shipped AGENTS.md/placement.md - none of them is F09,
+        # while a genuinely shared note id still is.
+        global_wiki = self.tmp / "global"
+        repo = _make_git_repo(self.tmp / "repoL")
+        repo_wiki = _make_wiki(repo)
+        for wiki in (global_wiki, repo_wiki):
+            for nid in ("AGENTS", "placement", "agenda", "ideas", "really-shared"):
+                _note(wiki, nid)
+        config.set_memory_dir(global_wiki)
+
+        violations = validate.check_cross_root_duplicates(config.wiki_roots(repo))
+        self.assertEqual([v.rule for v in violations], ["F09"])
+        self.assertIn("really-shared", violations[0].message)
+
+    def test_all_roots_cli_exits_zero_with_an_ideas_log_in_every_root(self):
+        global_wiki = self.tmp / "global"
+        _note(global_wiki, "agenda", "1. one fire\n")
+        _note(global_wiki, "ideas", "2026-10-01 a global idea")
+
+        repo = _make_git_repo(self.tmp / "repoM")
+        repo_wiki = _make_wiki(repo)
+        _note(repo_wiki, "ideas", "2026-10-01 a repo idea")
+        config.set_memory_dir(global_wiki)
+
+        with self.assertRaises(SystemExit) as cm, redirect_stdout(io.StringIO()):
+            validate.main(["--all-roots", str(repo)])
+        self.assertEqual(cm.exception.code, 0)
 
     def test_all_roots_cli_exits_zero_when_clean(self):
         global_wiki = self.tmp / "global"

@@ -35,6 +35,18 @@ PROTECTED_TYPES = frozenset({"reference"})
 #: `heartbeat`, and `maintain` either.
 EXCLUDED_DIRNAMES = frozenset({"archive", "attic", ".obsidian"})
 
+#: Per-wiki convention files: every wiki carries its own copy by design - the
+#: schema docs shapa ships and refreshes (``AGENTS.md``, ``placement.md``)
+#: and the two files the lean shape keeps at every root (``agenda.md``, the
+#: top 3 fires; ``ideas.md``, the append-only log).
+CONVENTION_IDS = frozenset({"AGENTS", "placement", "agenda", "ideas"})
+#: Ids expected to recur, once per wiki, across every root in scope: the
+#: convention files plus the ``arch/`` templates ``shapa init`` installs.
+#: That recurrence is construction, not the cross-root ambiguity (F09) that
+#: two independently authored notes colliding on one id would be - so
+#: neither ``validate --all-roots`` nor ``fetch`` flags these ids.
+STRUCTURAL_IDS = CONVENTION_IDS | {"PRD", "architecture", "system-design"}
+
 
 def is_excluded_path(rel_parts: tuple) -> bool:
     """True when *rel_parts* - a file's path components relative to the

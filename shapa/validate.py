@@ -69,7 +69,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from shapa import config, frontmatter
-from shapa.nodes import is_excluded_path, load_nodes
+from shapa.nodes import STRUCTURAL_IDS, is_excluded_path, load_nodes
 from shapa.score import LOCUS_WEIGHTS
 
 VALID_TYPES = {"memory", "rule", "issue", "reference"}
@@ -276,17 +276,6 @@ def validate_node(path, *, known_ids: set[str] | None = None) -> ValidationResul
     return ValidationResult(valid=not has_error, violations=violations)
 
 
-#: Ids that are expected to exist, identically, in every wiki by
-#: construction - the schema/template docs `shapa init` installs into
-#: every wiki verbatim (`AGENTS.md`, `placement.md`, the `arch/`
-#: PRD/architecture/system-design templates) plus `agenda.md` (decision 6:
-#: required at every wiki root, also installed by `shapa init`). None of
-#: these are the ambiguity F09 exists to catch - a schema doc or a per-wiki
-#: agenda recurring once per wiki, by design, is not two independently
-#: authored notes accidentally colliding on the same id.
-STRUCTURAL_IDS = frozenset({"AGENTS", "placement", "PRD", "architecture", "system-design", "agenda"})
-
-
 def check_cross_root_duplicates(roots) -> list[Violation]:
     """F09: a note ``id`` that exists in more than one of *roots* (a
     :func:`shapa.config.wiki_roots` result, or any iterable of
@@ -294,8 +283,10 @@ def check_cross_root_duplicates(roots) -> list[Violation]:
     property the whole multi-root read merge depends on (§4.1 of the spec:
     a silent keep-higher-scored pick is exactly the ambiguity this guards
     against). Reports every colliding id once, naming every root kind it
-    was found in. :data:`STRUCTURAL_IDS` - docs every wiki has one of by
-    construction, not by coincidence - are never flagged."""
+    was found in. :data:`shapa.nodes.STRUCTURAL_IDS` - the per-wiki
+    convention files (AGENTS, placement, agenda, ideas) and the ``arch/``
+    templates, which every wiki has one of by construction, not by
+    coincidence - are never flagged."""
     by_id: dict[str, list[str]] = {}
     for root in roots:
         path = getattr(root, "path", root)

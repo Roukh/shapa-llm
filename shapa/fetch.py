@@ -27,7 +27,7 @@ from shapa import config, embed, frontmatter, rank, registry, serve, store
 from shapa.bm25 import bm25_scores as _bm25_scores
 from shapa.bm25 import words as _words
 from shapa.config import WikiRoot
-from shapa.nodes import Node, load_nodes
+from shapa.nodes import STRUCTURAL_IDS, Node, load_nodes
 from shapa.score import score_meta
 
 DEFAULT_K = 8
@@ -354,6 +354,9 @@ class Selection:
     an empty relevance-ranked fill as "nothing to say." ``collisions`` lists
     every note id that exists in more than one searched root (F09) - the
     ids are shown from every root that has one, never silently picked.
+    Structural ids (``shapa.nodes.STRUCTURAL_IDS``: each wiki's own agenda,
+    ideas log, schema docs and arch/ templates) recur by design and are
+    never listed.
     """
 
     items: list
@@ -439,7 +442,10 @@ def select_multi(query: str, start=None, roots: list[WikiRoot] | None = None,
         per_root[wr] = data
         for nid in data.nodes:
             id_roots.setdefault(nid, set()).add(wr)
-    collisions = sorted(nid for nid, roots_seen in id_roots.items() if len(roots_seen) > 1)
+    collisions = sorted(
+        nid for nid, roots_seen in id_roots.items()
+        if len(roots_seen) > 1 and nid not in STRUCTURAL_IDS
+    )
 
     if not any(data.nodes for data in per_root.values()):
         # No notes anywhere (no wiki initialized yet, or every root is
