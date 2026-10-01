@@ -99,6 +99,9 @@ class WikiReport:
     current_format: int = registry.CURRENT_FORMAT
     mechanical: dict[str, list[str]] = field(default_factory=dict)
     work: list[WorkItem] = field(default_factory=list)
+    #: relpath -> the legacy counter lines the counters step deletes
+    #: (``--check``) or deleted (apply) - the diff, spelled out.
+    counters: dict[str, list[str]] = field(default_factory=dict)
 
     @property
     def behind(self) -> bool:
@@ -167,11 +170,10 @@ def step_gitignore(root: Path, dry_run: bool) -> list[str]:
     return [".gitignore"]
 
 
-def step_counters(root: Path, dry_run: bool) -> list[str]:
-    """Move legacy ``uses``/``last_used`` frontmatter into the index store
-    (max/latest wins - no scoring signal lost), then strip the lines."""
-    rewrites: dict[Path, str] = {}
-    counters: dict[str, tuple[int, str | None]] = {}
+def _legacy_counter_notes(root: Path) -> list[tuple[Path, list[str], list[int]]]:
+    """``(path, lines, legacy line indexes)`` for every live note whose
+    frontmatter still carries ``uses``/``last_used`` lines."""
+    out = []
     for p in _live_md(root):
         if _is_managed(root, p):
             continue  # refreshed whole by step_docs
@@ -180,8 +182,24 @@ def step_counters(root: Path, dry_run: bool) -> list[str]:
         if close is None:
             continue
         legacy = [i for i in range(1, close) if maintain._LEGACY_USE_FIELD_RE.match(lines[i])]
-        if not legacy:
-            continue
+        if legacy:
+            out.append((p, lines, legacy))
+    return out
+
+
+def counter_lines(root: Path) -> dict[str, list[str]]:
+    """``{relpath: [frontmatter lines]}`` - exactly the lines
+    :func:`step_counters` deletes, so ``--check`` can show the diff."""
+    return {_rel(root, p): [lines[i].strip() for i in legacy]
+            for p, lines, legacy in _legacy_counter_notes(root)}
+
+
+def step_counters(root: Path, dry_run: bool) -> list[str]:
+    """Move legacy ``uses``/``last_used`` frontmatter into the index store
+    (max/latest wins - no scoring signal lost), then strip the lines."""
+    rewrites: dict[Path, str] = {}
+    counters: dict[str, tuple[int, str | None]] = {}
+    for p, lines, legacy in _legacy_counter_notes(root):
         meta = frontmatter.parse(p).meta
         try:
             uses = max(0, int(str(meta.get("uses", 0)).strip() or 0))
@@ -242,6 +260,20 @@ MECHANICAL_STEPS = (
     ("counters", step_counters),
     ("frontmatter", step_frontmatter),
 )
+
+#: What each mechanical step changes - printed with every report (and under
+#: ``steps`` in ``--json``) so the resulting diff is never mistaken for noise.
+#: The counters wording matters: format 1 sessions were told to restore
+#: counter-only diffs, which here would undo the migration.
+STEP_TEXT = {
+    "docs": "AGENTS.md/placement.md rewritten from the shipped assets",
+    "gitignore": "read-cache entries added to .gitignore",
+    "counters": "legacy uses/last_used frontmatter lines copied into the index store, then "
+                "deleted from the notes. The deletion is the migration: commit it with the "
+                "upgrade, never restore it",
+    "frontmatter": "missing id/scope derived (filename stem / wiki bucket)",
+    "format": f"{registry.FORMAT_FILENAME} written once nothing else is left",
+}
 
 
 # --- judgment ----------------------------------------------------------------
@@ -342,6 +374,7 @@ def upgrade_wiki(path, *, check: bool = False) -> WikiReport:
         # would regress AGENTS.md to its own, older asset).
         return WikiReport(str(root), "ahead", fmt)
 
+    counters = counter_lines(root)  # before the step deletes them
     mechanical = {}
     for name, step in MECHANICAL_STEPS:
         changed = step(root, check)
@@ -356,7 +389,7 @@ def upgrade_wiki(path, *, check: bool = False) -> WikiReport:
 
     current = fmt == registry.CURRENT_FORMAT and not work and (not check or not mechanical)
     return WikiReport(str(root), "current" if current else "behind", fmt,
-                      mechanical=mechanical, work=work)
+                      mechanical=mechanical, work=work, counters=counters)
 
 
 # --- CLI ---------------------------------------------------------------------
@@ -386,6 +419,12 @@ def _print_human(reports: list[WikiReport], check: bool) -> None:
         if r.mechanical:
             steps = ", ".join(f"{k} ({len(v)})" for k, v in r.mechanical.items())
             print(f"  mechanical {verb}: {steps}")
+        if r.counters:
+            print(f"  [counters] {len(r.counters)} note(s): {STEP_TEXT['counters']}")
+            for rel, lines in list(r.counters.items())[:5]:
+                print(f"    {rel}: {'  '.join(f'-{ln}' for ln in lines)}")
+            if len(r.counters) > 5:
+                print(f"    (+{len(r.counters) - 5} more)")
         for item in r.work:
             more = f" (+{len(item.files) - 5} more)" if len(item.files) > 5 else ""
             files = f": {', '.join(item.files[:5])}{more}" if item.files else ""
@@ -435,6 +474,7 @@ def main(argv: list[str] | None = None) -> None:
             "shapa": __version__,
             "format": registry.CURRENT_FORMAT,
             "mode": "check" if args.check else "apply",
+            "steps": STEP_TEXT,
             "wikis": [asdict(r) for r in reports],
             "behind": [r.path for r in reports if r.behind],
         }, indent=2))

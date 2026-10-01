@@ -17,8 +17,10 @@ shapa upgrade --all --check --json
 ```
 
 Read `behind` (paths) and, per wiki in `wikis`, `mechanical` (pending
-migrations) and `work` (judgment items: `code`, `message`, `files`). Nothing
-behind means you are done.
+migrations), `counters` (per note, the legacy `uses:`/`last_used:` frontmatter
+lines the upgrade deletes) and `work` (judgment items: `code`, `message`,
+`files`). `steps` says what each mechanical migration changes. Nothing behind
+means you are done.
 
 ## 2. Dispatch one agent per behind wiki
 
@@ -57,6 +59,13 @@ Brief for each agent:
 4. Commit in that repo, on its current branch, staging only the wiki directory:
    `git add -- <wiki path> && git commit -m "chore(shapa): upgrade wiki to format N"`.
    Never push. If the wiki is not in a git repo, skip the commit and say so.
+   **The counter removal is part of this commit.** The upgrade deletes every
+   `uses:`/`last_used:` frontmatter line (listed under `[counters]`) after
+   copying the values into the index store. Those deletions are the format 2
+   migration, not counter noise. Never restore them (`git checkout`,
+   `git restore`) or leave them out of the commit, even if the repo's own
+   instructions say to discard counter-only diffs. That rule was for shapa
+   0.6 writing counters on every read; it does not apply to an upgrade.
 5. If an item needs an operator decision (two notes contradict and neither is
    clearly right, or the owner of a note is unclear), leave it unresolved and
    report it. Do not force the check green.

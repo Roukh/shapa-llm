@@ -300,7 +300,9 @@ itself: this file, `placement.md`, the cache `.gitignore`, legacy counters
 moved into the index, and derived `id`/`scope`. It then lists the judgment
 items, such as caps, duplicates, missing summaries and over-length notes,
 which the `shapa-upgrade` skill resolves. `shapa upgrade --check` changes
-nothing and exits 1 while anything is left.
+nothing and exits 1 while anything is left. It lists every `uses:`/
+`last_used:` line the upgrade deletes; that deletion is part of the upgrade
+commit and is never restored.
 
 ## 12. Privacy invariant (memory is never inside the *tool's* repo)
 

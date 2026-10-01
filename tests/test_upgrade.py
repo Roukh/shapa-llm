@@ -155,6 +155,34 @@ class TestEndToEnd(UpgradeTestCase):
         self.assertEqual(_snapshot(wiki), after_first, "a second upgrade must be a no-op")
         self.assertNotIn("mechanical applied", out)
 
+    def test_check_spells_out_the_counter_diff_and_that_it_is_committed(self):
+        wiki = make_old_wiki(self.repo_wiki())
+        expected = {
+            "agenda.md": ["uses: 3"],
+            "git-flow.md": ["uses: 4", 'last_used: "2026-09-20T10:00:00Z"'],
+            "deploy-rule.md": ["uses: 0"],
+        }
+        before = _snapshot(wiki)
+
+        code, out = self.run_cli([str(wiki), "--check", "--json"])
+        report = json.loads(out)
+        self.assertEqual(report["wikis"][0]["counters"], expected)
+        self.assertEqual(sorted(report["wikis"][0]["mechanical"]["counters"]), sorted(expected))
+        self.assertIn("never restore", report["steps"]["counters"])
+
+        code, out = self.run_cli([str(wiki), "--check"])
+        self.assertEqual(code, 1)
+        self.assertIn("[counters] 3 note(s)", out)
+        self.assertIn('git-flow.md: -uses: 4  -last_used: "2026-09-20T10:00:00Z"', out)
+        self.assertIn("commit it with the upgrade, never restore it", out)
+        self.assertEqual(_snapshot(wiki), before, "--check must change nothing")
+
+        # Apply reports what it deleted; once stripped, nothing is left to report.
+        self.assertEqual(upgrade.upgrade_wiki(wiki).counters, expected)
+        self.assertEqual(upgrade.upgrade_wiki(wiki, check=True).counters, {})
+        code, out = self.run_cli([str(wiki), "--check"])
+        self.assertNotIn("[counters]", out)
+
     def test_cli_dispatch_through_python_m_shapa(self):
         wiki = make_old_wiki(self.repo_wiki())
         env = dict(os.environ, SHAPA_MEMORY=str(self.global_wiki))
@@ -397,7 +425,8 @@ class TestSkillAsset(unittest.TestCase):
         text = upgrade.SKILL_ASSET.read_text(encoding="utf-8")
         for needle in ("shapa upgrade --all --check --json", "shapa upgrade <wiki path>",
                        "claude -p", "Archive, never delete", "Never push",
-                       "project's own", "shapa upgrade --all --check\n"):
+                       "project's own", "shapa upgrade --all --check\n",
+                       "The counter removal is part of this commit", "Never restore them"):
             self.assertIn(needle, text)
 
     def test_skill_ships_in_the_package_data(self):
