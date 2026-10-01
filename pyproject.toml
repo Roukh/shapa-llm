@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "shapa"
-version = "0.6.0"
+version = "0.7.0"
 description = "Operational memory for an LLM agent - a self-healing markdown-graph memory."
 readme = "README.md"
 requires-python = ">=3.11"
