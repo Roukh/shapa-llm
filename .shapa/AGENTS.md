@@ -165,6 +165,10 @@ The validator checks a single file for frontmatter schema compliance. It does no
 python3 -m shapa.validate <file>.md    # exits 0 if valid, non-zero if not
 ```
 
+This file and `placement.md` are shapa-managed: shipped by shapa and
+rewritten by `shapa upgrade`, never authored in a wiki. The validator reports
+them as `SKIPPED` and does not note-validate them.
+
 It checks:
 
 - **F01** — `id` matches the filename stem exactly.
@@ -183,7 +187,7 @@ validation today:
 - **F06** — `scope` matches the file's physical bucket (global vs. repo).
 - **F07** — body past the type's word ceiling (300 memory/rule/issue, 2000 reference).
 - **F08** — `supersedes` names an id that does not exist.
-- **F09** — duplicate `id` across two roots in one `wiki_roots()` result. **Error**, not a warning — checked only by `--all-roots`. Ids every wiki carries by construction (`AGENTS`, `placement`, `PRD`, `architecture`, `system-design`, `agenda`) are exempt — that recurrence is not the ambiguity this rule exists to catch.
+- **F09** — duplicate `id` across two roots in one `wiki_roots()` result. **Error**, not a warning — checked only by `--all-roots`. Ids every wiki carries by construction are exempt: the per-wiki convention files (`AGENTS`, `placement`, `agenda`, `ideas`) and the `arch/` templates (`PRD`, `architecture`, `system-design`). That recurrence is not the ambiguity this rule exists to catch, and `fetch` never annotates those ids as ambiguous either.
 - **F10** — lean wiki shape (§11.1): too many live root notes (>40), too many `arch/` reference docs (>12), or too much live disk footprint (>250 KB, excluding `archive/`/`attic/`). **Error**.
 - **F11** — `agenda.md` missing, or listing more than 3 top-level items. **Error**.
 - **S04** — `status` is one of `active`/`superseded`/`draft`.
@@ -296,7 +300,9 @@ itself: this file, `placement.md`, the cache `.gitignore`, legacy counters
 moved into the index, and derived `id`/`scope`. It then lists the judgment
 items, such as caps, duplicates, missing summaries and over-length notes,
 which the `shapa-upgrade` skill resolves. `shapa upgrade --check` changes
-nothing and exits 1 while anything is left.
+nothing and exits 1 while anything is left. It lists every `uses:`/
+`last_used:` line the upgrade deletes; that deletion is part of the upgrade
+commit and is never restored.
 
 ## 12. Privacy invariant (memory is never inside the *tool's* repo)
 
