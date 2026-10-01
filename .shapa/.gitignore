@@ -1,0 +1,6 @@
+# shapa: read-path caches (shapa.store/shapa.embed) - rebuilt
+# automatically on the next read, never authoritative, never tracked.
+.shapa-index.db
+.shapa-index.db-wal
+.shapa-index.db-shm
+.shapa-vectors.json
