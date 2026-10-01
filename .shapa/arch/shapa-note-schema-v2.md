@@ -38,6 +38,8 @@ supersedes: old-note-id                          # directed retirement edge
 | F11 | `agenda.md` missing or over 3 top-level items | **error** (decision 6) |
 | S04 | `status` valid enum | warning |
 
+The shapa-managed `AGENTS.md`/`placement.md` at a wiki root are reported `SKIPPED`, never note-validated: one shipped copy serves global and repo wikis, so no single `scope` fits, and `AGENTS.md` is over the reference cap by design.
+
 ## Body size
 
 - `memory` / `rule` / `issue`: target 150-300 words. A note needing more splits into two linked notes rather than growing one file — this keeps every note inside the range fetch/embed retrieval performs best at (roughly 100-400 tokens; matches the engine's `SNIPPET_CHARS=500` / `DEFAULT_BUDGET=4000`). Past 300 words: F07.

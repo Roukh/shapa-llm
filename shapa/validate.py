@@ -54,6 +54,10 @@ supersedes. ``wiki_roots()``'s root-*kind* enum (repo/external/global, for
 resolving which directories to *read*) is a separate, unrelated concept and is
 untouched.
 
+The shapa-managed schema docs at a wiki root (``AGENTS.md``,
+``placement.md`` - see :data:`MANAGED_DOCS`) are reported as skipped, never
+note-validated: shapa ships and rewrites them, nobody authors them.
+
 CLI::
 
     python3 -m shapa.validate FILE [FILE ...]
@@ -100,6 +104,14 @@ MAX_LIVE_KB = 250          # total size of the live wiki (excludes archive/attic
 #: (AGENTS.md/placement.md, both `type: reference`) are exempt, same as
 #: they are from orphan pruning (nodes.is_protected).
 LIVE_ROOT_TYPES = {"memory", "rule", "issue"}
+
+#: The schema docs shapa ships into every wiki root and rewrites verbatim on
+#: every upgrade (``shapa.upgrade.MANAGED_DOCS`` is this tuple). Their
+#: frontmatter is shapa's, not an author's: one shipped copy lands in global
+#: and repo wikis alike, so no single ``scope`` fits both (F05/F06), and
+#: AGENTS.md is the whole schema, past the reference word cap (F07). Note
+#: validation skips them; their ids still count as known ids (F08).
+MANAGED_DOCS = ("AGENTS.md", "placement.md")
 
 #: A top-level (non-indented) markdown list item: `1. text`, `- text`, `* text`.
 _TOP_LEVEL_ITEM_RE = re.compile(r"^(?:\d+[.)]|[-*])\s+\S")
@@ -257,6 +269,16 @@ def validate_frontmatter(
             v.append(Violation("S04", 0, f"status '{status}' must be one of: {', '.join(sorted(VALID_STATUSES))}", severity="warning"))
 
     return v
+
+
+def is_managed_doc(path) -> bool:
+    """True for a shapa-managed schema doc: a :data:`MANAGED_DOCS` file
+    sitting at a wiki root (its directory holds the AGENTS.md marker)."""
+    p = Path(path)
+    try:
+        return p.name in MANAGED_DOCS and (p.parent / config.WIKI_MARKER).is_file()
+    except OSError:
+        return False
 
 
 def validate_node(path, *, known_ids: set[str] | None = None) -> ValidationResult:
@@ -450,6 +472,9 @@ def _known_ids_for_paths(paths: list[str]) -> set[str]:
     return ids
 
 
+_MANAGED_SKIPPED = "SKIPPED (shapa-managed schema doc, rewritten by `shapa upgrade`)"
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         prog="python3 -m shapa.validate",
@@ -471,6 +496,9 @@ def main(argv: list[str] | None = None) -> None:
         any_invalid = False
         for root in roots:
             for raw in (str(p) for p in _live_md_files(root.path)):
+                if is_managed_doc(raw):
+                    print(f"[{root.kind}] {raw}: {_MANAGED_SKIPPED}")
+                    continue
                 result = validate_node(raw, known_ids=known_ids)
                 if not result.valid:
                     any_invalid = True
@@ -506,6 +534,9 @@ def main(argv: list[str] | None = None) -> None:
     known_ids = _known_ids_for_paths(paths)
     any_invalid = False
     for raw in paths:
+        if is_managed_doc(raw):
+            print(f"{raw}: {_MANAGED_SKIPPED}")
+            continue
         result = validate_node(raw, known_ids=known_ids)
         if result.valid and not result.violations:
             print(f"{raw}: OK")

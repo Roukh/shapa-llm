@@ -43,8 +43,9 @@ ASSETS_DIR = Path(__file__).resolve().parent / "assets"
 SKILL_ASSET = ASSETS_DIR / "skills" / "shapa-upgrade" / "SKILL.md"
 
 #: Schema docs shapa owns inside every wiki - refreshed verbatim from the
-#: assets, never edited by the frontmatter migration below.
-MANAGED_DOCS = ("AGENTS.md", "placement.md")
+#: assets, never edited by the frontmatter migration below, never
+#: note-validated (``shapa.validate.MANAGED_DOCS``).
+MANAGED_DOCS = validate.MANAGED_DOCS
 
 #: Read-path caches a wiki must never track (store.py / embed.py).
 CACHE_IGNORES = (

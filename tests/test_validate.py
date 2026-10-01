@@ -284,5 +284,104 @@ class TestCliOnADirectory(unittest.TestCase):
         self.assertNotIn("retired.md", out)
 
 
+class TestManagedDocsSkipped(unittest.TestCase):
+    """AGENTS.md/placement.md are shipped and rewritten by shapa itself, so
+    `shapa validate` never note-validates them (no F04/F05/F07 warnings on a
+    freshly scaffolded wiki's own schema docs)."""
+
+    def setUp(self):
+        from unittest import mock
+
+        from shapa import config
+
+        self.tmp = Path(tempfile.mkdtemp())
+        self.wiki = self.tmp / "wiki"
+        self.patches = [
+            mock.patch.object(config, "CONFIG_FILE", self.tmp / "config.json"),
+            mock.patch.object(config.Path, "cwd", staticmethod(lambda: self.tmp)),
+        ]
+        for p in self.patches:
+            p.start()
+
+    def tearDown(self):
+        for p in self.patches:
+            p.stop()
+        shutil.rmtree(self.tmp)
+
+    def _run(self, argv):
+        import io
+        from contextlib import redirect_stdout
+
+        from shapa import validate
+
+        buf = io.StringIO()
+        with redirect_stdout(buf), self.assertRaises(SystemExit) as exc:
+            validate.main(argv)
+        return exc.exception.code, buf.getvalue()
+
+    def _init(self):
+        import io
+        from contextlib import redirect_stdout
+
+        from shapa import cli
+
+        with redirect_stdout(io.StringIO()):
+            cli._init([str(self.wiki)])
+
+    @staticmethod
+    def _blocks(out: str) -> dict[str, list[str]]:
+        """``{file header line: [its indented violation lines]}``."""
+        blocks: dict[str, list[str]] = {}
+        current = None
+        for ln in out.splitlines():
+            if ln.startswith("  [") and current is not None:
+                blocks[current].append(ln)
+            else:
+                current = ln
+                blocks[current] = []
+        return blocks
+
+    def _managed_blocks(self, out: str) -> dict[str, list[str]]:
+        return {head: v for head, v in self._blocks(out).items()
+                if "/AGENTS.md:" in head or "/placement.md:" in head}
+
+    def test_fresh_wiki_schema_docs_raise_no_warnings(self):
+        self._init()
+        code, out = self._run([str(self.wiki)])
+        self.assertEqual(code, 0)
+        managed = self._managed_blocks(out)
+        self.assertEqual(len(managed), 2, out)
+        for head, violations in managed.items():
+            self.assertIn("SKIPPED", head)
+            self.assertEqual(violations, [])
+        # The shipped AGENTS.md really would warn if it were note-validated.
+        self.assertTrue(validate_node(self.wiki / "AGENTS.md").warnings)
+
+    def test_named_managed_doc_is_skipped(self):
+        self._init()
+        code, out = self._run([str(self.wiki / "AGENTS.md")])
+        self.assertEqual(code, 0)
+        self.assertIn("SKIPPED", out)
+        self.assertNotIn("WARNING", out)
+
+    def test_all_roots_skips_managed_docs(self):
+        from shapa import config
+
+        self._init()
+        config.set_memory_dir(self.wiki)
+        _code, out = self._run(["--all-roots", str(self.tmp)])
+        managed = self._managed_blocks(out)
+        self.assertEqual(len(managed), 2, out)
+        for head, violations in managed.items():
+            self.assertIn("SKIPPED", head)
+            self.assertEqual(violations, [])
+
+    def test_same_name_outside_a_wiki_is_still_validated(self):
+        loose = _note(self.tmp / "not-a-wiki", "placement", note_type="bogus")
+        code, out = self._run([str(loose)])
+        self.assertEqual(code, 1)
+        self.assertIn("[F02]", out)
+
+
 if __name__ == "__main__":
     unittest.main()

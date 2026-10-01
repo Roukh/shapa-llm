@@ -165,6 +165,10 @@ The validator checks a single file for frontmatter schema compliance. It does no
 python3 -m shapa.validate <file>.md    # exits 0 if valid, non-zero if not
 ```
 
+This file and `placement.md` are shapa-managed: shipped by shapa and
+rewritten by `shapa upgrade`, never authored in a wiki. The validator reports
+them as `SKIPPED` and does not note-validate them.
+
 It checks:
 
 - **F01** — `id` matches the filename stem exactly.
