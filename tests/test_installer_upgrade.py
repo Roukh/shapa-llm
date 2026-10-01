@@ -15,10 +15,10 @@ from tests.test_installer_mcp import BootstrapShTestCase, InstallShTestCase, _wr
 
 SHAPA_UPGRADE_STUB = """#!/usr/bin/env bash
 echo "shapa $*" >> "$SHAPA_STUB_SHAPA_LOG"
-if [ "$1" = "init" ] && [ -n "$2" ]; then
-  mkdir -p "$2"
+if [ "$1" = "init" ] && [ "$2" = "--global" ] && [ -n "$3" ]; then
+  mkdir -p "$3"
   printf '%s\\n' '---' 'id: AGENTS' 'type: reference' 'created: "2026-01-01T00:00:00Z"' \\
-    'consequence: 8' 'locus: output' '---' 'stub' > "$2/AGENTS.md"
+    'consequence: 8' 'locus: output' '---' 'stub' > "$3/AGENTS.md"
 fi
 if [ "$1" = "upgrade" ] && [ "$2" = "--print-skill" ]; then
   printf '%s\\n' '---' 'name: shapa-upgrade' 'description: stub' '---' 'stub skill body'
@@ -71,6 +71,13 @@ class TestInstallSkillAndCheck(UpgradeInstallerMixin, InstallShTestCase):
         self.assertEqual(self.shapa_calls()[-1], "shapa upgrade --all --check")
         self.assertIn("/stub/wiki", result.stdout)
         self.assertIn("need the shapa-upgrade skill", result.stdout)
+
+    def test_install_connects_the_global_wiki_with_init_global(self):
+        # Plain `shapa init DIR` never touches the global pointer, so the
+        # installer must ask for it explicitly.
+        result = self.run_install(["--no-embeddings", "--no-mcp"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"shapa init --global {self.tmp / 'wiki'}", self.shapa_calls())
 
     def test_check_failure_never_fails_the_install(self):
         result = self.run_install(["--no-embeddings", "--no-mcp"], {"SHAPA_STUB_UPGRADE_RC": "2"})

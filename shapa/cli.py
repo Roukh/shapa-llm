@@ -4,9 +4,11 @@ Dispatches subcommands to the engine modules. Memory (the "wiki") lives OUTSIDE
 the tool and can be anywhere: a repo-root ``shapa/`` wiki discovered from the
 cwd, ``$SHAPA_MEMORY``, the path recorded by ``shapa init``, or the
 ``~/.shapa/memory`` default. Run ``shapa init [DIR]`` to scaffold a wiki: it
-creates the directory, installs the bundled ``AGENTS.md`` rules and the
-``arch/`` project templates into it, scaffolds an Obsidian vault, and records
-the path so commands and hooks outside any repo resolve the same place.
+creates the directory (or adopts an existing folder of notes), installs the
+bundled ``AGENTS.md`` rules and the ``arch/`` project templates into it,
+scaffolds an Obsidian vault, and registers it. Only ``shapa init --global``
+records the path as the global wiki, so commands and hooks outside any repo
+resolve the same place.
 """
 
 from __future__ import annotations
@@ -32,12 +34,17 @@ USAGE = f"""shapa {__version__} - operational memory for an LLM agent
 usage: shapa <command> [args]
 
 commands:
-  init [DIR]     scaffold a wiki: create it, install AGENTS.md + arch/
-                 templates, set up an Obsidian vault, and remember the path.
+  init [DIR] [--global]
+                 scaffold a wiki: create it, install AGENTS.md + arch/
+                 templates, set up an Obsidian vault, and register it.
                  Default DIR is ./shapa (a repo-root wiki a session in this
                  repo resolves automatically). Pass ./.shapa for a hidden
                  dot-folder wiki instead — discovery checks .shapa/ before
-                 the legacy shapa/ name at every ancestor directory.
+                 the legacy shapa/ name at every ancestor directory. A named
+                 DIR that already holds notes is adopted: missing scaffold
+                 files are added, the notes are left untouched (`shapa
+                 upgrade DIR` migrates them). Only --global records DIR
+                 (default ~/.shapa/memory) as the global wiki pointer.
   init --upgrade-docs [DIR]
                  refresh an EXISTING wiki's AGENTS.md + placement.md from
                  the bundled assets only — never arch/ templates, never a
@@ -141,7 +148,8 @@ def _upgrade_docs(target: Path) -> list[str]:
 
 def _init(argv: list[str]) -> None:
     upgrade_docs = "--upgrade-docs" in argv
-    positional = [a for a in argv if a != "--upgrade-docs"]
+    make_global = "--global" in argv
+    positional = [a for a in argv if a not in ("--upgrade-docs", "--global")]
 
     if upgrade_docs:
         # Refresh, not scaffold: default target is whatever wiki is already
@@ -166,30 +174,36 @@ def _init(argv: list[str]) -> None:
             print(f"shapa: nothing to refresh (bundled assets missing?) at {target}")
         return
 
-    # No argument -> scaffold a wiki at the repo root: ./shapa. A session in this
+    # No DIR -> scaffold a wiki at the repo root: ./shapa. A session in this
     # repo then resolves that wiki automatically (config.discover walks up for
-    # the shapa/AGENTS.md marker). An explicit DIR overrides the location AND
-    # becomes the recorded default; a bare init relies on discovery and leaves
-    # the recorded default (e.g. the global LLM-rules wiki) untouched.
-    explicit = bool(positional)
-    target = Path(positional[0]).expanduser() if explicit else Path.cwd() / config.WIKI_DIRNAME
+    # the shapa/AGENTS.md marker). The global pointer (~/.shapa/config.json)
+    # is written ONLY by --global: a repo wiki scaffolded or adopted by
+    # `shapa init DIR` must never repoint every session outside that repo.
+    if make_global:
+        named = True
+        target = Path(positional[0]).expanduser() if positional else config.DEFAULT_DIR
+    else:
+        named = bool(positional)
+        target = Path(positional[0]).expanduser() if named else Path.cwd() / config.WIKI_DIRNAME
 
-    # Refuse to scaffold into a pre-existing directory that holds unrelated
-    # content (e.g. a Python package literally named ``shapa/``, or a namespace
-    # collision): merging wiki files into it would pollute it and could make
-    # ``config.discover`` treat it as a wiki thereafter. A directory that is
-    # already a wiki (has the AGENTS.md marker) is fine - re-init is idempotent.
-    if target.is_dir() and next(target.iterdir(), None) is not None and not (target / config.WIKI_MARKER).exists():
+    # A non-empty folder without the AGENTS.md marker is adopted when it was
+    # named: missing scaffold files are added, its notes are left untouched.
+    # The implicit ./shapa default still refuses one - that is the collision
+    # case (e.g. a Python package literally named ``shapa/``) where merging
+    # wiki files in would pollute it and make ``config.discover`` treat it
+    # as a wiki thereafter.
+    fresh = not target.is_dir() or next(target.iterdir(), None) is None
+    adopted = not fresh and not (target / config.WIKI_MARKER).exists()
+    if adopted and not named:
         print(
             f"shapa: refusing to init: {target} already exists and is not a shapa "
-            f"wiki (no {config.WIKI_MARKER}). Move it aside or pass an empty/new "
-            f"path: shapa init <DIR>.",
+            f"wiki (no {config.WIKI_MARKER}). Name it to adopt it as a wiki "
+            f"(`shapa init {target}`), or pass an empty/new path.",
             file=sys.stderr,
         )
         sys.exit(2)
 
     target.mkdir(parents=True, exist_ok=True)
-    fresh = not (target / config.WIKI_MARKER).exists()
 
     installed = _install_docs(target)
     if _ensure_index_gitignore(target):
@@ -206,34 +220,33 @@ def _init(argv: list[str]) -> None:
         if not f.exists():
             f.write_text(content, encoding="utf-8")
 
-    # Record an explicitly-chosen DIR as the default so commands outside any
-    # repo resolve it. A bare init (repo-root ./shapa) is found by discovery, so
-    # it must NOT overwrite the recorded default (e.g. the global rules wiki).
-    if explicit:
-        resolved = config.set_memory_dir(target)
-    else:
-        resolved = target.resolve()
+    resolved = config.set_memory_dir(target) if make_global else target.resolve()
 
-    # A wiki scaffolded from this shapa's own assets starts at the current
-    # format (derived scope fields + the marker). An existing wiki is never
-    # migrated by init - that is `shapa upgrade`'s job.
+    # A wiki scaffolded into an empty folder from this shapa's own assets
+    # starts at the current format (derived scope fields + the marker). An
+    # existing or adopted wiki is never migrated by init - its notes stay
+    # byte-identical; that is `shapa upgrade`'s job.
     if fresh:
         from shapa import upgrade
 
         upgrade.upgrade_wiki(resolved)
     registry.register([resolved], via="init")
 
-    verb = "connected" if explicit else "scaffolded"
+    verb = "scaffolded" if fresh else ("adopted" if adopted else "already present")
     print(f"shapa wiki {verb} at: {resolved}")
     if installed:
         print(f"Installed {len(installed)} doc(s): {', '.join(installed)}")
     else:
         print("Wiki docs already present (left untouched).")
+    fmt = registry.read_format(resolved)
+    if fmt < registry.CURRENT_FORMAT:
+        print(f"Existing notes left untouched (format {fmt}<{registry.CURRENT_FORMAT}): "
+              f"run `shapa upgrade {resolved}` to migrate them.")
     print("Open this folder as an Obsidian vault to browse the graph.")
-    if resolved.name == config.WIKI_DIRNAME:
+    if resolved.name in config.WIKI_DIRNAMES:
         print("A session run inside this repo resolves this wiki automatically.")
-    if explicit:
-        print("This path is now the recorded default; override with $SHAPA_MEMORY.")
+    if make_global:
+        print("This path is now the global wiki (recorded pointer); override with $SHAPA_MEMORY.")
 
 
 def main(argv: list[str] | None = None) -> None:

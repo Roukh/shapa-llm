@@ -89,9 +89,9 @@ resolve_shapa() {
 }
 INV="$(resolve_shapa)"
 
-# Hooks resolve the wiki via the pointer that `shapa init` records below (see
+# Hooks resolve the wiki via the pointer that `shapa init --global` records below (see
 # shapa/config.py). We deliberately do NOT bake SHAPA_MEMORY into the hook
-# command: that way a later `shapa init /new/path` moves the wiki and the hooks
+# command: that way a later `shapa init --global /new/path` moves the wiki and the hooks
 # follow it automatically, instead of silently reading the old baked-in path.
 #
 # SHAPA_SERVE_AUTOSTART=1 (GAP D, shapa-backend-spec.md §5): the SessionStart
@@ -385,10 +385,10 @@ if [ "$UNINSTALL" -eq 1 ]; then
 fi
 
 # Connect the wiki before wiring anything at it: `shapa init` creates the dir,
-# installs the design docs (arch/ + AGENTS.md), and records the path. This
+# installs the design docs (arch/ + AGENTS.md), and records the path (--global). This
 # runs regardless of --harness: Codex/OpenCode's MCP tools read/write this
 # same wiki, so it must exist before any harness is wired to reach it.
-[ "$DRY_RUN" -eq 0 ] && { mkdir -p "$MEMORY"; "${INV_ARGV[@]}" init "$MEMORY" >/dev/null 2>&1 || true; }
+[ "$DRY_RUN" -eq 0 ] && { mkdir -p "$MEMORY"; "${INV_ARGV[@]}" init --global "$MEMORY" >/dev/null 2>&1 || true; }
 
 if harness_in_scope claude; then
   MERGED="$(cat "$SETTINGS")"

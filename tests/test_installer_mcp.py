@@ -55,11 +55,11 @@ NOOP_STUB = "#!/usr/bin/env bash\nexit 0\n"
 # A minimal `shapa` so resolve_shapa()'s `command -v shapa` succeeds
 # immediately - no repo .venv build, no real package, fully hermetic.
 SHAPA_STUB = """#!/usr/bin/env bash
-if [ "$1" = "init" ] && [ -n "$2" ]; then
-  mkdir -p "$2"
+if [ "$1" = "init" ] && [ "$2" = "--global" ] && [ -n "$3" ]; then
+  mkdir -p "$3"
   printf '%s\\n' \
     '---' 'id: AGENTS' 'type: reference' 'created: "2026-01-01T00:00:00Z"' \
-    'consequence: 8' 'locus: output' 'uses: 0' '---' 'stub' > "$2/AGENTS.md"
+    'consequence: 8' 'locus: output' 'uses: 0' '---' 'stub' > "$3/AGENTS.md"
 fi
 exit 0
 """

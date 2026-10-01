@@ -122,11 +122,15 @@ Two ways to make one:
 
 ```
 cd <your-repo> && shapa init       # a repo-root wiki: <your-repo>/shapa/
-shapa init ~/.shapa/memory         # a global wiki (LLM rules, any session)
+shapa init --global ~/.shapa/memory  # the global wiki (LLM rules, any session)
 ```
 
 `shapa init [DIR]` creates the directory, installs `AGENTS.md` + the `arch/`
-project templates, scaffolds an Obsidian vault, and records the path. A session
+project templates, scaffolds an Obsidian vault, and registers the wiki. Only
+`--global` records the path as the global wiki; plain `shapa init DIR` never
+touches that pointer. A named DIR that already holds notes but no `AGENTS.md`
+is adopted: the missing scaffold files are added and the notes are left as
+they are, for `shapa upgrade DIR` to migrate. A session
 running **inside a repo that has a `shapa/` wiki uses it automatically** — the
 hooks walk up from the cwd to the nearest `shapa/AGENTS.md` (like git finding
 `.git`) — unless `$SHAPA_MEMORY` is set, which always takes precedence.
@@ -141,7 +145,7 @@ vault). Contributors can `git clone` and work from the repo.
 ## How to run
 
 ```
-shapa init [DIR]                       # scaffold a wiki (default: ./shapa)
+shapa init [DIR] [--global]            # scaffold/adopt a wiki (default: ./shapa)
 shapa where                            # print the resolved memory directory
 shapa fetch --query "fix the git flow" # surface relevant memory (read path)
 shapa heartbeat --dry-run              # preview orphan pruning

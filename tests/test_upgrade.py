@@ -416,6 +416,16 @@ class TestInitIntegration(UpgradeTestCase):
         self.assertEqual(upgrade.upgrade_wiki(wiki, check=True).status, "current")
         self.assertIn(str(wiki.resolve()), registry.load())
         self.assertFalse((wiki / "skills").exists(), "harness skills are never copied into a wiki")
+        # Not the global wiki (init DIR leaves the pointer alone) -> repo scope.
+        self.assertIn("scope: repo", (wiki / "agenda.md").read_text(encoding="utf-8"))
+        self.assertEqual(config.global_root(), self.global_wiki)
+
+    def test_fresh_init_global_is_current_with_global_scope(self):
+        wiki = self.tmp / "new-global"
+        with redirect_stdout(io.StringIO()):
+            cli._init(["--global", str(wiki)])
+        self.assertEqual(config.global_root(), wiki.resolve())
+        self.assertEqual(upgrade.upgrade_wiki(wiki, check=True).status, "current")
         self.assertIn("scope: global", (wiki / "agenda.md").read_text(encoding="utf-8"))
 
     def test_reinit_never_migrates_an_existing_wiki(self):
@@ -425,6 +435,18 @@ class TestInitIntegration(UpgradeTestCase):
             cli._init([str(wiki)])
         self.assertFalse((wiki / registry.FORMAT_FILENAME).exists())
         self.assertEqual((wiki / "git-flow.md").read_text(encoding="utf-8"), before)
+
+    def test_adopted_folder_is_behind_until_upgrade_then_current(self):
+        wiki = make_old_wiki(self.tmp / "marker-less")
+        (wiki / "AGENTS.md").unlink()  # a folder of notes that never had the marker
+        before = {p: (wiki / p).read_text(encoding="utf-8") for p in ("git-flow.md", "agenda.md")}
+        with redirect_stdout(io.StringIO()):
+            cli._init([str(wiki)])
+        for rel, text in before.items():
+            self.assertEqual((wiki / rel).read_text(encoding="utf-8"), text, rel)
+        self.assertEqual(upgrade.upgrade_wiki(wiki, check=True).status, "behind")
+        upgrade.upgrade_wiki(wiki)
+        self.assertEqual(upgrade.upgrade_wiki(wiki, check=True).status, "current")
 
 
 class TestHookIntegration(UpgradeTestCase):

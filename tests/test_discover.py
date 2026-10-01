@@ -159,8 +159,8 @@ class TestDotFolderDiscover(unittest.TestCase):
 
 
 class TestInitPointerPolicy(unittest.TestCase):
-    """A bare ``shapa init`` (repo-root wiki) must not hijack the recorded
-    default; only an explicit ``shapa init DIR`` sets it."""
+    """``shapa init`` (bare or with a DIR) must not hijack the recorded
+    global pointer; only ``shapa init --global [DIR]`` sets it."""
 
     def setUp(self):
         from shapa import cli
@@ -188,9 +188,13 @@ class TestInitPointerPolicy(unittest.TestCase):
         self.assertTrue((self.tmp / config.WIKI_DIRNAME / config.WIKI_MARKER).is_file())
         self.assertFalse(self.cfg.exists())  # default pointer untouched
 
-    def test_explicit_init_writes_pointer(self):
+    def test_named_init_does_not_write_pointer(self):
+        self.cli._init([str(self.tmp / "repo-wiki")])
+        self.assertFalse(self.cfg.exists())
+
+    def test_global_init_writes_pointer(self):
         wiki = self.tmp / "global"
-        self.cli._init([str(wiki)])
+        self.cli._init(["--global", str(wiki)])
         self.assertTrue(self.cfg.is_file())
         self.assertEqual(config._pointer(), wiki.resolve())
 

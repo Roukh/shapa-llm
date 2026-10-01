@@ -2,14 +2,16 @@
 pointer in shapa.config, and the maintainer's protection of the arch cluster.
 """
 
+import io
 import shutil
 import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
-from shapa import cli, config, heartbeat, maintain
+from shapa import cli, config, heartbeat, maintain, registry
 from shapa.nodes import build_graph, load_nodes
 
 NOW = datetime(2026, 7, 1, tzinfo=timezone.utc)
@@ -50,14 +52,66 @@ class TestInit(unittest.TestCase):
         for nid in ("AGENTS", "PRD", "architecture", "system-design"):
             self.assertIn(nid, nodes)
 
-    def test_init_records_pointer_and_where_reads_it(self):
-        cli._init([str(self.wiki)])
+    def test_init_global_records_pointer_and_where_reads_it(self):
+        cli._init(["--global", str(self.wiki)])
         self.assertTrue(self.cfg.is_file())
         # With no env override, memory_dir resolves to the connected wiki.
         self.assertEqual(config.memory_dir(), self.wiki.resolve())
 
-    def test_env_overrides_pointer(self):
+    def test_init_dir_never_touches_the_global_pointer(self):
+        # A repo wiki scaffolded by `shapa init DIR` must not repoint every
+        # session outside that repo: only --global writes config.json.
         cli._init([str(self.wiki)])
+        self.assertFalse(self.cfg.exists())
+        self.cfg.write_text('{"memory": "/the/global/wiki"}\n', encoding="utf-8")
+        cli._init([str(self.tmp / "another-repo-wiki")])
+        self.assertEqual(self.cfg.read_text(encoding="utf-8"), '{"memory": "/the/global/wiki"}\n')
+        self.assertEqual(config.global_root(), Path("/the/global/wiki"))
+
+    def test_init_global_without_dir_targets_the_default_wiki(self):
+        default = self.tmp / "default-memory"
+        with mock.patch.object(config, "DEFAULT_DIR", default):
+            cli._init(["--global"])
+        self.assertTrue((default / "AGENTS.md").is_file())
+        self.assertEqual(config.global_root(), default.resolve())
+
+    def test_init_adopts_a_named_non_empty_folder_and_leaves_notes_untouched(self):
+        self.wiki.mkdir()
+        note = self.wiki / "git-flow.md"
+        text = ("---\nid: git-flow\ntype: memory\ncreated: \"2026-01-01T00:00:00Z\"\n"
+                "consequence: 5\nlocus: output\nuses: 4\n---\nrebase before merge\n")
+        note.write_text(text, encoding="utf-8")
+        own_agenda = self.wiki / "agenda.md"
+        own_agenda.write_text("---\nid: agenda\n---\n1. my own fire\n", encoding="utf-8")
+
+        out = io.StringIO()
+        with redirect_stdout(out):
+            cli._init([str(self.wiki)])
+
+        for name in ("AGENTS.md", "placement.md", "arch/PRD.md", ".gitignore", ".obsidian/app.json"):
+            self.assertTrue((self.wiki / name).exists(), name)
+        self.assertEqual(note.read_text(encoding="utf-8"), text)
+        self.assertIn("my own fire", own_agenda.read_text(encoding="utf-8"))
+        # Adoption never migrates: no format marker, and it says how to.
+        self.assertFalse((self.wiki / registry.FORMAT_FILENAME).exists())
+        self.assertIn("adopted", out.getvalue())
+        self.assertIn(f"shapa upgrade {self.wiki.resolve()}", out.getvalue())
+        self.assertFalse(self.cfg.exists())
+        self.assertIn(str(self.wiki.resolve()), registry.load())
+
+    def test_bare_init_still_refuses_a_non_wiki_shapa_folder(self):
+        # The implicit ./shapa default can collide with a Python package
+        # named shapa/; only a named DIR is adopted.
+        pkg = self.tmp / config.WIKI_DIRNAME
+        pkg.mkdir()
+        (pkg / "__init__.py").write_text("", encoding="utf-8")
+        with self.assertRaises(SystemExit) as ctx, redirect_stderr(io.StringIO()):
+            cli._init([])
+        self.assertEqual(ctx.exception.code, 2)
+        self.assertFalse((pkg / "AGENTS.md").exists())
+
+    def test_env_overrides_pointer(self):
+        cli._init(["--global", str(self.wiki)])
         other = self.tmp / "other"
         import os
         with mock.patch.dict(os.environ, {config.ENV_VAR: str(other)}):
@@ -157,7 +211,7 @@ class TestUpgradeDocs(unittest.TestCase):
         self.assertIn(store.INDEX_FILENAME, (self.wiki / ".gitignore").read_text(encoding="utf-8"))
 
     def test_upgrade_docs_default_target_is_the_connected_wiki(self):
-        cli._init([str(self.wiki)])  # explicit DIR -> becomes the recorded pointer
+        cli._init(["--global", str(self.wiki)])  # --global DIR -> the recorded pointer
         agents = self.wiki / "AGENTS.md"
         agents.write_text("STALE", encoding="utf-8")
 

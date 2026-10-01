@@ -5,16 +5,16 @@ created: "2026-07-10T00:00:00Z"
 consequence: 7
 locus: output-meta
 scope: repo
-summary: Explicit `shapa init DIR` repoints the recorded default wiki; bare init and discovery don't. Bring a marker-less .shapa in by adding AGENTS.md, then upgrade.
+summary: Only `shapa init --global` repoints the global wiki. `shapa init DIR` adopts a marker-less notes folder untouched; `shapa upgrade DIR` migrates it.
 ---
 
 Rules for creating, connecting and finding wikis without breaking the operator's global wiki. Peers: [[shapa-llm-identity]], [[shapa-engine-safety]].
 
 **Marker and discovery.** A wiki is any directory holding the `AGENTS.md` marker. Discovery walks up from the cwd and checks `.shapa/` before the legacy `shapa/` at every ancestor. The tool's own package directory `shapa/` is never mistaken for a wiki: its marker sits at `shapa/assets/AGENTS.md`, not `shapa/AGENTS.md`.
 
-**Pointer policy** (`shapa/cli.py` `_init`). An explicit `shapa init DIR` calls `config.set_memory_dir`, making DIR the recorded default for every session outside a repo. Running it on a repo wiki silently repoints the global wiki. A bare `shapa init` relies on discovery and never writes the pointer.
+**Pointer policy** (`shapa/cli.py` `_init`). Only `shapa init --global [DIR]` calls `config.set_memory_dir`, making DIR (default `~/.shapa/memory`) the global wiki for every session outside a repo; `install.sh` passes it. Plain `shapa init` and `shapa init DIR` never write `~/.shapa/config.json`. Up to 0.7.0 an explicit DIR did, so scaffolding a repo wiki silently repointed the global one.
 
-**Legacy wikis.** `init` refuses a non-empty directory that lacks `AGENTS.md`, and `shapa upgrade PATH` refuses one too (exit 2). To bring such a `.shapa` in without touching the pointer, copy `shapa/assets/AGENTS.md` into it and run `shapa upgrade <dir>`. That refreshes `AGENTS.md`/`placement.md`, writes the cache `.gitignore`, derives `id`/`scope`, and writes `.shapa-format` once the work list is empty. This repo's `.shapa` was converted this way on 2026-10-01. `init`, `bootstrap`, `fetch` and `upgrade` also register each wiki in `~/.shapa/wikis.json`.
+**Legacy wikis.** A named `shapa init DIR` adopts a non-empty folder that lacks `AGENTS.md`: it adds the missing scaffold files and leaves every note byte-identical, with no format marker. `shapa upgrade DIR` then refreshes `AGENTS.md`/`placement.md`, writes the cache `.gitignore`, strips counters, derives `id`/`scope`, and writes `.shapa-format` once the work list is empty. A bare `shapa init` still refuses a non-wiki `./shapa` (package-name collision), and `shapa upgrade PATH` refuses a folder without the marker (exit 2). `init`, `bootstrap`, `fetch` and `upgrade` register each wiki in `~/.shapa/wikis.json`.
 
 **Packaging.** `shapa init` installs whatever the wheel ships under `shapa/assets/`. On 2026-07-10 a stale `build/` directory re-shipped design docs that had been moved out of the assets, so they would have landed in user wikis. Delete `build/` before verifying a wheel's contents.
 

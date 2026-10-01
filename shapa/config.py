@@ -9,7 +9,8 @@ priority first):
 1. ``$SHAPA_MEMORY`` if set (explicit per-invocation override).
 2. The nearest ``shapa/`` wiki discovered by walking up from the cwd (so a
    session in a project targets that project's wiki automatically).
-3. The persisted pointer written by ``shapa init DIR`` (``~/.shapa/config.json``).
+3. The persisted pointer written by ``shapa init --global [DIR]``
+   (``~/.shapa/config.json``) - plain ``shapa init DIR`` never writes it.
 4. ``~/.shapa/memory`` otherwise (the default).
 
 This keeps private notes out of the tool's repo entirely - memory never lives
@@ -26,7 +27,7 @@ from typing import Literal
 
 ENV_VAR = "SHAPA_MEMORY"
 DEFAULT_DIR = Path.home() / ".shapa" / "memory"
-#: Pointer file written by ``shapa init`` to remember a default wiki.
+#: Pointer file written by ``shapa init --global`` to remember the global wiki.
 CONFIG_FILE = Path.home() / ".shapa" / "config.json"
 #: Directory name a wiki lives in at a repo root, and the file that marks it.
 #: This remains the implicit default target for a bare ``shapa init`` (unchanged,
@@ -97,7 +98,7 @@ def memory_dir() -> Path:
 
 
 def set_memory_dir(path) -> Path:
-    """Persist *path* as the connected wiki (written by ``shapa init``).
+    """Persist *path* as the global wiki (written by ``shapa init --global``).
 
     Returns the resolved absolute path. Does not touch ``$SHAPA_MEMORY``: an
     explicit env override always wins over this pointer at resolution time.
