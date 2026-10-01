@@ -4,7 +4,6 @@ type: reference
 created: "2026-09-30T02:00:00Z"
 consequence: 9
 locus: output-meta
-uses: 0
 ---
 
 Final architecture for shapa's multi-root memory backend: global+repo dual-wiki loading, semantic search/RAG, and context-optimized note structure, so `pip install shapa` fully operates for any user on any harness. Synthesized from a 3-design tournament (winner: design 0, total 6.6) plus grafts from designs 1/2 and fixes for every fatal flaw the judges found.
