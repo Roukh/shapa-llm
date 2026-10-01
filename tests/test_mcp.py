@@ -71,7 +71,11 @@ class _StubWiki(unittest.TestCase):
 
 class TestTools(_StubWiki):
     def test_search_finds_the_meta_anchor_unconditionally(self):
-        out = mcp.tool_search({"query": "totally unrelated gibberish"}, str(self.repo))
+        # The query must share no word with any fixture note's id-enriched
+        # text: "unrelated" matched the filler note's id ("unrelated-fact"),
+        # a real BM25 hit that only the semantic channel's absolute guard
+        # rejected - so a bare-core run (BM25-only) failed this test.
+        out = mcp.tool_search({"query": "quantum zebra saxophone"}, str(self.repo))
         ids = [r["id"] for r in out["results"]]
         self.assertIn("git-workflow", ids)  # locus:meta anchor, always surfaced
 
