@@ -506,7 +506,12 @@ def main(argv: list[str] | None = None) -> None:
     else:
         lean_root = None
 
-    paths = args.paths or [str(p) for p in _live_md_files(config.memory_dir())]
+    if lean_root is not None:
+        # A wiki directory (named, or the default) validates its live notes -
+        # never the directory path itself as if it were a note file.
+        paths = [str(p) for p in _live_md_files(Path(lean_root))]
+    else:
+        paths = args.paths
     known_ids = _known_ids_for_paths(paths)
     any_invalid = False
     for raw in paths:

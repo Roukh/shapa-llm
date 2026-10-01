@@ -256,5 +256,33 @@ class TestLeanShape(unittest.TestCase):
         self.assertEqual(check_agenda(missing), [])
 
 
+class TestCliOnADirectory(unittest.TestCase):
+    """`shapa validate DIR` validates the wiki's live notes - it used to hand
+    the directory itself to validate_node and crash (IsADirectoryError)."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    def test_directory_argument_validates_its_notes(self):
+        import io
+        from contextlib import redirect_stdout
+
+        from shapa import validate
+
+        _note(self.tmp, "agenda", "1. the one fire")
+        _note(self.tmp, "a-note")
+        _note(self.tmp / "archive", "retired", note_type="bogus")
+        buf = io.StringIO()
+        with redirect_stdout(buf), self.assertRaises(SystemExit) as exc:
+            validate.main([str(self.tmp)])
+        self.assertEqual(exc.exception.code, 0)
+        out = buf.getvalue()
+        self.assertIn("a-note.md", out)
+        self.assertNotIn("retired.md", out)
+
+
 if __name__ == "__main__":
     unittest.main()
