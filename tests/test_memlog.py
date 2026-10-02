@@ -209,12 +209,43 @@ class TestIndex(LogCase):
 
     def test_read_only_never_writes_and_sees_fresh_lines(self):
         memlog.append(self.root, [rec("read only memory one")], now=NOW)
+        for p in self.root.glob(store.db_path(self.root).name + "*"):
+            p.unlink()  # a fresh clone: the log, no index
         conn = memlog.open_index(self.root, read_only=True)
         self.assertEqual(len(memlog.active_records(conn)), 1)
         conn.close()
         self.assertFalse(store.db_path(self.root).exists())
         self.assertEqual(sorted(p.name for p in self.root.iterdir()),
                          [".gitattributes", "memory"])
+
+    def test_read_only_over_a_stale_index_leaves_it_untouched(self):
+        memlog.append(self.root, [rec("read only memory one")], now=NOW)
+        db = store.db_path(self.root)
+
+        def snapshot():
+            return sorted((p.name, p.stat().st_mtime_ns, p.stat().st_size)
+                          for p in self.root.glob(db.name + "*"))
+
+        before = snapshot()
+        with (self.root / "memory" / "2026-10.jsonl").open("a") as fh:
+            fh.write(rec("a second line nobody synced yet").to_json() + "\n")
+        conn = memlog.open_index(self.root, read_only=True)
+        self.assertEqual(len(memlog.active_records(conn)), 2)
+        conn.close()
+        self.assertEqual(snapshot(), before)
+
+    def test_append_dedups_through_the_index_and_its_shingle_cache(self):
+        first = rec("Stripe webhook retries flood the queue when the handler returns 500")
+        memlog.append(self.root, [first], now=NOW)
+        conn = self._conn()
+        self.assertEqual(conn.execute("SELECT COUNT(*) FROM memory_shingles").fetchone()[0], 1)
+        conn.close()
+        again = rec("Stripe webhook retries flood the queue when the handler returns 500!")
+        res = memlog.append(self.root, [again], now=NOW)
+        self.assertEqual(res.duplicates, [again.id])
+        with mock.patch.object(memlog, "open_index", side_effect=sqlite3.OperationalError("locked")):
+            res = memlog.append(self.root, [again], now=NOW)  # fallback: parse the log
+        self.assertEqual(res.duplicates, [again.id])
 
     def test_uses_survive_rebuild(self):
         r = rec("counted memory")

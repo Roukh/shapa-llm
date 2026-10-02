@@ -47,6 +47,8 @@ import math
 import os
 import re
 import sqlite3
+import zlib
+from array import array
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -387,9 +389,64 @@ def _locked_append(path: Path):
             os.close(fd)
 
 
-def _shingles(text: str) -> set:
+def _shingles(text: str) -> frozenset:
+    """Word 3-shingles of *text* (maintain's tokenizer), each folded to a
+    crc32 so the set packs into the index's shingle cache."""
     from shapa.maintain import _shingles as sh, _tokens
-    return sh(_tokens(text))
+    return frozenset(zlib.crc32((s if isinstance(s, str) else "\x1f".join(s)).encode("utf-8"))
+                     for s in sh(_tokens(text)))
+
+
+def _pack(sig) -> bytes:
+    return array("I", sorted(sig)).tobytes()
+
+
+def _unpack(blob: bytes) -> frozenset:
+    arr = array("I")
+    arr.frombytes(blob)
+    return frozenset(arr)
+
+
+@dataclass
+class _Live:
+    id: str
+    repo: str | None
+
+
+def _dedup_view_from_log(root: Path, dedup: bool):
+    """(every record id, archived targets, live shingles by kind), read by
+    parsing the whole log - the fallback when the index can't be used."""
+    view = read_log(root)
+    by_kind: dict[str, list] = {}
+    if dedup:
+        for r in view.active():
+            by_kind.setdefault(r.kind, []).append((r, _shingles(f"{r.summary} {r.body}")))
+    return set(view.records), set(view.archived), by_kind
+
+
+def _dedup_view_from_index(conn: sqlite3.Connection, dedup: bool):
+    """Same as :func:`_dedup_view_from_log`, from the synced index: shingle
+    sets come from the cache keyed by content hash, so only records the
+    cache has never seen get tokenized."""
+    seen = {r[0] for r in conn.execute("SELECT id FROM memories")}
+    archived = {r[0] for r in conn.execute("SELECT target FROM memory_ops")}
+    by_kind: dict[str, list] = {}
+    if dedup:
+        missing = []
+        for rid, kind, repo, summary, body, h, blob in conn.execute(
+                "SELECT m.id, m.kind, m.repo, m.summary, m.body, m.hash, s.sig FROM memories m "
+                "LEFT JOIN memory_shingles s ON s.hash = m.hash WHERE m.active = 1"):
+            if blob is None:
+                sig = _shingles(f"{summary} {body}")
+                missing.append((h, _pack(sig)))
+            else:
+                sig = _unpack(blob)
+            by_kind.setdefault(kind, []).append((_Live(rid, repo), sig))
+        if missing:
+            conn.executemany("INSERT OR IGNORE INTO memory_shingles(hash, sig) VALUES (?,?)",
+                             missing)
+            conn.commit()
+    return seen, archived, by_kind
 
 
 def _jaccard(a: set, b: set) -> float:
@@ -428,14 +485,22 @@ def append(root, records, *, ops=(), dedup: bool = True, now: datetime | None = 
     path = current_log(root, now)
     result.path = path
     with _locked_append(path) as fd:
-        view = read_log(root)
-        live = view.active() if dedup else []
-        by_kind: dict[str, list[tuple[Record, set]]] = {}
-        if dedup:
-            for r in live:
-                by_kind.setdefault(r.kind, []).append((r, _shingles(f"{r.summary} {r.body}")))
-        seen: set[str] = set(view.records)
+        # The lock is held, so syncing the index here sees every line any
+        # other session has appended; the index stays derived (a failure to
+        # open or sync it falls back to parsing the whole log).
+        conn = None
+        try:
+            conn = open_index(root)
+            if conn is None:
+                raise OSError("no log")
+            seen, archived, by_kind = _dedup_view_from_index(conn, dedup)
+        except Exception:
+            if conn is not None:
+                conn.close()
+                conn = None
+            seen, archived, by_kind = _dedup_view_from_log(root, dedup)
         lines: list[str] = []
+        fresh_sigs: list[tuple[str, bytes]] = []
         for rec in candidates:
             if rec.id in seen:
                 result.duplicates.append(rec.id)
@@ -455,14 +520,25 @@ def append(root, records, *, ops=(), dedup: bool = True, now: datetime | None = 
                     rec.supersedes = best.id
                     result.superseded[rec.id] = best.id
                 by_kind.setdefault(rec.kind, []).append((rec, sh))
+                fresh_sigs.append((rec.hash, _pack(sh)))
             seen.add(rec.id)
             lines.append(rec.to_json())
             result.written.append(rec)
         for op in ops:
-            if isinstance(op, Op) and op.target not in view.archived:
+            if isinstance(op, Op) and op.target not in archived:
                 lines.append(op.to_json())
         if lines:
             os.write(fd, ("\n".join(lines) + "\n").encode("utf-8"))
+        if conn is not None:
+            try:
+                if lines:  # keep the index current with what was just written
+                    conn.executemany("INSERT OR IGNORE INTO memory_shingles(hash, sig) "
+                                     "VALUES (?,?)", fresh_sigs)
+                    sync(root, conn)
+            except sqlite3.Error:
+                pass
+            finally:
+                conn.close()
     if result.written or ops:
         try:
             ensure_gitattributes(root)
@@ -501,6 +577,8 @@ _SCHEMA = (
     """CREATE TABLE IF NOT EXISTS memory_vectors (
         hash TEXT NOT NULL, model TEXT NOT NULL, vec BLOB NOT NULL,
         PRIMARY KEY (hash, model))""",
+    """CREATE TABLE IF NOT EXISTS memory_shingles (
+        hash TEXT PRIMARY KEY, sig BLOB NOT NULL)""",
     """CREATE TABLE IF NOT EXISTS memory_uses (
         id TEXT PRIMARY KEY, uses INTEGER NOT NULL DEFAULT 0, last_used TEXT)""",
     """CREATE TABLE IF NOT EXISTS memory_meta (key TEXT PRIMARY KEY, value TEXT)""",
