@@ -17,10 +17,12 @@ shapa upgrade --all --check --json
 ```
 
 Read `behind` (paths) and, per wiki in `wikis`, `mechanical` (pending
-migrations), `counters` (per note, the legacy `uses:`/`last_used:` frontmatter
-lines the upgrade deletes) and `work` (judgment items: `code`, `message`,
-`files`). `steps` says what each mechanical migration changes. Nothing behind
-means you are done.
+migrations - format 3 adds `gitattributes` and `memory`, the session-note
+conversion), `counters` (per note, the legacy `uses:`/`last_used:`
+frontmatter lines the upgrade deletes) and `work` (judgment items: `code`,
+`message`, `files` - format 3 adds **MEMLOG**: malformed memory-log lines
+that need hand repair). `steps` says what each mechanical migration changes.
+Nothing behind means you are done.
 
 ## 2. Dispatch one agent per behind wiki
 
@@ -54,10 +56,17 @@ Brief for each agent:
      the global wiki.
    - **PARSE / NOFM / F01-F03 / S01 / S02 / S04**: repair the frontmatter to the
      schema in `AGENTS.md` §3.
+   - **MEMLOG** (format 3): one or more lines in `memory/*.jsonl` don't parse
+     as JSON. The log is otherwise append-only - never rewrite the file.
+     Open it, fix or delete only the malformed line(s) by hand, keep every
+     other line byte-for-byte, and let this go into the same upgrade commit.
 3. Validate. `shapa upgrade <wiki path>` must print `current`, and
    `shapa validate <wiki path>` must report no errors.
-4. Commit in that repo, on its current branch, staging only the wiki directory:
-   `git add -- <wiki path> && git commit -m "chore(shapa): upgrade wiki to format N"`.
+4. Commit in that repo, on its current branch, staging the wiki directory -
+   `git add -- <wiki path>` covers the whole tree, including the `memory/`
+   log directory and the new `.gitattributes` (format 3: both are part of
+   this commit, same as any other mechanical migration) -
+   `&& git commit -m "chore(shapa): upgrade wiki to format N"`.
    Never push. If the wiki is not in a git repo, skip the commit and say so.
    **The counter removal is part of this commit.** The upgrade deletes every
    `uses:`/`last_used:` frontmatter line (listed under `[counters]`) after
@@ -66,6 +75,12 @@ Brief for each agent:
    `git restore`) or leave them out of the commit, even if the repo's own
    instructions say to discard counter-only diffs. That rule was for shapa
    0.6 writing counters on every read; it does not apply to an upgrade.
+   **The memory conversion is part of this commit too** (format 3): every
+   live `memory-session-*.md` note was converted into one `memory/` log
+   record and moved into `archive/` (`git mv` when this is a git checkout -
+   `git status` shows it as a rename, not a delete+add). Commit the archive
+   move and the new log lines together; never leave the archived note
+   untracked or restore it to the root.
 5. If an item needs an operator decision (two notes contradict and neither is
    clearly right, or the owner of a note is unclear), leave it unresolved and
    report it. Do not force the check green.

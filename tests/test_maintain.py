@@ -3,14 +3,17 @@
 Embeddings are not installed in CI, so similarity falls back to Jaccard.
 """
 
+import io
 import os
 import shutil
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest import mock
 
-from shapa import maintain
+from shapa import config, maintain, memlog, registry
 from shapa.nodes import load_nodes
 
 NOW = datetime(2026, 7, 1, tzinfo=timezone.utc)
@@ -290,6 +293,166 @@ class TestBackfillLegacyUses(unittest.TestCase):
             maintain.main(["--backfill", str(self.tmp)])
         self.assertEqual(cm.exception.code, 0)
         self.assertNotIn("uses:", (self.tmp / "a.md").read_text(encoding="utf-8"))
+
+
+class TestMemoryPromotion(unittest.TestCase):
+    """``shapa maintain --memories``/``--promote``/``--archive-memory``
+    (format 3): promotion curates a note then archives the record it came
+    from; nothing is ever deleted. The default ``--prune`` path never reads
+    the memory log beyond the one optional candidate-count line."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.wiki = self.tmp / "repo" / ".shapa"
+        self.wiki.mkdir(parents=True)
+        (self.wiki / "AGENTS.md").write_text("marker\n", encoding="utf-8")
+        # Isolate from any real ~/.shapa: patch global_root() itself rather
+        # than pointing it elsewhere, so a repo-scoped wiki here is never
+        # mistaken for (or collides with) the operator's real global wiki.
+        self.patches = [
+            mock.patch.object(config, "CONFIG_FILE", self.tmp / "config.json"),
+            mock.patch.dict(os.environ, {registry.REGISTRY_ENV_VAR: str(self.tmp / "wikis.json")}),
+            mock.patch.object(config, "global_root", lambda: self.tmp / "global"),
+        ]
+        for p in self.patches:
+            p.start()
+        os.environ.pop(config.ENV_VAR, None)
+
+    def tearDown(self):
+        for p in self.patches:
+            p.stop()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _seed(self, summary, body, kind="fact"):
+        rec = memlog.make_record(kind=kind, summary=summary, body=body, scope="repo")
+        memlog.append(self.wiki, [rec])
+        return rec
+
+    def test_memories_report_lists_only_above_min_uses(self):
+        hot = self._seed("hot memory", "used a lot this week")
+        cold = self._seed("cold memory", "rarely touched by anyone")
+        for _ in range(7):
+            memlog.record_use(self.wiki, hot.id)
+        memlog.record_use(self.wiki, cold.id)
+
+        rows = maintain.memories_report(self.wiki, min_uses=5)
+        ids = [r.id for r, _uses, _last in rows]
+        self.assertIn(hot.id, ids)
+        self.assertNotIn(cold.id, ids)
+
+    def test_promote_writes_a_valid_note_and_archives_the_record(self):
+        rec = self._seed("A hot fact worth promoting", "the full body text for the note")
+        for _ in range(6):
+            memlog.record_use(self.wiki, rec.id)
+
+        result = maintain.promote_memory(self.wiki, rec.id)
+        self.assertNotIn("error", result, result)
+        note_path = Path(result["path"])
+        self.assertTrue(note_path.is_file())
+        self.assertEqual(result["scope"], "repo")  # default: the record's own scope
+
+        from shapa.validate import validate_node
+        self.assertTrue(validate_node(note_path).valid)
+
+        view = memlog.read_log(self.wiki)
+        self.assertEqual(view.status(rec.id), "archived")
+        self.assertEqual(view.archived[rec.id].reason, f"promoted:{result['id']}")
+        # promotion never deletes the record - it is still readable.
+        self.assertEqual(view.records[rec.id].summary, rec.summary)
+
+    def test_promote_honors_explicit_id_type_and_scope(self):
+        rec = self._seed("Another hot fact", "more body text for this one")
+        result = maintain.promote_memory(
+            self.wiki, rec.id, note_id="my-custom-id", note_type="rule", scope="repo")
+        self.assertEqual(result["id"], "my-custom-id")
+        self.assertEqual(Path(result["path"]).stem, "my-custom-id")
+
+    def test_failed_save_archives_nothing(self):
+        rec = self._seed("A fact that collides", "body text")
+        (self.wiki / "taken.md").write_text(
+            "---\nid: taken\ntype: memory\ncreated: \"2026-01-01T00:00:00Z\"\n"
+            "consequence: 5\nlocus: output\n---\nalready here\n", encoding="utf-8")
+
+        result = maintain.promote_memory(self.wiki, rec.id, note_id="taken")
+        self.assertIn("error", result)
+        view = memlog.read_log(self.wiki)
+        self.assertEqual(view.status(rec.id), "active")
+
+    def test_promote_unknown_or_already_archived_id_errors(self):
+        result = maintain.promote_memory(self.wiki, "m-0000000000")
+        self.assertIn("error", result)
+
+        rec = self._seed("a fact", "body")
+        maintain.archive_memory(self.wiki, rec.id)
+        result2 = maintain.promote_memory(self.wiki, rec.id)
+        self.assertIn("error", result2)
+
+    def test_archive_memory_retires_without_writing_a_note(self):
+        rec = self._seed("just a fact", "body text")
+        before = sorted(p.name for p in self.wiki.glob("*.md"))
+
+        ok = maintain.archive_memory(self.wiki, rec.id, reason="no longer useful")
+        self.assertTrue(ok)
+        self.assertEqual(sorted(p.name for p in self.wiki.glob("*.md")), before)
+
+        view = memlog.read_log(self.wiki)
+        self.assertEqual(view.status(rec.id), "archived")
+        self.assertEqual(view.archived[rec.id].reason, "no longer useful")
+
+    def test_archive_memory_unknown_id_returns_false(self):
+        self.assertFalse(maintain.archive_memory(self.wiki, "m-0000000000"))
+
+    def test_cli_memories_lists_hot_candidates(self):
+        rec = self._seed("hot fact via cli", "body text")
+        for _ in range(6):
+            memlog.record_use(self.wiki, rec.id)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            with self.assertRaises(SystemExit) as exc:
+                maintain.main([str(self.wiki), "--memories", "--min-uses", "5"])
+        self.assertEqual(exc.exception.code, 0)
+        self.assertIn(rec.id, buf.getvalue())
+
+    def test_cli_promote_and_archive_memory(self):
+        rec = self._seed("hot fact to promote via cli", "body text here")
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            with self.assertRaises(SystemExit) as exc:
+                maintain.main([str(self.wiki), "--promote", rec.id])
+        self.assertEqual(exc.exception.code, 0)
+        self.assertIn("promoted", buf.getvalue())
+
+        rec2 = self._seed("another fact", "more body text")
+        buf2 = io.StringIO()
+        with redirect_stdout(buf2):
+            with self.assertRaises(SystemExit) as exc2:
+                maintain.main([str(self.wiki), "--archive-memory", rec2.id, "--reason", "stale"])
+        self.assertEqual(exc2.exception.code, 0)
+        self.assertIn("archived memory", buf2.getvalue())
+
+    def test_cli_default_prune_path_shows_one_line_and_never_touches_the_log(self):
+        rec = self._seed("hot fact", "body text")
+        for _ in range(6):
+            memlog.record_use(self.wiki, rec.id)
+        log_files = list((self.wiki / "memory").glob("*.jsonl"))
+        before = {p: p.read_bytes() for p in log_files}
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            with self.assertRaises(SystemExit) as exc:
+                maintain.main([str(self.wiki), "--prune"])
+        self.assertEqual(exc.exception.code, 0)
+        self.assertIn("memory candidates ready for promotion", buf.getvalue())
+
+        after = {p: p.read_bytes() for p in (self.wiki / "memory").glob("*.jsonl")}
+        self.assertEqual(before, after, "--prune must never write to the memory log")
+
+    def test_cli_default_prune_path_is_silent_about_memories_with_no_log(self):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            with self.assertRaises(SystemExit):
+                maintain.main([str(self.wiki), "--prune"])
+        self.assertNotIn("memory candidates", buf.getvalue())
 
 
 if __name__ == "__main__":

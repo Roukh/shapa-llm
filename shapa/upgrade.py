@@ -33,9 +33,11 @@ import json
 import re
 import sys
 from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 
-from shapa import __version__, config, embed, frontmatter, maintain, registry, store, validate
+from shapa import (__version__, config, embed, frontmatter, maintain, memlog,
+                   memri_import, registry, store, validate)
 from shapa.nodes import is_excluded_path
 from shapa.score import _parse_ts
 
@@ -177,6 +179,8 @@ def _legacy_counter_notes(root: Path) -> list[tuple[Path, list[str], list[int]]]
     for p in _live_md(root):
         if _is_managed(root, p):
             continue  # refreshed whole by step_docs
+        if _SESSION_NOTE_RE.match(p.name):
+            continue  # step_memory carries this counter into memory_uses instead
         lines = p.read_text(encoding="utf-8").split("\n")
         close = _frontmatter_close(lines)
         if close is None:
@@ -218,6 +222,136 @@ def step_counters(root: Path, dry_run: bool) -> list[str]:
     return [_rel(root, p) for p in rewrites]
 
 
+def step_gitattributes(root: Path, dry_run: bool) -> list[str]:
+    """Make sure ``.gitattributes`` marks the memory log ``merge=union``
+    (:func:`shapa.memlog.ensure_gitattributes`) - checked here, not just
+    delegated, so ``dry_run`` never writes a byte (``ensure_gitattributes``
+    itself has no dry-run mode)."""
+    path = root / ".gitattributes"
+    try:
+        text = path.read_text(encoding="utf-8") if path.exists() else ""
+    except OSError:
+        return []
+    if any(line.strip() == memlog.GITATTRIBUTES_LINE for line in text.splitlines()):
+        return []
+    if not dry_run:
+        memlog.ensure_gitattributes(root)
+    return [".gitattributes"]
+
+
+#: A v2 memory-session note, written once per session by the (format-2)
+#: capture hook - exactly the files `step_memory` converts into v3 memory
+#: log records, then archives.
+_SESSION_NOTE_RE = re.compile(r"^memory-session-.+\.md$")
+
+#: The format-2 capture body (`shapa.capture.capture_session`):
+#: "Captured at the end of session <sid>. The operator's requests this
+#: session: <text>\n\nType: [[memory]]." with an optional
+#: " Related: [[a]] [[b]]." suffix.
+_SESSION_BODY_RE = re.compile(
+    r"Captured at the end of session \S+\. The operator's requests this "
+    r"session: (?P<text>.*?)\n\nType: \[\[memory\]\]\.(?: Related: (?P<related>.*?)\.)?\s*$",
+    re.S,
+)
+_WIKILINK_TARGET_RE = re.compile(r"\[\[([^\]|#]+)")
+
+
+def _parse_session_body(body: str) -> tuple[str, list[str]]:
+    """``(text, tags)`` parsed out of a v2 memory-session note body, or
+    ``("", [])`` when the body doesn't match the known shape (unparseable -
+    the note is still archived; it is just reported with empty text)."""
+    m = _SESSION_BODY_RE.search((body or "").strip())
+    if not m:
+        return "", []
+    text = " ".join((m.group("text") or "").split())
+    tags = [t.strip() for t in _WIKILINK_TARGET_RE.findall(m.group("related") or "")]
+    return text, tags
+
+
+def _repo_checkout_name(root: Path) -> str | None:
+    git_root = config._git_toplevel(root)
+    return git_root.name if git_root is not None else None
+
+
+def _seed_memory_use(root: Path, rid: str, uses: int) -> None:
+    """Seed *rid*'s use counter in *root*'s memory-log index to *uses* (a
+    carry-over from a note's legacy frontmatter/index counter, never a
+    live increment). :mod:`shapa.memlog` has no public setter for this -
+    only :func:`shapa.memlog.record_use`'s +1 bump - so this reaches the
+    same ``memory_uses`` table directly."""
+    if uses <= 0:
+        return
+    conn = memlog.open_index(root)
+    if conn is None:
+        return
+    try:
+        conn.execute(
+            "INSERT INTO memory_uses(id, uses, last_used) VALUES (?, ?, NULL) "
+            "ON CONFLICT(id) DO UPDATE SET uses = MAX(uses, excluded.uses)",
+            (rid, uses),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _session_notes(root: Path) -> list[Path]:
+    return sorted(p for p in root.glob("memory-session-*.md") if p.is_file())
+
+
+def step_memory(root: Path, dry_run: bool) -> list[str]:
+    """Convert every live v2 ``memory-session-*.md`` note into one v3
+    memory-log record (:mod:`shapa.memlog`), carry its use counter over,
+    then archive the note (:func:`shapa.maintain.archive_note` - git mv in
+    a checkout, else a plain move; never deletes).
+
+    Must run before ``counters``/``frontmatter`` in :data:`MECHANICAL_STEPS`:
+    it reads a note's own legacy ``uses`` line directly, before that line
+    could be migrated/stripped by ``step_counters``."""
+    notes = _session_notes(root)
+    if not notes:
+        return []
+    if dry_run:
+        return [_rel(root, p) for p in notes]
+
+    bucket = validate.bucket_of(root)
+    repo = _repo_checkout_name(root) if bucket == "repo" else None
+    changed = []
+    for p in notes:
+        rel = _rel(root, p)
+        parsed = frontmatter.parse(p)
+        meta = parsed.meta if not parsed.error else {}
+        text, tags = ("", [])
+        if not parsed.error:
+            text, tags = _parse_session_body(parsed.body)
+        note_id = str(meta.get("id") or p.stem)
+        sid = note_id.removeprefix("memory-session-")
+        created_dt = _parse_ts(meta.get("created")) or datetime.now(timezone.utc)
+        try:
+            fm_uses = max(0, int(str(meta.get("uses", 0)).strip() or 0))
+        except ValueError:
+            fm_uses = 0
+
+        if text:
+            record = memlog.make_record(
+                kind="decision", summary=memlog.cut(text, memlog.SUMMARY_MAX),
+                body=memlog.cut(text, memlog.BODY_MAX), tags=tags,
+                source=f"upgrade:{p.name}", session=sid, repo=repo, scope=bucket,
+                created=memlog.now_iso(created_dt),
+            )
+            if record is not None:
+                result = memlog.append(root, [record], now=created_dt)
+                rid = (result.written[0].id if result.written
+                       else result.duplicates[0] if result.duplicates else None)
+                if rid:
+                    store_uses, _ = store.get_use(root, note_id)
+                    _seed_memory_use(root, rid, max(fm_uses, store_uses))
+
+        maintain.archive_note(p, root / "archive")
+        changed.append(rel)
+    return changed
+
+
 def step_frontmatter(root: Path, dry_run: bool) -> list[str]:
     """Add the schema-v2 fields that are derivable without judgment: ``id``
     (the filename stem) and ``scope`` (the wiki's bucket: global iff it is
@@ -257,6 +391,8 @@ def step_frontmatter(root: Path, dry_run: bool) -> list[str]:
 MECHANICAL_STEPS = (
     ("docs", step_docs),
     ("gitignore", step_gitignore),
+    ("gitattributes", step_gitattributes),
+    ("memory", step_memory),
     ("counters", step_counters),
     ("frontmatter", step_frontmatter),
 )
@@ -268,6 +404,11 @@ MECHANICAL_STEPS = (
 STEP_TEXT = {
     "docs": "AGENTS.md/placement.md rewritten from the shipped assets",
     "gitignore": "read-cache entries added to .gitignore",
+    "gitattributes": f"{memlog.GITATTRIBUTES_LINE!r} added to .gitattributes so the memory "
+                     "log merges as a union across branches",
+    "memory": "legacy memory-session-*.md notes converted into format-3 memory/ log records "
+              "(their use counter carried into memory_uses), then archived - git mv when in "
+              "a checkout, else moved; never deleted",
     "counters": "legacy uses/last_used frontmatter lines copied into the index store, then "
                 "deleted from the notes. The deletion is the migration: commit it with the "
                 "upgrade, never restore it",
@@ -304,8 +445,37 @@ def _near_duplicates(root: Path, files: dict[Path, frontmatter.Parsed]) -> list[
     return items
 
 
+def _malformed_memlog_files(root: Path) -> dict[str, int]:
+    """``{relpath: malformed-line-count}`` for every ``memory/*.jsonl`` file
+    under *root* that has at least one malformed line.
+    :func:`shapa.memlog.read_log` only reports a wiki-wide total; this
+    reparses per file (cheap - the same files, re-walked once) so the
+    MEMLOG work item can name exactly which file(s) need hand repair."""
+    out: dict[str, int] = {}
+    for path in memlog.log_files(root):
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        n = sum(1 for line in text.splitlines() if line.strip() and memlog.parse_line(line) is None)
+        if n:
+            out[_rel(root, path)] = n
+    return out
+
+
 def work_items(root: Path) -> list[WorkItem]:
     items = [WorkItem(v.rule, v.message) for v in validate.check_lean_shape(root) + validate.check_agenda(root)]
+
+    malformed = _malformed_memlog_files(root)
+    if malformed:
+        total = sum(malformed.values())
+        noun = "line" if total == 1 else "lines"
+        items.append(WorkItem(
+            "MEMLOG",
+            f"{total} malformed memory-log {noun} - repair or remove them by hand in a "
+            "commit (the log is otherwise append-only)",
+            sorted(malformed),
+        ))
 
     files: dict[Path, frontmatter.Parsed] = {}
     by_code: dict[str, list[str]] = {}
@@ -437,6 +607,17 @@ def _print_human(reports: list[WikiReport], check: bool) -> None:
         print(f"{len(reports)} wiki(s) checked, none behind")
 
 
+def _print_memri_report(root: Path, path: str, stats: "memri_import.ImportStats") -> None:
+    verb = "would write" if stats.dry_run else "wrote"
+    print(f"shapa upgrade --import-memri {path} -> {root}" + (" [dry-run]" if stats.dry_run else ""))
+    print(f"  rows read: {stats.rows} ({stats.pieces} piece(s))")
+    print(f"  records {verb}: {stats.written}")
+    print(f"  duplicates skipped: {stats.duplicates}")
+    print(f"  archived (superseded): {stats.archived}")
+    print(f"  redaction hits: {stats.redaction_hits}")
+    print(f"  ({stats.seconds:.2f}s)")
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         prog="shapa upgrade",
@@ -449,11 +630,36 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--json", action="store_true", help="Machine-readable report.")
     parser.add_argument("--print-skill", action="store_true", dest="print_skill",
                         help="Print the bundled shapa-upgrade SKILL.md (used by install.sh).")
+    parser.add_argument("--import-memri", default=None, metavar="FILE", dest="import_memri",
+                        help="Opt-in: import a memri JSON export (array of rule/issue/memory/"
+                             "persona rows) into PATH's memory log - PATH defaults to the "
+                             "repo wiki in scope, else the global wiki. Never runs as part of "
+                             "a plain upgrade.")
+    parser.add_argument("--dry-run", action="store_true", dest="dry_run",
+                        help="With --import-memri: compute what would be imported; write nothing.")
     args = parser.parse_args(argv)
 
     if args.print_skill:
         sys.stdout.write(SKILL_ASSET.read_text(encoding="utf-8"))
         sys.exit(0)
+
+    if args.import_memri:
+        if args.all:
+            parser.error("--import-memri takes PATH (or the default wiki), not --all")
+        root = Path(args.path).expanduser() if args.path else (config.discover() or config.global_root())
+        try:
+            root = root.resolve()
+        except OSError:
+            pass
+        if not registry.is_wiki(root):
+            print(f"shapa: {root} is not a wiki ({config.WIKI_MARKER} missing) - "
+                  f"run `shapa init {root}` first", file=sys.stderr)
+            sys.exit(2)
+        registry.register([root], via="import-memri")
+        stats = memri_import.import_memri(root, args.import_memri, dry_run=args.dry_run)
+        _print_memri_report(root, args.import_memri, stats)
+        sys.exit(0)
+
     if args.path and args.all:
         parser.error("pass PATH or --all, not both")
     if args.path and not registry.is_wiki(Path(args.path).expanduser()):
