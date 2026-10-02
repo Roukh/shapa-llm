@@ -54,6 +54,7 @@ CACHE_IGNORES = (
     store.INDEX_FILENAME,
     f"{store.INDEX_FILENAME}-wal",
     f"{store.INDEX_FILENAME}-shm",
+    store.CORRUPT_FILENAME,
     embed.CACHE_FILENAME,
 )
 CACHE_GITIGNORE = (

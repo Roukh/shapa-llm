@@ -37,6 +37,31 @@ class TestRedact(unittest.TestCase):
             self.assertGreater(hits, 0, s)
             self.assertIn(redact.PLACEHOLDER, out, s)
 
+    def test_secret_split_by_whitespace_is_masked_whole(self):
+        key = "sk-ant-api03-" + "UY5l7vnqz58ssxjCbFFTrzn12sUj6oe6IFaa1YTc"
+        tail = key[26:]
+        for text in (f"old key was\n{key[:26]}\n{tail}\nrotate it",   # wrapped line
+                     f"old key was {key[:26]} {tail} rotate it",         # reflowed
+                     f"old key was {key[:15]}\n{key[15:]} rotate it"):  # first piece too short
+            out = redact.redact(text)
+            self.assertNotIn(tail[-12:], out, text)
+            self.assertNotIn(key[15:30], out, text)
+            self.assertTrue(out.startswith("old key was"), out)
+            self.assertTrue(out.endswith("rotate it"), out)
+            rec_ = memlog.make_record(kind="fact", summary=text, body=text)
+            self.assertNotIn(tail[-12:], rec_.to_json())
+
+    def test_redaction_cost_is_bounded_by_what_a_record_keeps(self):
+        import time
+        big = "sk-ant-api03-" + "Q" * 40 + " " + ("plain words here " * 200_000)
+        t0 = time.perf_counter()
+        r = memlog.make_record(kind="fact", summary=big, body=big)
+        self.assertLess(time.perf_counter() - t0, 1.0)
+        self.assertNotIn("Q" * 40, r.to_json())
+        pem = "-----BEGIN RSA PRIVATE KEY-----\n" + "MIIEpAIBAAKCAQEA" * 2000
+        self.assertNotIn("MIIEpAIBAAKCAQEA", memlog.make_record(kind="fact", summary="k",
+                                                               body=pem).body)
+
     def test_prose_is_untouched_and_idempotent(self):
         prose = "the token budget is 1800; password rules live in placement.md"
         self.assertEqual(redact.scrub(prose), (prose, 0))
@@ -155,6 +180,42 @@ class TestAppend(LogCase):
         self.assertGreaterEqual(len(view.records), 100)
 
 
+class TestDedupIdentifiers(LogCase):
+    def test_records_differing_only_by_a_number_are_all_kept(self):
+        texts = [f"Fixed a crash reported in issue #{n} affecting the parser module"
+                 for n in (1234, 5678, 9012)]
+        texts += [f"Service now listens on port {p} after the config migration to v{v}"
+                  for p, v in ((8080, "1.0.0"), (9090, "2.0.0"))]
+        for t in texts:
+            res = memlog.append(self.root, [rec(t, kind="gotcha")], now=NOW)
+            self.assertEqual((len(res.written), res.superseded), (1, {}), t)
+        view = memlog.read_log(self.root)
+        self.assertEqual(len(view.active()), len(texts))
+
+    def test_same_identifiers_still_dedup(self):
+        a = rec("Fixed a crash reported in issue #1234 affecting the parser module", kind="gotcha")
+        b = rec("Fixed a crash reported in issue #1234, affecting the parser module!", kind="gotcha")
+        memlog.append(self.root, [a], now=NOW)
+        self.assertEqual(memlog.append(self.root, [b], now=NOW).duplicates, [b.id])
+
+
+class TestCorruptIndex(LogCase):
+    def test_garbage_or_malformed_index_is_set_aside_and_rebuilt(self):
+        memlog.append(self.root, [rec("the parser handles malformed input now")], now=NOW)
+        db = store.db_path(self.root)
+        for junk in (b"this is not a sqlite database at all" * 100,
+                     db.read_bytes()[:100] + b"\x00" * 4096):
+            for side in ("-wal", "-shm"):
+                db.with_name(db.name + side).unlink(missing_ok=True)
+            db.write_bytes(junk)
+            conn = memlog.open_index(self.root)
+            try:
+                self.assertEqual(len(memlog.active_records(conn)), 1)
+            finally:
+                conn.close()
+            self.assertTrue(db.with_name(store.CORRUPT_FILENAME).exists())
+
+
 class TestIndex(LogCase):
     def _conn(self):
         conn = memlog.open_index(self.root)
@@ -238,7 +299,7 @@ class TestIndex(LogCase):
         first = rec("Stripe webhook retries flood the queue when the handler returns 500")
         memlog.append(self.root, [first], now=NOW)
         conn = self._conn()
-        self.assertEqual(conn.execute("SELECT COUNT(*) FROM memory_shingles").fetchone()[0], 1)
+        self.assertEqual(conn.execute("SELECT COUNT(*) FROM memory_dedup").fetchone()[0], 1)
         conn.close()
         again = rec("Stripe webhook retries flood the queue when the handler returns 500!")
         res = memlog.append(self.root, [again], now=NOW)

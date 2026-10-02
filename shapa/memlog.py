@@ -70,6 +70,7 @@ KINDS = ("decision", "fact", "gotcha", "outcome", "open_question", "preference")
 SCOPES = ("global", "repo")
 SUMMARY_MAX = 160
 BODY_MAX = 600
+RAW_MAX = 8192  # chars of input make_record ever looks at
 MAX_TAGS = 8
 TAG_MAX = 40
 ID_PREFIX = "m-"
@@ -165,6 +166,17 @@ def one_line(text: str) -> str:
     return _WS_RE.sub(" ", text or "").strip()
 
 
+_CTRL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+_WRAPPER_TAG_RE = re.compile(r"<(\s*/?\s*shapa-memory)", re.I)
+
+
+def display_line(text: str) -> str:
+    """*text* made safe to print inside a ``<shapa-memory>`` block: control
+    characters become spaces, and a literal wrapper tag in the text can no
+    longer open or close the block (its ``<`` becomes ``‹``)."""
+    return _WRAPPER_TAG_RE.sub("‹\\1", _CTRL_RE.sub(" ", text or ""))
+
+
 def cut(text: str, limit: int) -> str:
     """*text* on one line, cut at a word boundary to at most *limit* chars."""
     text = one_line(text)
@@ -220,9 +232,11 @@ def make_record(*, kind: str, summary: str, body: str = "", tags=(), source: str
                 supersedes: str | None = None, created: str | None = None) -> Record | None:
     """Build one normalized, redacted record, or ``None`` when nothing is
     left of it. *summary* falls back to a cut of *body*; *body* falls back
-    to *summary*."""
-    body_text = redact.redact(one_line(body))
-    summary_text = redact.redact(one_line(summary)) or body_text
+    to *summary*. Input is cut to :data:`RAW_MAX` chars before redaction, so
+    the cost is bounded by what a record can keep, not by what was passed
+    (an unterminated PEM block is still masked to the end)."""
+    body_text = redact.redact(one_line((body or "")[:RAW_MAX]))
+    summary_text = redact.redact(one_line((summary or "")[:RAW_MAX])) or body_text
     summary_text = cut(summary_text, SUMMARY_MAX)
     body_text = cut(body_text or summary_text, BODY_MAX)
     if not summary_text or summary_text == redact.PLACEHOLDER:
@@ -389,12 +403,30 @@ def _locked_append(path: Path):
             os.close(fd)
 
 
-def _shingles(text: str) -> frozenset:
-    """Word 3-shingles of *text* (maintain's tokenizer), each folded to a
-    crc32 so the set packs into the index's shingle cache."""
-    from shapa.maintain import _shingles as sh, _tokens
-    return frozenset(zlib.crc32((s if isinstance(s, str) else "\x1f".join(s)).encode("utf-8"))
-                     for s in sh(_tokens(text)))
+_DEDUP_TOKEN_RE = re.compile(r"[a-z0-9]+")
+
+
+def _dedup_tokens(text: str) -> list[str]:
+    """Content words for dedup: maintain's stopwords dropped, and words
+    under 3 chars too unless they carry a digit - so issue numbers, ports
+    and versions count (``#1234`` and ``#5678`` are different memories)."""
+    from shapa.maintain import _STOP
+    return [t for t in _DEDUP_TOKEN_RE.findall((text or "").lower())
+            if t not in _STOP and (len(t) >= 3 or any(c.isdigit() for c in t))]
+
+
+def _dedup_sig(text: str) -> tuple[frozenset, str]:
+    """``(shingles, idents)`` of *text*: its word 3-shingles folded to crc32
+    (they pack into the index's dedup cache), and a key over the tokens that
+    carry a digit. Two records whose idents differ are about different
+    things (another issue, port, version or count), so they never dedup
+    and never supersede, however alike the rest reads."""
+    from shapa.maintain import _shingles as sh
+    tokens = _dedup_tokens(text)
+    shingles = frozenset(zlib.crc32((g if isinstance(g, str) else "\x1f".join(g)).encode("utf-8"))
+                         for g in sh(tokens))
+    idents = sorted({t for t in tokens if any(c.isdigit() for c in t)})
+    return shingles, hashlib.sha1("\x1f".join(idents).encode("utf-8")).hexdigest()[:16]
 
 
 def _pack(sig) -> bytes:
@@ -414,36 +446,37 @@ class _Live:
 
 
 def _dedup_view_from_log(root: Path, dedup: bool):
-    """(every record id, archived targets, live shingles by kind), read by
-    parsing the whole log - the fallback when the index can't be used."""
+    """(every record id, archived targets, live (record, shingles, idents)
+    by kind), read by parsing the whole log - the fallback when the index
+    can't be used."""
     view = read_log(root)
     by_kind: dict[str, list] = {}
     if dedup:
         for r in view.active():
-            by_kind.setdefault(r.kind, []).append((r, _shingles(f"{r.summary} {r.body}")))
+            by_kind.setdefault(r.kind, []).append((r, *_dedup_sig(f"{r.summary} {r.body}")))
     return set(view.records), set(view.archived), by_kind
 
 
 def _dedup_view_from_index(conn: sqlite3.Connection, dedup: bool):
     """Same as :func:`_dedup_view_from_log`, from the synced index: shingle
-    sets come from the cache keyed by content hash, so only records the
-    cache has never seen get tokenized."""
+    sets and ident keys come from the cache keyed by content hash, so only
+    records the cache has never seen get tokenized."""
     seen = {r[0] for r in conn.execute("SELECT id FROM memories")}
     archived = {r[0] for r in conn.execute("SELECT target FROM memory_ops")}
     by_kind: dict[str, list] = {}
     if dedup:
         missing = []
-        for rid, kind, repo, summary, body, h, blob in conn.execute(
-                "SELECT m.id, m.kind, m.repo, m.summary, m.body, m.hash, s.sig FROM memories m "
-                "LEFT JOIN memory_shingles s ON s.hash = m.hash WHERE m.active = 1"):
+        for rid, kind, repo, summary, body, h, blob, idents in conn.execute(
+                "SELECT m.id, m.kind, m.repo, m.summary, m.body, m.hash, d.sig, d.idents "
+                "FROM memories m LEFT JOIN memory_dedup d ON d.hash = m.hash WHERE m.active = 1"):
             if blob is None:
-                sig = _shingles(f"{summary} {body}")
-                missing.append((h, _pack(sig)))
+                sig, idents = _dedup_sig(f"{summary} {body}")
+                missing.append((h, _pack(sig), idents))
             else:
                 sig = _unpack(blob)
-            by_kind.setdefault(kind, []).append((_Live(rid, repo), sig))
+            by_kind.setdefault(kind, []).append((_Live(rid, repo), sig, idents))
         if missing:
-            conn.executemany("INSERT OR IGNORE INTO memory_shingles(hash, sig) VALUES (?,?)",
+            conn.executemany("INSERT OR IGNORE INTO memory_dedup(hash, sig, idents) VALUES (?,?,?)",
                              missing)
             conn.commit()
     return seen, archived, by_kind
@@ -504,15 +537,17 @@ def append(root, records, *, ops=(), dedup: bool = True, now: datetime | None = 
                 conn = None
             seen, archived, by_kind = _dedup_view_from_log(root, dedup)
         lines: list[str] = []
-        fresh_sigs: list[tuple[str, bytes]] = []
+        fresh_sigs: list[tuple[str, bytes, str]] = []
         for rec in candidates:
             if rec.id in seen:
                 result.duplicates.append(rec.id)
                 continue
             if dedup:
-                sh = _shingles(f"{rec.summary} {rec.body}")
+                sh, idents = _dedup_sig(f"{rec.summary} {rec.body}")
                 best, best_sim = None, 0.0
-                for other, osh in by_kind.get(rec.kind, []):
+                for other, osh, oidents in by_kind.get(rec.kind, []):
+                    if oidents != idents:
+                        continue
                     sim = _jaccard(sh, osh)
                     if sim > best_sim:
                         best, best_sim = other, sim
@@ -523,8 +558,8 @@ def append(root, records, *, ops=(), dedup: bool = True, now: datetime | None = 
                         and best.repo == rec.repo and best.id not in result.superseded.values()):
                     rec.supersedes = best.id
                     result.superseded[rec.id] = best.id
-                by_kind.setdefault(rec.kind, []).append((rec, sh))
-                fresh_sigs.append((rec.hash, _pack(sh)))
+                by_kind.setdefault(rec.kind, []).append((rec, sh, idents))
+                fresh_sigs.append((rec.hash, _pack(sh), idents))
             seen.add(rec.id)
             lines.append(rec.to_json())
             result.written.append(rec)
@@ -539,8 +574,8 @@ def append(root, records, *, ops=(), dedup: bool = True, now: datetime | None = 
         if conn is not None:
             try:
                 if lines:  # keep the index current with what was just written
-                    conn.executemany("INSERT OR IGNORE INTO memory_shingles(hash, sig) "
-                                     "VALUES (?,?)", fresh_sigs)
+                    conn.executemany("INSERT OR IGNORE INTO memory_dedup(hash, sig, idents) "
+                                     "VALUES (?,?,?)", fresh_sigs)
                     sync(root, conn)
             except sqlite3.Error:
                 pass
@@ -584,8 +619,8 @@ _SCHEMA = (
     """CREATE TABLE IF NOT EXISTS memory_vectors (
         hash TEXT NOT NULL, model TEXT NOT NULL, vec BLOB NOT NULL,
         PRIMARY KEY (hash, model))""",
-    """CREATE TABLE IF NOT EXISTS memory_shingles (
-        hash TEXT PRIMARY KEY, sig BLOB NOT NULL)""",
+    """CREATE TABLE IF NOT EXISTS memory_dedup (
+        hash TEXT PRIMARY KEY, sig BLOB NOT NULL, idents TEXT NOT NULL)""",
     """CREATE TABLE IF NOT EXISTS memory_uses (
         id TEXT PRIMARY KEY, uses INTEGER NOT NULL DEFAULT 0, last_used TEXT)""",
     """CREATE TABLE IF NOT EXISTS memory_meta (key TEXT PRIMARY KEY, value TEXT)""",
@@ -853,11 +888,23 @@ def open_index(root, *, read_only: bool = False, embed_vectors: bool = False
     if not has_log(root):
         return None
     if not read_only:
-        conn = store.open_index(root)
-        conn.row_factory = None
-        ensure_schema(conn)
-        sync(root, conn, embed_vectors=embed_vectors)
-        return conn
+        for attempt in (1, 2):
+            conn = store.open_index(root)
+            conn.row_factory = None
+            try:
+                ensure_schema(conn)
+                sync(root, conn, embed_vectors=embed_vectors)
+                return conn
+            except sqlite3.DatabaseError as exc:
+                conn.close()
+                if isinstance(exc, sqlite3.OperationalError) or attempt == 2:
+                    raise
+                # A header that opens but pages that don't (malformed image):
+                # the index is derived - set it aside and rebuild once.
+                path = store.db_path(root)
+                os.replace(path, path.with_name(store.CORRUPT_FILENAME))
+                for side in ("-wal", "-shm"):
+                    path.with_name(path.name + side).unlink(missing_ok=True)
     disk = store.db_path(root)
     if disk.is_file():
         try:

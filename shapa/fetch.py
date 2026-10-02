@@ -660,21 +660,36 @@ def answerable(features: dict, *, semantic: bool) -> bool:
     extra) passes nearly every prompt on a large corpus: generic words
     clear any fixed cosine floor and BM25 idf grows with corpus size.
 
-    The calibrated floor (memory v3) adds one rule: a query that names a
-    specific thing - an acronym, a camelCase word or a capitalized name
-    (:func:`entity_terms`) - which occurs nowhere in memory asks about
-    something memory does not hold ("does it run on Kafka?"), unless the
-    semantic match is strong anyway (:data:`ENTITY_FLOOR_MAX_EMB`). Unseen
-    lowercase words never trigger it: answerable paraphrases routinely use
-    ordinary English the corpus lacks. Lexical, so it holds in bm25-only
-    mode too; a fully lowercase off-topic prompt can still get through."""
+    The calibrated floor (memory v3) adds two rules, each overridden only by
+    a strong semantic match (:data:`ENTITY_FLOOR_MAX_EMB`):
+
+    - a query that names a specific thing - an acronym, a camelCase word or
+      a capitalized name (:func:`entity_terms`) - which occurs nowhere in
+      memory asks about something memory does not hold ("does it run on
+      Kafka?");
+    - a query with no content word at all ("ok", "yes"), or with two or more
+      of which memory knows none ("quantum chromodynamics lattice
+      parameters"), has no lexical evidence, and the embedding of such a
+      prompt sits at the same weak cosine against every item, which the
+      pre-v3 cosine guard lets through. A single unknown word is left alone:
+      it is often just another form of a word memory has ("respond" for
+      "response").
+
+    Lowercase words the corpus lacks never trigger anything while some other
+    query word is known: answerable paraphrases routinely use ordinary
+    English the corpus lacks. Lexical, so both hold in bm25-only mode too; a
+    lowercase off-topic prompt that shares a known word can still get
+    through."""
     if semantic:
         base = features["top_emb"] >= MIN_ABSOLUTE_EMBED
     else:
         base = features["top_bm25"] >= MIN_ABSOLUTE_BM25_BARE_CORE or features["top_mem_lex"] > 0
     if not base or not CALIBRATED_FLOOR:
         return base
-    if features.get("entity_oov"):
+    terms = set(features.get("query_terms") or ())
+    oov = set(features.get("oov_terms") or ())
+    no_evidence = not terms or (len(oov) >= 2 and not terms - oov)
+    if features.get("entity_oov") or no_evidence:
         return semantic and features["top_emb"] >= ENTITY_FLOOR_MAX_EMB
     return True
 
@@ -1055,7 +1070,7 @@ def render(selection: Selection) -> str:
     head = WRAPPER_HEAD + (" [bm25-only: no [semantic] extra]" if selection.mode == "bm25" else "")
     lines = [WRAPPER_OPEN, head]
     for node, text in selection.items:
-        lines.append(f"- {node.id}: {text}")
+        lines.append(f"- {node.id}: {memlog.display_line(text)}")
     if selection.no_match:
         lines.append(NO_MATCH_LINE)
     for nid in selection.collisions:

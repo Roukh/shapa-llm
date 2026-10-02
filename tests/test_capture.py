@@ -298,6 +298,17 @@ class TestMalformedTranscripts(CaptureTestCase):
         self.root = self.tmp / "wiki"
         self.root.mkdir()
 
+    def test_huge_final_message_costs_what_a_record_keeps(self):
+        import time
+        huge = "The parser now streams records and the index rebuilds. " * 100_000  # ~5.6 MB
+        t = self.write("huge.jsonl", [msg("user", "brief"), msg("assistant", huge)])
+        t0 = time.perf_counter()
+        capture.capture_session(str(t), "sessHUGE01", root=self.root)
+        self.assertLess(time.perf_counter() - t0, 2.0)
+        t0 = time.perf_counter()
+        capture.capture_session(str(t), "sessHUGE02", root=self.root, last_assistant_message=huge * 4)
+        self.assertLess(time.perf_counter() - t0, 2.0)
+
     def _assert_no_crash(self, path) -> None:
         written = capture.capture_session(str(path), "sessMALF0001", root=self.root)
         self.assertEqual(written, [])

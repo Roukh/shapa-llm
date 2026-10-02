@@ -80,6 +80,14 @@ REQUEST_MAX = 4
 #: up and falling back to the heuristic records.
 DISTILL_TIMEOUT = 25
 
+#: Input bounds that keep the hook's cost independent of how big a session
+#: got: a transcript line past MAX_ENTRY_BYTES (an attachment, a pasted dump)
+#: is skipped unparsed, and the final message / each operator request is
+#: read only up to these many chars. A job report is ~1 KB.
+MAX_ENTRY_BYTES = 2_000_000
+MAX_FINAL_CHARS = 32_768
+MAX_REQUEST_CHARS = 8_192
+
 
 # --- text shaping --------------------------------------------------------------
 
@@ -167,7 +175,7 @@ def _clean_user_text(raw: str) -> str:
 
 def _parse_entry(line: str) -> dict | None:
     line = line.strip()
-    if not line:
+    if not line or len(line) > MAX_ENTRY_BYTES:
         return None
     try:
         obj = json.loads(line)
@@ -573,7 +581,8 @@ def _capture(transcript_path, session_id, root, now, scope, applies_to, cwd,
         raw_msgs = raw_msgs[1:]  # the raw task brief is never stored
         first_prompt_seen = True
 
-    final_text = last_assistant_message or _final_assistant_text(entries)
+    final_text = str(last_assistant_message or _final_assistant_text(entries))[:MAX_FINAL_CHARS]
+    raw_msgs = [m[:MAX_REQUEST_CHARS] for m in raw_msgs]
 
     distilled = _try_distill(raw_msgs, final_text) if distill else None
     if distilled is not None:

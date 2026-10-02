@@ -62,16 +62,53 @@ def _mask(match: re.Match) -> str:
     return PLACEHOLDER
 
 
+#: A token that starts like a known key prefix but may have been cut by a
+#: line wrap, and the whitespace-separated run that follows it.
+_PREFIX_SPLIT_RE = re.compile(
+    r"(?<![A-Za-z0-9_-])((?:sk-|rk_|pk_|whsec_|gh[opsru]_|github_pat_|glpat-|xox[abposr]-|AKIA|ASIA|"
+    r"AIza|hf_|npm_|sb_|re_|eyJ)[A-Za-z0-9_.-]*)(\s+)([A-Za-z0-9_+/=.-]{4,})")
+#: Key-shaped runs right after a redaction - the rest of a secret that a
+#: line wrap or a reflow split off (a run with a digit, or a long one).
+_TAIL_RE = re.compile(
+    re.escape(PLACEHOLDER) + r"(?:\s+(?:(?=[A-Za-z_+/=.-]*[0-9])[A-Za-z0-9_+/=.-]{6,}"
+    r"|[A-Za-z0-9_+/=.-]{20,}))+")
+
+
+def _matches_any(text: str) -> bool:
+    return any(p.search(text) for _name, p in PATTERNS)
+
+
+def _join_split_prefixes(text: str) -> str:
+    """Re-join a key whose first piece is too short to match on its own
+    (``sk-ant-api03-ab`` + newline + the rest): the pieces are joined only
+    when the joined token matches a pattern the first piece alone does not."""
+    for _ in range(4):
+        def join(m: re.Match) -> str:
+            head, tail = m.group(1), m.group(3)
+            if not _matches_any(head) and _matches_any(head + tail):
+                return head + tail
+            return m.group(0)
+        joined = _PREFIX_SPLIT_RE.sub(join, text)
+        if joined == text:
+            break
+        text = joined
+    return text
+
+
 def scrub(text: str) -> tuple[str, int]:
     """Return ``(redacted_text, hits)``. Idempotent: the placeholder itself
-    never matches any pattern."""
+    never matches any pattern. A secret split by whitespace (a wrapped or
+    reflowed line) is caught both ways: a short first piece is re-joined
+    before matching, and key-shaped pieces after a match are absorbed."""
     if not text:
         return text, 0
     hits = 0
-    out = text
+    out = _join_split_prefixes(text)
     for _name, pattern in PATTERNS:
         out, n = pattern.subn(_mask, out)
         hits += n
+    if hits:
+        out = _TAIL_RE.sub(PLACEHOLDER, out)
     return out, hits
 
 

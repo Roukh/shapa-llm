@@ -75,7 +75,7 @@ def _summary(node: Node) -> str:
     when missing (an unvalidated/legacy note, or one written before schema
     v2's ``summary`` field existed - F04 flags it, but bootstrap must not
     depend on validation having run first)."""
-    raw = str(node.meta.get("summary", "")).strip()
+    raw = memlog.display_line(str(node.meta.get("summary", ""))).strip()
     if raw:
         return raw[:MAX_SUMMARY_CHARS]
     return node.id.replace("-", " ")
