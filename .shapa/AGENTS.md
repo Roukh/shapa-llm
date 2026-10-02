@@ -98,6 +98,53 @@ Score = `locus_weight × (consequence / 10) × freshness × use_factor`, where f
 - `status` — `active` (default), `superseded`, or `draft` (S04).
 - `supersedes` — optional id of a note this one replaces; dangling ref is F08.
 
+### 3.2 Memory records (format 3)
+
+Captured memory — the automated, per-session write path — does not live in
+note files any more. Every captured memory is one JSON object, one per
+line, appended to `<wiki>/memory/YYYY-MM.jsonl`. Fields, in this order:
+
+```
+id          "m-" + the first 10 hex chars of hash (content-derived: the
+            same memory captured twice, or on two clones, is one id)
+created     ISO-8601 UTC
+session     the capturing session's id (8 chars), or ""
+repo        the repo the memory is about, or null for a global memory
+scope       "global" | "repo" — matches the wiki the line lives in
+kind        decision | fact | gotcha | outcome | open_question | preference
+summary     one line, <=160 chars — the only text a prompt ever injects
+body        <=600 chars — the full text, served on demand (`shapa get`)
+tags        list of short strings (paths, PR numbers, topics), <=8
+source      where it came from (capture:report, memri:<row>, upgrade:<file>)
+supersedes  the id this record replaces, or null
+hash        sha1 of the redacted `summary + "\n" + body`
+```
+
+Every field is redacted (credential-shaped text masked) before `hash` is
+computed, before any embedding vector exists, and before the line is
+written — a memory record can never carry a secret the redaction patterns
+recognize, by construction, not by review.
+
+The log is **append-only**: a line is never edited or removed. Replacing a
+memory appends a new record whose `supersedes` names the old one; retiring
+one without a replacement appends an `{"op":"archive","target":<id>}` line.
+Both leave the old line in place — nothing is ever deleted from the log.
+`<wiki>/.gitattributes` marks `memory/*.jsonl merge=union`, so two branches
+that each appended lines merge without a conflict: git keeps every line
+from both sides, in whatever order, which is exactly what an append-only
+log needs.
+
+**Derived index, not source of truth**: `<wiki>/.shapa-index.db` (gitignored,
+same file the note index lives in) holds a `memories` table rebuilt from the
+log, an FTS5 table for lexical search, cached embedding vectors keyed by
+content hash, and the `memory_uses` usage counters. None of that is ever
+read back as content — a lost or corrupted index is rebuilt from the log on
+the next read; the log is the only thing that must survive.
+
+Memory records are promoted or retired through `shapa maintain
+--memories`/`--promote`/`--archive-memory` (§11.3) — never edited by hand,
+never deleted.
+
 ---
 
 ## 4. Node body
@@ -200,22 +247,29 @@ python3 -m shapa.validate --all-roots [START]   # also checks F09/F10/F11 across
 
 ## 8. Capture workflow ("always meta")
 
-Node capture happens at the **end** of any agent's work. The discipline:
+Capture happens at the **end** of any agent's work, automatically — the
+Stop/SubagentStop hook (`shapa/capture.py`), not a note an agent writes by
+hand. It reads the session's **final job report** (what was actually done)
+and any **operator preferences** stated along the way, and writes v3 memory
+records (§3.2) from those — never the operator's raw first prompt, and
+never a tool output. That distinction is deliberate: the first prompt is a
+request, not a record of what happened, and tool output is too large and
+too likely to carry secrets to log wholesale; redaction (§3.2) is the
+backstop, not the plan. Each distinct, atomic fact in the report becomes
+its own record (`memlog.make_record`), classified into a `kind` by content
+(decision/fact/gotcha/outcome/open_question/preference), scoped and routed
+the same way a manual `shapa save` is (`placement.md`).
 
-1. After completing any substantive task, the agent reflects on what just happened.
-2. It creates at least one `memory` note describing the session.
-3. If the session produced a stable policy, it additionally creates a `rule` note.
-4. If the session revealed a problem or gap, it additionally creates an `issue` note.
-5. All new notes are written to the wiki root (`$SHAPA_MEMORY/<id>.md`) with filenames matching their `id` field.
-6. Each note includes at least one `[[wikilink]]` to an existing file to avoid immediate orphan status.
-
-The fetch hook (`shapa/fetch.py`, registered on `UserPromptSubmit` by `install.sh`) reads the wiki root at the start of each prompt, surfaces the most relevant and highest-scored notes, and calls `record_use` on each. The automated capture hook (Stop/SubagentStop) that would write notes without manual action is deferred — see §9.
+The fetch hook (`shapa/fetch.py`, registered on `UserPromptSubmit` by
+`install.sh`) reads every wiki in scope at the start of each prompt —
+curated notes and the memory log alike — surfaces the most relevant,
+highest-scored items, and calls `record_use`/`memlog.record_use` on each.
 
 ---
 
 ## 9. What is deferred
 
-- **LLM-distilled capture** — a heuristic capture hook (`shapa/capture.py`) is built and wired on Stop/SubagentStop; the richer LLM-salience version (see the shapa tool's `docs/design/hook-design.md`) is deferred.
+- **LLM-distilled capture** — exists (`shapa/capture.py`), **off by default**. The default Stop/SubagentStop path is the heuristic distillation described in §8; an LLM-salience pass over the same job report/preferences is built but opt-in (see the shapa tool's `docs/design/hook-design.md`) until it has run enough live sessions to trust unattended.
 - **Heartbeat scheduling** — maintenance runs on the Stop hook and on demand; a standalone cadence trigger is deferred.
 
 **Implemented but not yet run on a live config:** `install.sh` finds the Claude config and wires the fetch hook (UserPromptSubmit) plus capture + `maintain --prune` (Stop) against the connected wiki. Verified in a sandbox but not yet applied to a real `~/.claude/` installation.
@@ -235,10 +289,13 @@ shapa tool's own repo:
   AGENTS.md           ← this file, installed by `shapa init`; also the wiki marker
   .shapa-format       ← the wiki format this wiki is current at (tracked; see §11.2)
   .gitignore          ← keeps the index/vector caches out of git
+  .gitattributes       ← marks memory/*.jsonl merge=union (§3.2); tracked
   agenda.md           ← the top 3 fires (§11)
   arch/               ← project templates (type: reference), installed by `shapa init`
     PRD.md  architecture.md  system-design.md   ← fill these in for your project
-  <id>.md             ← operational notes captured at the wiki root;
+  memory/             ← the memory log: YYYY-MM.jsonl, one file per month (§3.2);
+                        tracked, append-only
+  <id>.md             ← curated notes at the wiki root (memory/rule/issue/reference);
                         each links to its [[type]] + related topics/peers
 ```
 
@@ -297,12 +354,41 @@ fully current at. A wiki without it predates the marker (format 1). When a
 shapa update raises the format, the session start says so in one line, and
 `shapa upgrade` brings the wiki current. It applies the mechanical migrations
 itself: this file, `placement.md`, the cache `.gitignore`, legacy counters
-moved into the index, and derived `id`/`scope`. It then lists the judgment
-items, such as caps, duplicates, missing summaries and over-length notes,
-which the `shapa-upgrade` skill resolves. `shapa upgrade --check` changes
-nothing and exits 1 while anything is left. It lists every `uses:`/
-`last_used:` line the upgrade deletes; that deletion is part of the upgrade
-commit and is never restored.
+moved into the index, derived `id`/`scope`, the `.gitattributes` union-merge
+line (§3.2), and — reaching format 3 — every live `memory-session-*.md` note
+(the pre-v3 per-session capture note) converted into one memory-log record
+and archived, never deleted. It then lists the judgment items, such as caps,
+duplicates, missing summaries, over-length notes, and malformed memory-log
+lines (**MEMLOG** — repaired by hand, since the log is otherwise
+append-only), which the `shapa-upgrade` skill resolves. `shapa upgrade
+--check` changes nothing and exits 1 while anything is left. It lists every
+`uses:`/`last_used:` line the upgrade deletes; that deletion is part of the
+upgrade commit and is never restored.
+
+An operator with an existing memri-format export can opt into importing it
+with `shapa upgrade PATH --import-memri FILE` (`--dry-run` to preview) — this
+never runs as part of a plain upgrade.
+
+### 11.3 The memory log is not a note
+
+The memory log (§3.2) is separate from the lean-shape caps above: its
+records never count toward F10's root-note limit, and the log itself is
+**never edited by hand** — repairing a malformed line (MEMLOG) is the one
+exception, and it still goes in through a commit, line-for-line, never a
+rewrite of the file. A memory record leaves active status only through
+`shapa maintain`:
+
+- `shapa maintain --memories [--min-uses N]` lists hot live records (default
+  `N=5`) — candidates worth curating into a note.
+- `shapa maintain --promote MEM_ID [--id SLUG] [--type ...] [--scope ...]`
+  writes a curated note from the record (`shapa save`'s path) and then
+  archives the record it came from — never deletes it, and a failed save
+  archives nothing.
+- `shapa maintain --archive-memory MEM_ID [--reason TEXT]` retires a record
+  directly, with no note written.
+
+All three only ever append an archive op (§3.2) — the record stays in the
+log, readable, forever.
 
 ## 12. Privacy invariant (memory is never inside the *tool's* repo)
 
