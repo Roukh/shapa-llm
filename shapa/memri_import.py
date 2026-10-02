@@ -159,9 +159,10 @@ def import_memri(root, path, *, dry_run: bool = False) -> ImportStats:
     """Import the memri export at *path* into *root*'s memory log.
 
     With *dry_run*, nothing is written - the returned stats describe what
-    would happen (``written``/``duplicates``/``archived`` are 0; ``pieces``
-    and ``redaction_hits`` are still computed, since neither requires a
-    write)."""
+    would happen (``written``/``duplicates`` are 0; ``pieces``,
+    ``redaction_hits`` and ``archived`` - the pieces of superseded rows -
+    are computed without a write). After a real import ``archived`` counts
+    the records actually archived."""
     import time
 
     t0 = time.monotonic()
@@ -181,21 +182,31 @@ def import_memri(root, path, *, dry_run: bool = False) -> ImportStats:
     for p in pieces:
         by_month.setdefault((p.created.year, p.created.month), []).append(p)
 
-    written = duplicates = 0
+    written = duplicates = archived = 0
     for key, group in by_month.items():
         rep_dt = datetime(key[0], key[1], 15, tzinfo=timezone.utc)
         for i in range(0, len(group), CHUNK_SIZE):
             chunk = group[i:i + CHUNK_SIZE]
-            records = [c.record for c in chunk]
-            ops = [
-                memlog.Op("archive", c.record.id, memlog.now_iso(rep_dt), c.archive_reason)
-                for c in chunk if c.archive_reason
-            ]
-            result = memlog.append(root, records, ops=ops, now=rep_dt, limit=len(records))
-            written += len(result.written)
-            duplicates += len(result.duplicates)
+            live = [c.record for c in chunk if not c.archive_reason]
+            if live:
+                result = memlog.append(root, live, now=rep_dt, limit=len(live))
+                written += len(result.written)
+                duplicates += len(result.duplicates)
+            # A superseded row is kept as history and archived in the same
+            # write. It never dedups against or supersedes live memory (its
+            # successor usually reads alike), and an identical live record
+            # from another row is never archived on its behalf.
+            dead = [c for c in chunk if c.archive_reason]
+            if dead:
+                result = memlog.append(
+                    root, [c.record for c in dead], dedup=False, now=rep_dt, limit=len(dead),
+                    archive_written={c.record.id: c.archive_reason for c in dead})
+                written += len(result.written)
+                duplicates += len(result.duplicates)
+                archived += len(result.written)
 
     stats.written = written
     stats.duplicates = duplicates
+    stats.archived = archived
     stats.seconds = time.monotonic() - t0
     return stats

@@ -464,7 +464,8 @@ class AppendResult:
 
 
 def append(root, records, *, ops=(), dedup: bool = True, now: datetime | None = None,
-           limit: int = MAX_APPEND) -> AppendResult:
+           limit: int = MAX_APPEND, archive_written: dict[str, str] | None = None
+           ) -> AppendResult:
     """Append *records* (and archive *ops*) to *root*'s current month log,
     under an exclusive lock on that file so concurrent sessions never
     interleave a check with a write.
@@ -474,6 +475,9 @@ def append(root, records, *, ops=(), dedup: bool = True, now: datetime | None = 
     (shingle Jaccard >= :data:`DUP_THRESHOLD`) of a live record of the same
     kind; a record in [:data:`SUPERSEDE_THRESHOLD`, DUP) of one live record
     of the same kind and repo is written with ``supersedes`` set to it.
+    Without it only exact duplicates are dropped and nothing supersedes.
+    *archive_written* (id -> reason) archives, in the same write, each of
+    those records this call actually writes - never one already in the log.
     Never writes more than *limit* records per call (:data:`MAX_APPEND` -
     a hook's flood guard; a bulk importer passes its own)."""
     root = Path(root)
@@ -527,6 +531,9 @@ def append(root, records, *, ops=(), dedup: bool = True, now: datetime | None = 
         for op in ops:
             if isinstance(op, Op) and op.target not in archived:
                 lines.append(op.to_json())
+        for rec in result.written:
+            if archive_written and rec.id in archive_written:
+                lines.append(Op("archive", rec.id, now_iso(now), archive_written[rec.id]).to_json())
         if lines:
             os.write(fd, ("\n".join(lines) + "\n").encode("utf-8"))
         if conn is not None:

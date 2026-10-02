@@ -131,6 +131,35 @@ class TestImportMemri(unittest.TestCase):
         self.assertEqual(view.status(new_id), "active")
         self.assertEqual(view.archived[old_id].reason, "memri-superseded-by:new-1")
 
+    def test_superseded_row_never_hides_its_successor(self):
+        # The successor is imported first and the old row reads almost the
+        # same - it must not supersede the live record, and archiving it
+        # must not touch an identical live record from another row.
+        rows = [
+            {"id": "new-2", "type": "rule", "title": "Deploy rule",
+             "body": "Run the migration dry-run before every production deploy and tag it.",
+             "created_at": "2026-01-01T00:00:00Z"},
+            {"id": "old-2", "type": "rule", "title": "Deploy rule",
+             "body": "Run the migration dry-run before every production deploy, then tag it.",
+             "superseded_by": "new-2", "created_at": "2026-01-01T00:00:00Z"},
+            {"id": "live-3", "type": "rule", "title": "Shared line",
+             "body": "Never force-push a shared branch.", "created_at": "2026-01-01T00:00:00Z"},
+            {"id": "old-3", "type": "rule", "title": "Shared line",
+             "body": "Never force-push a shared branch.", "superseded_by": "x",
+             "created_at": "2026-01-01T00:00:00Z"},
+        ]
+        stats = memri_import.import_memri(self.wiki, self._export(rows))
+        view = memlog.read_log(self.wiki)
+        by_source = {r.source: r for r in view.records.values()}
+        self.assertEqual(view.status(by_source["memri:new-2#0"].id), "active")
+        self.assertEqual(view.status(by_source["memri:old-2#0"].id), "archived")
+        self.assertIsNone(by_source["memri:old-2#0"].supersedes)
+        self.assertEqual(view.status(by_source["memri:live-3#0"].id), "active")
+        self.assertNotIn("memri:old-3#0", by_source)  # identical content: one record, kept live
+        self.assertEqual(stats.archived, 1)
+        again = memri_import.import_memri(self.wiki, self._export(rows))
+        self.assertEqual((again.written, again.archived), (0, 0))
+
     def test_secret_in_body_is_redacted_and_counted(self):
         rows = [{"id": "secret-1", "type": "rule", "title": "Rotate the key",
                 "body": "deploy key sk-ant-api03-abcdefghijklmnopqrstuvwx must be rotated",
