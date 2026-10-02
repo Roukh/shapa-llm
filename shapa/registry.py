@@ -40,7 +40,8 @@ from shapa import config
 #: ``shapa upgrade`` brings it current.
 #:   1 - pre-marker wikis (schema v1, counters in frontmatter)
 #:   2 - schema v2 + lean shape (spec §10 decisions 6/7)
-CURRENT_FORMAT = 2
+#:   3 - v3 memory records: memory/ JSONL log, session notes converted
+CURRENT_FORMAT = 3
 LEGACY_FORMAT = 1
 FORMAT_FILENAME = ".shapa-format"
 
