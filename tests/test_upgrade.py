@@ -335,6 +335,17 @@ class TestJudgment(UpgradeTestCase):
         _note(wiki, "long", " ".join(f"word{i}" for i in range(301)))
         self.assertEqual(self.codes(wiki)["F07"], ["long.md"])
 
+    def test_checklist_over_length_is_exempt_from_f07(self):
+        # checklist.md (like ideas.md) is an append-only/ever-growing
+        # convention file by design - `shapa upgrade --check` must never
+        # list it under F07, or every wiki with a real checklist would
+        # report "behind" forever.
+        wiki = make_old_wiki(self.repo_wiki())
+        _note(wiki, "checklist", " ".join(f"word{i}" for i in range(400)), locus="meta")
+        _note(wiki, "ideas", " ".join(f"word{i}" for i in range(400)), locus="meta")
+        codes = self.codes(wiki)
+        self.assertNotIn("F07", codes)
+
     def test_layout_scope_and_frontmatter_problems(self):
         wiki = make_old_wiki(self.repo_wiki())
         _note(wiki / "notes", "tucked-away", "a live note in a side folder")

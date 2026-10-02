@@ -2,7 +2,14 @@
 
 Runs as a Stop / SubagentStop hook: at the end of an agent turn it reads the
 session transcript and extracts a handful of ATOMIC memories (never a whole
-note) from two places only:
+note) from two places only. A SubagentStop call is skipped entirely by
+default (``capture_subagents=True`` / ``--capture-subagents`` /
+``SHAPA_CAPTURE_SUBAGENTS=1`` opts back in): a subagent's final report is an
+intermediate work product FOR the parent agent, not a session's own job
+report, and capturing it by default turned every subagent turn's status
+fragments ("**HK1** ... NOT STARTED.") into junk records - the parent's own
+Stop capture over the main transcript already turns the finished work into
+memories, in the standard job-report shape below.
 
 - the session's FINAL assistant message - the operator's standard 3-paragraph
   job report (after-action / footprint / open decisions) maps to one
@@ -97,6 +104,11 @@ _SENT_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
 _OPEN_DECISIONS_PREFIX_RE = re.compile(r"(?i)^open decisions\s*:\s*")
 _NUM_ITEM_RE = re.compile(r"\d+\)\s*")
 _PASTED_RE = re.compile(r"<pasted_content[^>]*>.*?</pasted_content>", re.S | re.I)
+#: An opening tag with no matching close (the transcript never finished
+#: recording the paste) - everything from here to the end of the text is
+#: dropped too, since none of it is safe to treat as the operator's own
+#: words (see :func:`_strip_pasted_content`).
+_PASTED_OPEN_RE = re.compile(r"<pasted_content\b[^>]*>", re.I)
 
 #: Cue a sentence pulled from an operator request must carry to be captured
 #: as a `preference` at all (spec: never/always/don't.../stop/from now
@@ -107,9 +119,59 @@ _PREF_CUE_RE = re.compile(
 #: A "clearly global" cue (routing rule) - distinct from the pref cue above:
 #: a preference without one of these never leaves its repo's own wiki.
 _GLOBAL_CUE_RE = re.compile(
-    r"\b(always|never|from now on|every repo|all repos|globally|across repos|in any repo)\b", re.I)
+    r"\b(always|never|from now on|every repo|all repos|globally|across repos|in any repo|"
+    r"all sessions|every session|any session|across sessions)\b", re.I)
 _FILE_EXT_RE = re.compile(r"\b[\w-]{2,}\.[A-Za-z]{1,5}\b")
 _PATHLIKE_RE = re.compile(r"[\w.-]+/[\w./-]+")
+
+#: A fragment too thin to be worth its own memory record: bare filler
+#: ("yes."/"none."/"ok", optionally with trailing punctuation) or - once
+#: normalized - just a handful of characters. Catches junk like an
+#: ``outcome``/``open_question`` pair reduced to "Yes."/"none." (spec: a
+#: fragment this short is never atomic content, it is a leftover of
+#: whatever shape the final message almost had).
+_FILLER_ONLY_RE = re.compile(
+    r"^(?:yes|no|none|n/?a|ok(?:ay)?|sure|done|fine|good|agreed|correct|confirmed|true|false)"
+    r"[.!?]*$", re.I)
+MIN_FRAGMENT_CHARS = 12
+
+#: Interim progress/status chatter about work still in flight ("Four
+#: verification agents are running in parallel", "The CI/CD group is
+#: back.") - never a completed-work outcome, even though it default-
+#: classifies as one (no gotcha/open/preference cue fires). Only consulted
+#: when the candidate's kind would otherwise be "outcome" (see
+#: :func:`_report_kind`): a paragraph this phrasing shares with a real
+#: gotcha/decision is never dropped on its account.
+_PROGRESS_CHATTER_RE = re.compile(
+    r"\b(?:is|are|was|were)\s+(?:currently\s+)?(?:running|back|ongoing|in[- ]progress|"
+    r"still\s+(?:running|going|working)|waiting|pending|under\s?way)\b"
+    r"|\brunning in parallel\b", re.I)
+
+
+def _is_trivial_fragment(text: str) -> bool:
+    """True for filler-only text, or text too short (once collapsed to one
+    line and stripped of trailing punctuation) to be an atomic memory on
+    its own."""
+    one = memlog.one_line(text)
+    if _FILLER_ONLY_RE.match(one.strip()):
+        return True
+    return len(one.strip(" .!?")) < MIN_FRAGMENT_CHARS
+
+
+def _is_in_flight_chatter(text: str) -> bool:
+    return bool(_PROGRESS_CHATTER_RE.search(text))
+
+
+def _report_kind(text: str, default: str) -> str:
+    """:func:`shapa.memlog.classify_kind` for report-derived text (the
+    final job report, never an operator request), with one override: a
+    report paragraph is never classified ``preference`` - that kind is
+    reserved for a stated operator request (see the module docstring's
+    routing rule), and a work report can trip ``_PREF_KW`` incidentally
+    (e.g. "the fix must always re-run after a seed step") without actually
+    being one."""
+    kind = memlog.classify_kind(text, default)
+    return default if kind == "preference" else kind
 
 
 def _strip_markdown(text: str) -> str:
@@ -142,14 +204,30 @@ def _is_standard_report(paras: list[str]) -> bool:
     return len(paras) == 3 and bool(_OPEN_DECISIONS_PREFIX_RE.match(paras[2]))
 
 
+#: Below this many characters, a numbered-ledger item reads as a bare
+#: fragment ("Oxlint or ESLint", "herdr hook scope") rather than a decision
+#: clause someone could act on alone.
+_MIN_LEDGER_ITEM_CHARS = 25
+
+
 def _open_decisions_items(p3: str) -> list[str]:
     """P3's numbered items ("1) ... 2) ..."), or [] for "Open decisions:
-    none." (any spelling of "none")."""
+    none." (any spelling of "none") or bare filler. A ledger of two or more
+    SHORT fragments ("1) pick a linter 2) fix hook scope 3) sort billing")
+    reads as one decision list, not N atomic decisions each worth its own
+    record - it stays a single item (the whole list, minus the prefix) so
+    it is captured as one record instead of exploding into a record per
+    fragment. A ledger whose items are each a substantial clause on their
+    own (the common case) still splits, unchanged."""
     body = _OPEN_DECISIONS_PREFIX_RE.sub("", p3).strip()
-    if not body or body.rstrip(". ").lower() == "none":
+    if not body or _is_trivial_fragment(body):
         return []
-    parts = [memlog.one_line(x) for x in _NUM_ITEM_RE.split(body)]
-    return [x for x in parts if x]
+    parts = [x for x in (memlog.one_line(y) for y in _NUM_ITEM_RE.split(body)) if x]
+    if not parts:
+        return []
+    if len(parts) > 1 and any(len(p) < _MIN_LEDGER_ITEM_CHARS for p in parts):
+        return [memlog.one_line(body)]
+    return [p for p in parts if not _is_trivial_fragment(p)]
 
 
 def _is_clearly_global(text: str, repo_name: str | None) -> bool:
@@ -165,10 +243,21 @@ def _is_clearly_global(text: str, repo_name: str | None) -> bool:
     return True
 
 
+def _strip_pasted_content(text: str) -> str:
+    """Strip every ``<pasted_content ...>...</pasted_content>`` block (kept
+    text around a closed one survives). An opening tag with no matching
+    close - a paste the transcript never finished recording - drops
+    everything from that tag to the end of *text* too: there is no way to
+    know where the paste would have ended, so none of what follows is safe
+    to treat as the operator's/report's own words."""
+    text = _PASTED_RE.sub(" ", text or "")
+    return _PASTED_OPEN_RE.split(text, maxsplit=1)[0]
+
+
 def _clean_user_text(raw: str) -> str:
     """Strip any embedded ``<pasted_content>`` blocks (kept text around them
     survives) before the noise checks below."""
-    return _PASTED_RE.sub(" ", raw or "").strip()
+    return _strip_pasted_content(raw or "").strip()
 
 
 # --- transcript entries ---------------------------------------------------------
@@ -262,12 +351,15 @@ def _final_message_candidates(final_text: str) -> list[dict]:
     out: list[dict] = []
     if _is_standard_report(paras):
         p1, p2, p3 = paras
-        out.append({"kind": memlog.classify_kind(p1, "outcome"), "summary": _first_sentence(p1),
-                    "body": p1, "tags": [], "report": True})
-        out.append({"kind": memlog.classify_kind(p2, "fact"), "summary": _first_sentence(p2),
-                    "body": p2, "tags": memlog.extract_tags(p2), "report": True})
+        p1_kind = _report_kind(p1, "outcome")
+        if not _is_trivial_fragment(p1) and not (p1_kind == "outcome" and _is_in_flight_chatter(p1)):
+            out.append({"kind": p1_kind, "summary": _first_sentence(p1),
+                        "body": p1, "tags": [], "report": True})
+        if not _is_trivial_fragment(p2):
+            out.append({"kind": _report_kind(p2, "fact"), "summary": _first_sentence(p2),
+                        "body": p2, "tags": memlog.extract_tags(p2), "report": True})
         for item in _open_decisions_items(p3):
-            out.append({"kind": memlog.classify_kind(item, "open_question"),
+            out.append({"kind": _report_kind(item, "open_question"),
                         "summary": _first_sentence(item), "body": item, "tags": [], "report": True})
         return out
     if len(memlog.one_line(final_text)) < 80:
@@ -275,8 +367,10 @@ def _final_message_candidates(final_text: str) -> list[dict]:
     for p in paras:
         if len(p) < 80:
             continue
-        out.append({"kind": memlog.classify_kind(p, "outcome"), "summary": _first_sentence(p),
-                    "body": p, "tags": [], "report": True})
+        kind = _report_kind(p, "outcome")
+        if kind == "outcome" and _is_in_flight_chatter(p):
+            continue
+        out.append({"kind": kind, "summary": _first_sentence(p), "body": p, "tags": [], "report": True})
         if len(out) >= 3:
             break
     return out
@@ -507,7 +601,7 @@ def _try_distill(request_texts: list[str], final_text: str) -> list[dict] | None
 
 
 def _spawn_distill_worker(transcript, session, root, scope, applies_to, cwd,
-                          agent_transcript, last_msg) -> None:
+                          agent_transcript, last_msg, capture_subagents=False) -> None:
     """Detached background re-invocation of this same module with
     ``--distill --_worker`` - the hook returns immediately; the worker does
     the (possibly slow) model call and writes on its own. The hook payload
@@ -520,6 +614,8 @@ def _spawn_distill_worker(transcript, session, root, scope, applies_to, cwd,
         argv += ["--scope", scope]
     if applies_to:
         argv += ["--applies-to", applies_to]
+    if capture_subagents:
+        argv += ["--capture-subagents"]
     payload = json.dumps({"transcript_path": str(transcript or ""), "session_id": session or "manual",
                           "cwd": str(cwd) if cwd else None,
                           "agent_transcript_path": str(agent_transcript) if agent_transcript else None,
@@ -536,11 +632,24 @@ def _spawn_distill_worker(transcript, session, root, scope, applies_to, cwd,
 # --- the write path --------------------------------------------------------------
 
 def _capture(transcript_path, session_id, root, now, scope, applies_to, cwd,
-            agent_transcript_path, last_assistant_message, distill, dry_run) -> list[memlog.Record]:
+            agent_transcript_path, last_assistant_message, distill, dry_run,
+            capture_subagents=False) -> list[memlog.Record]:
     sid = (str(session_id or "")[:8]) or "unknown"
     start = cwd  # None falls through to Path.cwd() wherever it is actually used
 
     is_subagent = bool(agent_transcript_path) and Path(str(agent_transcript_path)).is_file()
+    if is_subagent and not capture_subagents:
+        # A subagent's final report is an intermediate work product FOR
+        # the parent agent, not a session's own job report - the parent's
+        # own Stop capture (over the main transcript) is what should turn
+        # the work into memories, already in the operator's "standard job
+        # report" shape. Capturing every subagent turn by default produced
+        # report-fragment junk (half a dozen "NOT STARTED"/status-line
+        # records per session, several mis-kinded `preference`). Skipped
+        # by default; opt in with capture_subagents=True / the CLI's
+        # --capture-subagents / SHAPA_CAPTURE_SUBAGENTS=1 for a workflow
+        # that genuinely wants standalone subagent memories.
+        return []
     active_path = str(agent_transcript_path) if is_subagent else str(transcript_path or "")
 
     manual = None
@@ -582,6 +691,7 @@ def _capture(transcript_path, session_id, root, now, scope, applies_to, cwd,
         first_prompt_seen = True
 
     final_text = str(last_assistant_message or _final_assistant_text(entries))[:MAX_FINAL_CHARS]
+    final_text = _strip_pasted_content(final_text)
     raw_msgs = [m[:MAX_REQUEST_CHARS] for m in raw_msgs]
 
     distilled = _try_distill(raw_msgs, final_text) if distill else None
@@ -627,13 +737,17 @@ def _capture(transcript_path, session_id, root, now, scope, applies_to, cwd,
 def capture_session(transcript_path, session_id, root=None, now: datetime | None = None,
                     scope: str | None = None, applies_to: str | None = None, *,
                     cwd=None, agent_transcript_path=None, last_assistant_message: str | None = None,
-                    distill: bool = False, dry_run: bool = False) -> list[memlog.Record]:
+                    distill: bool = False, dry_run: bool = False,
+                    capture_subagents: bool = False) -> list[memlog.Record]:
     """Extract and write this turn's new memories. Returns the records
     actually written (``[]`` when nothing qualified, when every candidate
-    was a duplicate, or in ``--dry-run`` - never ``None``, never raises)."""
+    was a duplicate, when this is a SubagentStop call and
+    *capture_subagents* is left ``False`` (the default), or in
+    ``--dry-run`` - never ``None``, never raises)."""
     try:
         return _capture(transcript_path, session_id, root, now, scope, applies_to, cwd,
-                        agent_transcript_path, last_assistant_message, distill, dry_run)
+                        agent_transcript_path, last_assistant_message, distill, dry_run,
+                        capture_subagents=capture_subagents)
     except Exception:
         return []
 
@@ -658,6 +772,10 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--dry-run", action="store_true",
                         help="Print the extracted, redacted, routed records as JSON lines "
                              "and write nothing.")
+    parser.add_argument("--capture-subagents", action="store_true",
+                        help="Also turn a SubagentStop call's own final report into memory "
+                             "records (off by default; see SHAPA_CAPTURE_SUBAGENTS). The "
+                             "parent session's own Stop capture already covers the work.")
     parser.add_argument("--agent-transcript", default=None, help=argparse.SUPPRESS)
     parser.add_argument("--last-assistant-message", default=None, help=argparse.SUPPRESS)
     parser.add_argument("--_worker", action="store_true", help=argparse.SUPPRESS)
@@ -681,17 +799,20 @@ def main(argv: list[str] | None = None) -> None:
             last_msg = data.get("last_assistant_message", last_msg)
 
     distill = args.distill or os.environ.get("SHAPA_CAPTURE_DISTILL") == "1"
+    capture_subagents = args.capture_subagents or os.environ.get("SHAPA_CAPTURE_SUBAGENTS") == "1"
 
     try:
         if transcript or agent_transcript:
             if distill and not args._worker and not args.dry_run:
                 _spawn_distill_worker(transcript, session, args.root, args.scope,
-                                      args.applies_to, cwd, agent_transcript, last_msg)
+                                      args.applies_to, cwd, agent_transcript, last_msg,
+                                      capture_subagents)
             else:
                 capture_session(
                     transcript, session, root=args.root, scope=args.scope,
                     applies_to=args.applies_to, cwd=cwd, agent_transcript_path=agent_transcript,
                     last_assistant_message=last_msg, distill=distill, dry_run=args.dry_run,
+                    capture_subagents=capture_subagents,
                 )
     except Exception:
         pass  # never block the agent

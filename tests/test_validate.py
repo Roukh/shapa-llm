@@ -128,6 +128,17 @@ class TestValidate(unittest.TestCase):
         result = validate_node(FM / "valid.md")
         self.assertNotIn("F07", self._rules(result))
 
+    def test_ideas_and_checklist_are_exempt_from_f07(self):
+        # Both are append-only/ever-growing convention files by design -
+        # ideas.md a dated log, checklist.md a running `- [ ] item` list -
+        # so neither is ever flagged for passing the ordinary word ceiling.
+        long_body = " ".join(f"word{i}" for i in range(400))
+        for stem in ("ideas", "checklist"):
+            meta = {"id": stem, "type": "memory", "created": "2026-01-01T00:00:00Z",
+                    "consequence": 5, "locus": "meta", "uses": 0}
+            violations = validate_frontmatter(meta, stem, body=long_body)
+            self.assertNotIn("F07", {v.rule for v in violations}, stem)
+
     def test_dangling_supersedes_is_warning_when_known_ids_supplied(self):
         result = validate_node(FM / "schema-v2-dangling-supersedes.md", known_ids={"some-other-id"})
         self.assertTrue(result.valid)
@@ -186,6 +197,19 @@ class TestLeanShape(unittest.TestCase):
         _note(self.tmp, "a-note")
         self.assertEqual(check_lean_shape(self.tmp), [])
         self.assertEqual(check_agenda(self.tmp), [])
+
+    def test_convention_files_dont_count_toward_the_root_cap(self):
+        # agenda.md/ideas.md/checklist.md recur at every wiki root by
+        # construction (shapa.nodes.CONVENTION_IDS) - they are not the
+        # "note count creeping up" the 40-note cap exists to catch, the
+        # same way a type: reference doc at the root already isn't.
+        _note(self.tmp, "agenda", "1. one fire\n")
+        _note(self.tmp, "ideas", "2026-01-01 an idea worth keeping\n")
+        _note(self.tmp, "checklist", "- [ ] **X1** do the thing - verify: `true`\n")
+        for i in range(3):
+            _note(self.tmp, f"n{i}")
+        violations = check_lean_shape(self.tmp, max_root_notes=3)
+        self.assertEqual(violations, [])
 
     def test_too_many_root_notes_is_f10(self):
         for i in range(5):

@@ -706,8 +706,8 @@ class Selection:
     every note id that exists in more than one searched root (F09) - the
     ids are shown from every root that has one, never silently picked.
     Structural ids (``shapa.nodes.STRUCTURAL_IDS``: each wiki's own agenda,
-    ideas log, schema docs and arch/ templates) recur by design and are
-    never listed.
+    ideas log, checklist, schema docs and arch/ templates) recur by design
+    and are never listed.
     """
 
     items: list

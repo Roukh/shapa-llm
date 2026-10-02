@@ -273,7 +273,7 @@ One heartbeat cycle (`shapa/heartbeat.py`) runs two phases over the wikilink gra
 | `UserPromptSubmit` | `shapa fetch` | Read path — surfaces the most relevant, highest-scored notes at the start of each prompt; calls `record_use` on each. |
 | `Stop` | `shapa capture` | Write path — distils the finished session into a few atomic, redacted memory records appended to the wiki's `memory/` log (heuristic, stdlib-only; an LLM distiller is opt-in). |
 | `Stop` | `shapa maintain --prune` | Prunes orphans/stale notes and auto-merges near-duplicates. |
-| `SubagentStop` | `shapa capture` | Same as the `Stop` capture, so subagent work is captured too. |
+| `SubagentStop` | `shapa capture` | Same command, but skipped by default: a subagent's report is an intermediate work product for the parent agent, not a session's own job report. Opt in with `--capture-subagents`/`SHAPA_CAPTURE_SUBAGENTS=1`. |
 
 Hooks receive a JSON payload on stdin (`transcript_path`, `session_id`, `cwd`, plus `agent_id`/`agent_type` on `SubagentStop`). `capture` and `maintain` are write-only, non-blocking, and always exit 0. Registration is idempotent and deep-merged into `settings.json` (existing hooks from other tools are preserved, never overwritten).
 

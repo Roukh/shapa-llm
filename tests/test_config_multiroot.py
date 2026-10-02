@@ -247,7 +247,7 @@ class TestCrossRootDuplicateId(MultirootTestCase):
         repo = _make_git_repo(self.tmp / "repoL")
         repo_wiki = _make_wiki(repo)
         for wiki in (global_wiki, repo_wiki):
-            for nid in ("AGENTS", "placement", "agenda", "ideas", "really-shared"):
+            for nid in ("AGENTS", "placement", "agenda", "ideas", "checklist", "really-shared"):
                 _note(wiki, nid)
         config.set_memory_dir(global_wiki)
 
@@ -267,6 +267,20 @@ class TestCrossRootDuplicateId(MultirootTestCase):
 
         with self.assertRaises(SystemExit) as cm, redirect_stdout(io.StringIO()):
             validate.main(["--all-roots", str(repo)])
+        self.assertEqual(cm.exception.code, 0)
+
+    def test_all_roots_cli_exits_zero_with_a_checklist_in_every_root(self):
+        global_wiki = self.tmp / "global"
+        _note(global_wiki, "agenda", "1. one fire\n")
+        _note(global_wiki, "checklist", "- [ ] **X1** do the thing - verify: `true`")
+
+        repo = _make_git_repo(self.tmp / "repoN")
+        repo_wiki = _make_wiki(repo)
+        _note(repo_wiki, "checklist", "- [ ] **Y1** do the other thing - verify: `true`")
+
+        with mock.patch.object(config, "global_root", lambda: global_wiki):
+            with self.assertRaises(SystemExit) as cm, redirect_stdout(io.StringIO()):
+                validate.main(["--all-roots", str(repo)])
         self.assertEqual(cm.exception.code, 0)
 
     def test_all_roots_cli_exits_zero_when_clean(self):

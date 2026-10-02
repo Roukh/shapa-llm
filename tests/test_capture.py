@@ -143,6 +143,97 @@ class TestReportExtraction(CaptureTestCase):
 
 
 # ---------------------------------------------------------------------------
+# Junk filtering: trivial filler fragments, an inline numbered ledger of
+# short items, in-flight progress chatter mistaken for a completed outcome,
+# and a report sentence that trips a preference keyword incidentally.
+# ---------------------------------------------------------------------------
+
+class TestJunkFiltering(CaptureTestCase):
+    def setUp(self):
+        super().setUp()
+        self.root = self.tmp / "wiki"
+        self.root.mkdir()
+
+    def test_trivial_outcome_fragment_is_dropped(self):
+        report = (
+            "Yes.\n\n"
+            "Files: src/config.py; architecture stays the same, no new dependencies used.\n\n"
+            "Open decisions: none."
+        )
+        t = self.write("t.jsonl", [msg("user", "brief"), msg("assistant", report)])
+        written = capture.capture_session(str(t), "sessTRIVIAL1", root=self.root)
+        self.assertEqual([r.kind for r in written], ["fact"])
+        self.assertFalse(any(r.summary.rstrip(".").lower() == "yes" for r in written))
+
+    def test_single_trivial_open_decision_item_is_dropped(self):
+        report = (
+            "Shipped the config loader rewrite cleanly today across the board.\n\n"
+            "Files: config/loader.py; architecture unchanged, still a plain module.\n\n"
+            "Open decisions: 1) ok."
+        )
+        t = self.write("t.jsonl", [msg("user", "brief"), msg("assistant", report)])
+        written = capture.capture_session(str(t), "sessTRIVIAL2", root=self.root)
+        self.assertNotIn("open_question", [r.kind for r in written])
+
+    def test_short_fragment_ledger_stays_one_record(self):
+        report = (
+            "Finished the cleanup pass across the three legacy modules today.\n\n"
+            "Files: tools/cleanup.py and tools/legacy.py; architecture unchanged, "
+            "still a plain script.\n\n"
+            "Open decisions: 1) pick a linter 2) fix hook scope 3) sort billing "
+            "4) remove old records."
+        )
+        t = self.write("t.jsonl", [msg("user", "brief"), msg("assistant", report)])
+        written = capture.capture_session(str(t), "sessLEDGER1", root=self.root)
+        opens = [r for r in written if r.kind == "open_question"]
+        self.assertEqual(len(opens), 1)
+        self.assertIn("pick a linter", opens[0].body)
+        self.assertIn("remove old records", opens[0].body)
+
+    def test_substantial_ledger_items_still_split(self):
+        # Unchanged from before: a ledger whose items are each a full
+        # clause on their own still becomes one record per item.
+        t = self.write("t.jsonl", [msg("user", "brief - never stored"), msg("assistant", REPORT)])
+        written = capture.capture_session(str(t), "sessLEDGER2", root=self.root)
+        opens = [r.summary for r in written if r.kind == "open_question"]
+        self.assertEqual(len(opens), 2)
+
+    def test_in_flight_chatter_is_not_an_outcome(self):
+        report = (
+            "Four verification agents are running in parallel across the spec groups "
+            "right now.\n\n"
+            "Files: scripts/verify.py; architecture unchanged, still a plain script here.\n\n"
+            "Open decisions: none."
+        )
+        t = self.write("t.jsonl", [msg("user", "brief"), msg("assistant", report)])
+        written = capture.capture_session(str(t), "sessCHATTER1", root=self.root)
+        self.assertNotIn("outcome", [r.kind for r in written])
+        self.assertTrue(any(r.kind == "fact" for r in written))
+
+    def test_in_flight_chatter_fallback_paragraph_yields_nothing(self):
+        long_chatter = (
+            "The integration test group is still running in the background while the "
+            "deploy verification finishes its pass across every service boundary we own."
+        )
+        t = self.write("t.jsonl", [msg("user", "brief"), msg("assistant", long_chatter)])
+        written = capture.capture_session(str(t), "sessCHATTER2", root=self.root)
+        self.assertEqual(written, [])
+
+    def test_report_sentence_with_a_preference_keyword_is_not_a_preference(self):
+        report = (
+            "Confirmed the nightly job must always run after the seed step finishes "
+            "successfully.\n\n"
+            "Files: jobs/nightly.py; architecture unchanged, still a cron-triggered "
+            "plain script.\n\n"
+            "Open decisions: none."
+        )
+        t = self.write("t.jsonl", [msg("user", "brief"), msg("assistant", report)])
+        written = capture.capture_session(str(t), "sessNOTPREF1", root=self.root)
+        outcome = next(r for r in written if r.body.startswith("Confirmed the nightly job"))
+        self.assertEqual(outcome.kind, "outcome")
+
+
+# ---------------------------------------------------------------------------
 # Operator-request extraction, first-prompt skip, and noise filtering.
 # ---------------------------------------------------------------------------
 
@@ -197,6 +288,20 @@ class TestRequestExtraction(CaptureTestCase):
         self.assertNotIn("housekeeping", blob)
         self.assertNotIn("leaked internal text blob", blob)
         self.assertTrue(any("keep pull requests small" in (r.summary + r.body) for r in written))
+
+    def test_unterminated_pasted_content_drops_everything_after_it_too(self):
+        t = self.write("t.jsonl", [
+            msg("user", "brief - never stored"),
+            msg("assistant", "ok"),
+            msg("user", "always keep the tests green in this repo <pasted_content id=77>"
+                       "a giant leaked blob that never closes and just keeps going"),
+            msg("assistant", REPORT_NONE),
+        ])
+        written = capture.capture_session(str(t), "sessPASTED2", root=self.root)
+        blob = " ".join(r.summary + r.body for r in written)
+        self.assertNotIn("pasted_content", blob)
+        self.assertNotIn("leaked blob", blob)
+        self.assertTrue(any("always keep the tests green" in (r.summary + r.body) for r in written))
 
     def test_at_most_four_request_candidates(self):
         lines = [msg("user", "brief - never stored")]
@@ -418,6 +523,25 @@ class TestRouting(CaptureTestCase):
         self.assertFalse(any(r.kind == "outcome" for r in written))
         self.assertEqual(list(memlog.read_log(global_wiki).records.values()), written)
 
+    def test_all_sessions_cue_is_clearly_global(self):
+        # "in all sessions" is a global cue just like "always"/"every repo" -
+        # a stated operator preference about how the agent should work in
+        # every session routes to the global wiki, not the repo it happened
+        # to be said in.
+        repo = self.tmp / "repo-no-wiki-2"
+        repo.mkdir()
+        (repo / ".git").mkdir()
+        global_wiki = self.tmp / "global2"
+        global_wiki.mkdir()
+        t = self._report_transcript(
+            "this must be true in all sessions, so cap the output at 2000 tokens")
+        with mock.patch.object(config, "global_root", lambda: global_wiki):
+            with mock.patch.object(config.Path, "cwd", staticmethod(lambda: repo)):
+                written = capture.capture_session(str(t), "sessROUTE07")
+        self.assertTrue(written)
+        pref = next(r for r in written if "cap the output" in r.summary)
+        self.assertEqual(pref.scope, "global")
+
     def test_no_git_repo_at_all_writes_everything_global(self):
         plain = self.tmp / "plain"
         plain.mkdir()
@@ -467,11 +591,14 @@ class TestRouting(CaptureTestCase):
 
 
 # ---------------------------------------------------------------------------
-# SubagentStop: agent_transcript_path is preferred when present.
+# SubagentStop: skipped by default (a subagent's report is an intermediate
+# work product for the parent agent, not a session's own job report);
+# agent_transcript_path is preferred over the main transcript only when the
+# caller opts back in with capture_subagents=True.
 # ---------------------------------------------------------------------------
 
 class TestSubagentStop(CaptureTestCase):
-    def test_agent_transcript_is_used_instead_of_the_main_one(self):
+    def test_subagent_report_is_skipped_by_default(self):
         root = self.tmp / "wiki"
         root.mkdir()
         main_t = self.write("main.jsonl", [msg("user", "main session brief")])
@@ -482,8 +609,53 @@ class TestSubagentStop(CaptureTestCase):
         ])
         written = capture.capture_session(
             str(main_t), "sessSUBAG01", root=root, agent_transcript_path=str(agent_t))
+        self.assertEqual(written, [])
+        self.assertFalse(memlog.has_log(root))
+
+    def test_agent_transcript_is_used_instead_of_the_main_one_when_opted_in(self):
+        root = self.tmp / "wiki"
+        root.mkdir()
+        main_t = self.write("main.jsonl", [msg("user", "main session brief")])
+        agent_t = self.write("agent.jsonl", [
+            msg("user", "sub-agent brief - delegate task"),
+            msg("user", "always validate inputs before writing to the database"),
+            msg("assistant", REPORT_NONE),
+        ])
+        written = capture.capture_session(
+            str(main_t), "sessSUBAG02", root=root, agent_transcript_path=str(agent_t),
+            capture_subagents=True)
         self.assertTrue(written)
         self.assertTrue(all(r.source.startswith("capture:subagent") for r in written))
+
+    def test_cli_capture_subagents_flag_opts_in(self):
+        root = self.tmp / "wiki"
+        root.mkdir()
+        agent_t = self.write("agent.jsonl", [msg("user", "brief"), msg("assistant", REPORT_NONE)])
+        payload = json.dumps({"transcript_path": "", "session_id": "sessSUBAGCLI",
+                              "agent_transcript_path": str(agent_t)})
+        old_stdin = sys.stdin
+        sys.stdin = io.StringIO(payload)
+        try:
+            with self.assertRaises(SystemExit):
+                capture.main(["--root", str(root), "--capture-subagents"])
+        finally:
+            sys.stdin = old_stdin
+        self.assertTrue(memlog.has_log(root))
+
+    def test_cli_default_skips_subagent_report(self):
+        root = self.tmp / "wiki"
+        root.mkdir()
+        agent_t = self.write("agent.jsonl", [msg("user", "brief"), msg("assistant", REPORT_NONE)])
+        payload = json.dumps({"transcript_path": "", "session_id": "sessSUBAGCLI2",
+                              "agent_transcript_path": str(agent_t)})
+        old_stdin = sys.stdin
+        sys.stdin = io.StringIO(payload)
+        try:
+            with self.assertRaises(SystemExit):
+                capture.main(["--root", str(root)])
+        finally:
+            sys.stdin = old_stdin
+        self.assertFalse(memlog.has_log(root))
 
     def test_last_assistant_message_override_skips_transcript_scan(self):
         root = self.tmp / "wiki"

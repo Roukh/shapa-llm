@@ -39,7 +39,9 @@ Rules (schema v2, spec §6 - all warnings this release):
   F05  scope present, one of: global, repo (see note below)
   F06  scope matches the file's physical bucket (global_root() vs. not)
   F07  body length over the type's target (>300 words memory/rule/issue,
-       >2000 words reference) - never flags being short, only being long
+       >2000 words reference) - never flags being short, only being long;
+       never fires at all for the append-only/ever-growing convention
+       files ``ideas.md``/``checklist.md`` (:data:`F07_EXEMPT_STEMS`)
   F08  supersedes names an id that does not exist (checked only when the
        caller supplies the set of known ids - see ``known_ids=``)
   S04  status is one of: active, superseded, draft
@@ -73,7 +75,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from shapa import config, frontmatter
-from shapa.nodes import STRUCTURAL_IDS, is_excluded_path, load_nodes
+from shapa.nodes import CONVENTION_IDS, STRUCTURAL_IDS, is_excluded_path, load_nodes
 from shapa.score import LOCUS_WEIGHTS
 
 VALID_TYPES = {"memory", "rule", "issue", "reference"}
@@ -87,6 +89,16 @@ VALID_STATUSES = {"active", "superseded", "draft"}
 #: §4: "Past 300 words: warning F07" / "Past 2000 words: F07").
 F07_WORD_CEILING = {"reference": 2000}
 F07_DEFAULT_CEILING = 300
+#: Append-only / ever-growing convention files - ``ideas.md`` (a dated log)
+#: and ``checklist.md`` (a running ``- [ ] item`` list) - whose body is
+#: EXPECTED to pass the ordinary word ceiling by design, growing for as
+#: long as the wiki is in use. F07 never flags them by id/filename stem
+#: (the same "recurs by construction, not a defect" treatment F09 gives
+#: the convention ids - see :data:`shapa.nodes.CONVENTION_IDS`); ``agenda``
+#: is not included here, since F11 already caps it at 3 items and a
+#: schema doc (``AGENTS``/``placement``) is a :data:`MANAGED_DOCS` file,
+#: skipped before any note-validation runs at all.
+F07_EXEMPT_STEMS = {"ideas", "checklist"}
 
 # ---------------------------------------------------------------------------
 # Lean wiki shape (spec §10 decision 6) - F10/F11. Limits are config values,
@@ -250,7 +262,7 @@ def validate_frontmatter(
         if scope_text != actual:
             v.append(Violation("F06", 0, f"scope '{scope_text}' does not match physical bucket '{actual}'", severity="warning"))
 
-    if str(body).strip():
+    if str(body).strip() and stem not in F07_EXEMPT_STEMS:
         ceiling = F07_WORD_CEILING.get(node_type, F07_DEFAULT_CEILING)
         wc = _word_count(body)
         if wc > ceiling:
@@ -306,7 +318,7 @@ def check_cross_root_duplicates(roots) -> list[Violation]:
     a silent keep-higher-scored pick is exactly the ambiguity this guards
     against). Reports every colliding id once, naming every root kind it
     was found in. :data:`shapa.nodes.STRUCTURAL_IDS` - the per-wiki
-    convention files (AGENTS, placement, agenda, ideas) and the ``arch/``
+    convention files (AGENTS, placement, agenda, ideas, checklist) and the ``arch/``
     templates, which every wiki has one of by construction, not by
     coincidence - are never flagged."""
     by_id: dict[str, list[str]] = {}
@@ -374,7 +386,12 @@ def check_lean_shape(
     Counts are taken from :func:`shapa.nodes.load_nodes`, which already
     excludes ``archive/``/``attic/``/``.obsidian`` (GAP A) - those buckets
     never count toward any of these limits, by construction, not by a
-    separate check here.
+    separate check here. The per-wiki convention files
+    (:data:`shapa.nodes.CONVENTION_IDS`: ``agenda``/``ideas``/``checklist``)
+    are excluded from the live-root-note count too - every wiki carries
+    one of each by construction, so they are not the "note count creeping
+    up" this cap exists to catch, the same way a ``type: reference`` doc
+    at the root already isn't.
     """
     root = Path(root)
     if not root.is_dir():
@@ -384,6 +401,7 @@ def check_lean_shape(
     root_notes = [
         n for n in nodes.values()
         if len(n.path.relative_to(root).parts) == 1 and n.type in LIVE_ROOT_TYPES
+        and n.id not in CONVENTION_IDS
     ]
     arch_notes = [n for n in nodes.values() if n.in_arch]
 

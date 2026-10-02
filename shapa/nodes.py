@@ -37,9 +37,11 @@ EXCLUDED_DIRNAMES = frozenset({"archive", "attic", ".obsidian"})
 
 #: Per-wiki convention files: every wiki carries its own copy by design - the
 #: schema docs shapa ships and refreshes (``AGENTS.md``, ``placement.md``)
-#: and the two files the lean shape keeps at every root (``agenda.md``, the
-#: top 3 fires; ``ideas.md``, the append-only log).
-CONVENTION_IDS = frozenset({"AGENTS", "placement", "agenda", "ideas"})
+#: and the files the lean shape keeps at every root (``agenda.md``, the
+#: top 3 fires; ``ideas.md``, the append-only log; ``checklist.md``, the
+#: running work-item list - a separate repo's hook convention, one per wiki
+#: by the same construction).
+CONVENTION_IDS = frozenset({"AGENTS", "placement", "agenda", "ideas", "checklist"})
 #: Ids expected to recur, once per wiki, across every root in scope: the
 #: convention files plus the ``arch/`` templates ``shapa init`` installs.
 #: That recurrence is construction, not the cross-root ambiguity (F09) that
