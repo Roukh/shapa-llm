@@ -22,7 +22,7 @@ Never tick a box by hand.
 
 - [x] **SL1** Capture drops junk: subagent reports by default, filler and split ledger fragments, progress chatter, pasted content; report text is never a preference; "all sessions" preferences route global — verify: `.venv/bin/python -m pytest -q tests/test_capture.py` — done 2026-10-02 9b195457
 - [x] **SL2** Full suite green, socket and installer tests included (the hook runs it outside the sandbox) — verify: `.venv/bin/python -m pytest -q` — done 2026-10-02 9b195457
-- [ ] **SL3** The live CLI carries the fix (operator: `uv tool install --force` from this checkout, then `shapa upgrade --all`) — verify: `diff -q shapa/capture.py /home/roukh/.local/share/uv/tools/shapa/lib/python3.12/site-packages/shapa/capture.py && diff -q shapa/validate.py /home/roukh/.local/share/uv/tools/shapa/lib/python3.12/site-packages/shapa/validate.py`
+- [x] **SL3** The live CLI carries the fix (operator: `uv tool install --force` from this checkout, then `shapa upgrade --all`) — verify: `diff -q shapa/capture.py /home/roukh/.local/share/uv/tools/shapa/lib/python3.12/site-packages/shapa/capture.py && diff -q shapa/validate.py /home/roukh/.local/share/uv/tools/shapa/lib/python3.12/site-packages/shapa/validate.py` — done 2026-10-02 9b195457
 
 ## [[agenda]] · fires
 
