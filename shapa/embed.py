@@ -53,6 +53,23 @@ def embed_one(text: str) -> list[float]:
     return _MODEL.encode([text])[0].tolist()  # type: ignore
 
 
+def model_name() -> str:
+    """The embedding model's name - the stamp every vector cache carries so
+    a backend change never mixes vector spaces."""
+    return _MODEL_NAME
+
+
+def embed_many(texts: list[str]):
+    """Embed several strings in one batch (normalized) as a float32 numpy
+    array of shape ``(len(texts), dim)``. Requires available() - which also
+    guarantees numpy, since model2vec depends on it."""
+    import numpy as np
+
+    if not texts:
+        return np.zeros((0, 0), dtype=np.float32)
+    return np.asarray(_MODEL.encode(list(texts)), dtype=np.float32)  # type: ignore
+
+
 def cosine(a: list[float], b: list[float]) -> float:
     """Cosine similarity of two normalized vectors.
 
