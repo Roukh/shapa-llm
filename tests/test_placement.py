@@ -5,6 +5,7 @@ contract.
 """
 
 import io
+import json
 import os
 import shutil
 import sys
@@ -13,7 +14,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from shapa import capture, cli, config, save
+from shapa import capture, cli, config, memlog, save
 from shapa.frontmatter import parse as parse_frontmatter
 
 
@@ -319,37 +320,53 @@ class TestSaveCLI(IsolatedTestCase):
 # ---------------------------------------------------------------------------
 
 class TestCaptureScope(IsolatedTestCase):
+    """capture.py --root/--scope (manual overrides): bypass per-record
+    routing entirely and send every v3 record to one explicit target - the
+    Stop-hook's own scope-aware write path, which must never block
+    regardless of what scope resolves to."""
+
     def setUp(self):
         super().setUp()
         self.global_wiki = self.tmp / "global"
-        config.set_memory_dir(self.global_wiki)
+        # IsolatedTestCase already gives this test its own patched environ
+        # and clears the override var; set it here so every call this class
+        # makes resolves the global wiki to a throwaway tmp dir.
+        os.environ[config.ENV_VAR] = str(self.global_wiki)
         self.transcript = self.tmp / "t.jsonl"
-        import json
         self.transcript.write_text(
             json.dumps({"message": {"role": "user", "content": [
-                {"type": "text", "text": "a session about nothing in particular"}]}}) + "\n",
+                {"type": "text", "text": "the raw task brief - never stored"}]}}) + "\n" +
+            json.dumps({"message": {"role": "assistant", "content": [{"type": "text", "text": (
+                "Did something worth remembering in this session today for real.\n\n"
+                "Files: a/b.py and c/d.py; architecture is unchanged otherwise here.\n\n"
+                "Open decisions: none."
+            )}]}}) + "\n",
             encoding="utf-8",
         )
 
+    def _records(self, root) -> list:
+        return list(memlog.read_log(root).records.values())
+
     def test_default_scope_matches_pre_existing_inference(self):
-        # No --scope, no --applies-to, no explicit --root: behaves exactly
-        # like the pre-Slice-7 unflagged path (config.resolve()).
+        # No --scope, no --applies-to, no explicit --root: automatic
+        # per-record routing - no git repo at all -> everything global.
         plain = self.tmp / "plain"
         plain.mkdir()
         with mock.patch.object(config.Path, "cwd", staticmethod(lambda: plain)):
-            path = capture.capture_session(str(self.transcript), "sessAAAAAA")
-        self.assertIsNotNone(path)
-        self.assertEqual(path.parent, self.global_wiki.resolve())
+            written = capture.capture_session(str(self.transcript), "sessAAAAAA")
+        self.assertTrue(written)
+        self.assertEqual(self._records(self.global_wiki), written)
 
     def test_explicit_global_scope_overrides_a_discoverable_repo_wiki(self):
         repo = _make_git_repo(self.tmp / "repo")
-        _make_wiki(repo)
+        wiki = _make_wiki(repo)
         with mock.patch.object(config.Path, "cwd", staticmethod(lambda: repo)):
-            path = capture.capture_session(
+            written = capture.capture_session(
                 str(self.transcript), "sessBBBBBB", scope="global",
             )
-        self.assertIsNotNone(path)
-        self.assertEqual(path.parent, self.global_wiki.resolve())
+        self.assertTrue(written)
+        self.assertEqual(self._records(self.global_wiki), written)
+        self.assertFalse(memlog.has_log(wiki))
 
     def test_external_scope_with_resolvable_repo_writes_there(self):
         workspace = self.tmp / "workspace"
@@ -357,26 +374,27 @@ class TestCaptureScope(IsolatedTestCase):
         other_repo = _make_git_repo(workspace / "other-repo")
         _make_wiki(other_repo)
         with mock.patch.object(config.Path, "cwd", staticmethod(lambda: this_repo)):
-            path = capture.capture_session(
+            written = capture.capture_session(
                 str(self.transcript), "sessCCCCCC",
                 scope="external", applies_to="other-repo",
             )
-        self.assertIsNotNone(path)
-        self.assertEqual(path.parent, (other_repo / ".shapa").resolve())
+        self.assertTrue(written)
+        self.assertEqual(self._records(other_repo / ".shapa"), written)
+        self.assertTrue(all(r.scope == "repo" for r in written))
 
     def test_unresolvable_external_scope_never_blocks_falls_back_instead(self):
         this_repo = _make_git_repo(self.tmp / "this-repo")
         # No --applies-to at all, and no matching repo either - must not
-        # raise, must still write somewhere sane (never blocks).
+        # raise, must still write somewhere sane (never blocks): this_repo
+        # has no wiki of its own, so it falls back to the global wiki.
         with mock.patch.object(config.Path, "cwd", staticmethod(lambda: this_repo)):
-            path = capture.capture_session(
+            written = capture.capture_session(
                 str(self.transcript), "sessDDDDDD", scope="external",
             )
-        self.assertIsNotNone(path)
-        self.assertTrue(path.exists())
+        self.assertTrue(written)
+        self.assertEqual(self._records(self.global_wiki), written)
 
     def test_hook_main_never_blocks_on_a_bad_scope_combination(self):
-        import json
         plain = self.tmp / "plain-cwd"
         plain.mkdir()
         payload = json.dumps({"transcript_path": str(self.transcript), "session_id": "sessEEEEEE"})
@@ -389,12 +407,12 @@ class TestCaptureScope(IsolatedTestCase):
         finally:
             sys.stdin = old_stdin
         self.assertEqual(exc.exception.code, 0)
-        # Never blocked, and still wrote the note (fell back to global).
-        self.assertEqual(len(list(self.global_wiki.glob("memory-session-*.md"))), 1)
+        # Never blocked, and still wrote the record (fell back to global).
+        self.assertTrue(self._records(self.global_wiki))
 
     def test_hook_main_never_blocks_even_if_capture_session_raises(self):
         old_stdin = sys.stdin
-        sys.stdin = io.StringIO('{"transcript_path": "nonexistent.jsonl", "session_id": "x"}')
+        sys.stdin = io.StringIO("{\"transcript_path\": \"nonexistent.jsonl\", \"session_id\": \"x\"}")
         try:
             with mock.patch.object(capture, "capture_session", side_effect=RuntimeError("boom")):
                 with self.assertRaises(SystemExit) as exc:
