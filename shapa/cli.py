@@ -22,7 +22,7 @@ from shapa import __version__, config, registry
 
 _SUBMODULES = (
     "bootstrap", "fetch", "capture", "save", "maintain", "heartbeat", "score",
-    "validate", "serve", "mcp", "upgrade",
+    "validate", "serve", "mcp", "upgrade", "get", "status",
 )
 
 #: Docs shipped with the tool and installed into a wiki by ``shapa init``:
@@ -55,8 +55,17 @@ commands:
   where          print the memory directory path
   bootstrap      session-start metadata-only overview of every wiki in
                  scope (SessionStart hook; id/type/summary only, no bodies)
-  fetch          surface relevant memory for a prompt (read path)
-  capture        distil a finished session into a note (write path)
+  fetch          surface relevant memory for a prompt (read path): md notes
+                 and v3 memory records in one fused ranking, one summary
+                 line per item
+  get ID         the full text behind an id fetch/bootstrap surfaced (a
+                 note, or a memory record m-...)
+  status         the live recall mode (fused vectors+BM25, or bm25-only
+                 without the [semantic] extra) and every wiki in scope
+  doctor         status, exiting 1 when a wiki needs a hand (format behind,
+                 malformed memory-log lines)
+  capture        extract atomic memories from a finished session into the
+                 wiki's memory log (Stop/SubagentStop hook, write path)
   save           write one note explicitly (--scope global|repo|external,
                  --applies-to REPO for external; see shapa/assets/placement.md)
   maintain       self-heal: auto-merge dupes, prune orphans/stale
@@ -264,6 +273,9 @@ def main(argv: list[str] | None = None) -> None:
         return
     if cmd == "where":
         print(config.memory_dir())
+        return
+    if cmd == "doctor":
+        importlib.import_module("shapa.status").doctor_main(rest)
         return
     if cmd in _SUBMODULES:
         importlib.import_module(f"shapa.{cmd}").main(rest)

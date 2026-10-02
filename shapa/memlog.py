@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import sqlite3
@@ -89,6 +90,13 @@ KIND_CONSEQUENCE = {"preference": 6, "gotcha": 6, "decision": 5, "open_question"
 KIND_LOCUS = {"preference": "output-meta", "gotcha": "output-meta"}
 
 _WS_RE = re.compile(r"\s+")
+#: Python mirror of FTS5's ``unicode61`` tokenizer (alphanumeric runs,
+#: case-folded) - used to score md notes and memory records on ONE BM25
+#: scale (:func:`bm25_union`).
+_UNICODE61_RE = re.compile(r"[^\W_]+", re.UNICODE)
+#: FTS5's own bm25() constants.
+FTS_K1 = 1.2
+FTS_B = 0.75
 _TAG_RE = re.compile(r"(?:#\d+)|(?:[A-Za-z0-9_.-]+/[A-Za-z0-9_./-]*[A-Za-z0-9_])|(?:\b[0-9a-f]{7,40}\b)")
 _FTS_TOKEN_RE = re.compile(r"[a-z0-9]{2,}")
 
@@ -482,6 +490,7 @@ _SCHEMA = (
         created TEXT, session TEXT, repo TEXT, scope TEXT, kind TEXT,
         summary TEXT NOT NULL, body TEXT NOT NULL, tags TEXT NOT NULL DEFAULT '',
         source TEXT, supersedes TEXT, hash TEXT NOT NULL,
+        ntok INTEGER NOT NULL DEFAULT 0,
         active INTEGER NOT NULL DEFAULT 1)""",
     "CREATE INDEX IF NOT EXISTS memories_hash_idx ON memories(hash)",
     """CREATE TABLE IF NOT EXISTS memory_ops (
@@ -499,6 +508,8 @@ _SCHEMA = (
 _SCHEMA_FTS = ("CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5("
                "summary, body, tags, content='memories', content_rowid='rowid', "
                "tokenize='unicode61')")
+_SCHEMA_VOCAB = ("CREATE VIRTUAL TABLE IF NOT EXISTS memories_vocab USING "
+                 "fts5vocab(memories_fts, 'row')")
 
 
 def ensure_schema(conn: sqlite3.Connection) -> None:
@@ -507,6 +518,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     if store.fts5_available():
         try:
             conn.execute(_SCHEMA_FTS)
+            conn.execute(_SCHEMA_VOCAB)
         except sqlite3.OperationalError:
             pass
     conn.commit()
@@ -553,12 +565,13 @@ def _insert_items(conn: sqlite3.Connection, items, has_fts: bool) -> tuple[int, 
             conn.execute("INSERT OR IGNORE INTO memory_ops(target, created, reason) VALUES (?,?,?)",
                          (item.target, item.created, item.reason))
         else:
+            tags = " ".join(item.tags)
             cur = conn.execute(
                 "INSERT OR IGNORE INTO memories(id, created, session, repo, scope, kind, summary, "
-                "body, tags, source, supersedes, hash) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                "body, tags, source, supersedes, hash, ntok) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (item.id, item.created, item.session, item.repo, item.scope, item.kind,
-                 item.summary, item.body, " ".join(item.tags), item.source, item.supersedes,
-                 item.hash))
+                 item.summary, item.body, tags, item.source, item.supersedes, item.hash,
+                 len(unicode61_tokens(f"{item.summary} {item.body} {tags}"))))
             if cur.rowcount:
                 added += 1
                 if has_fts:
@@ -617,7 +630,7 @@ def sync(root, conn: sqlite3.Connection, *, embed_vectors: bool = False) -> Sync
             st = p.stat()
         except OSError:
             continue
-        on_disk[str(p)] = (st.st_mtime_ns, st.st_size)
+        on_disk[p.relative_to(root).as_posix()] = (st.st_mtime_ns, st.st_size)
 
     rebuild = bool(set(known) - set(on_disk))
     tails: list[tuple[str, bytes, int]] = []  # (path, new bytes, new consumed)
@@ -628,7 +641,7 @@ def sync(root, conn: sqlite3.Connection, *, embed_vectors: bool = False) -> Sync
             if prev is not None and prev[0] == mtime and prev[1] == size:
                 continue
             try:
-                data = Path(path).read_bytes()
+                data = (root / path).read_bytes()
             except OSError:
                 continue
             if prev is not None:
@@ -651,7 +664,7 @@ def sync(root, conn: sqlite3.Connection, *, embed_vectors: bool = False) -> Sync
             conn.execute("INSERT INTO memories_fts(memories_fts) VALUES ('delete-all')")
         for path, (mtime, size) in on_disk.items():
             try:
-                data = Path(path).read_bytes()
+                data = (root / path).read_bytes()
             except OSError:
                 continue
             end = _complete_prefix(data)
@@ -718,7 +731,7 @@ def _fresh(conn: sqlite3.Connection, root: Path) -> bool:
             st = p.stat()
         except OSError:
             continue
-        disk[str(p)] = (st.st_mtime_ns, st.st_size)
+        disk[p.relative_to(root).as_posix()] = (st.st_mtime_ns, st.st_size)
     return known == disk
 
 
@@ -792,9 +805,77 @@ def lexical_backend() -> str:
     return "fts5-unicode61" if store.fts5_available() else "bm25-python"
 
 
+def fts_terms(query: str) -> list[str]:
+    """The query terms the lexical channel matches on (FTS5 phrase-safe)."""
+    return sorted(set(_FTS_TOKEN_RE.findall(query.lower())))
+
+
 def fts_query(query: str) -> str | None:
-    toks = sorted(set(_FTS_TOKEN_RE.findall(query.lower())))
+    toks = fts_terms(query)
     return " OR ".join(f'"{t}"' for t in toks) if toks else None
+
+
+def unicode61_tokens(text: str) -> list[str]:
+    return [t.lower() for t in _UNICODE61_RE.findall(text or "")]
+
+
+def term_stats(text: str, terms) -> tuple[dict[str, int], int]:
+    """``({term: tf}, doc length)`` of *text* under the unicode61 mirror,
+    for the query *terms* only."""
+    toks = unicode61_tokens(text)
+    wanted = set(terms)
+    tf: dict[str, int] = {}
+    for t in toks:
+        if t in wanted:
+            tf[t] = tf.get(t, 0) + 1
+    return tf, len(toks)
+
+
+def corpus_stats(conn: sqlite3.Connection, terms) -> dict:
+    """The memory corpus' share of BM25's global statistics: row count,
+    total tokens, and per-term document frequency (from the FTS5 vocab
+    table; a Python pass when FTS5 is unavailable). Every indexed row
+    counts, live or not - the same population FTS5's own bm25() uses."""
+    terms = sorted(set(terms))
+    n, tokens = conn.execute("SELECT count(*), coalesce(sum(ntok), 0) FROM memories").fetchone()
+    df: dict[str, int] = {}
+    if terms and _has_table_or_vtab(conn, "memories_vocab"):
+        try:
+            df = {r[0]: int(r[1]) for r in conn.execute(
+                f"SELECT term, doc FROM memories_vocab WHERE term IN ({','.join('?' * len(terms))})",
+                terms)}
+        except sqlite3.Error:
+            df = {}
+    elif terms:
+        wanted = set(terms)
+        for summary, body, tags in conn.execute("SELECT summary, body, tags FROM memories"):
+            for t in wanted & set(unicode61_tokens(f"{summary} {body} {tags}")):
+                df[t] = df.get(t, 0) + 1
+    return {"n": int(n), "tokens": int(tokens), "df": df}
+
+
+def bm25_union(terms, docs: dict[str, tuple[dict[str, int], int]], n_docs: int,
+               avgdl: float, df: dict[str, int]) -> dict[str, float]:
+    """FTS5's bm25() formula (k1=1.2, b=0.75, idf clamped at 1e-6) over
+    *docs* (``{id: ({term: tf}, length)}``) with caller-supplied corpus
+    statistics - so md notes and memory records drawn from different
+    stores land on one scale, as if they shared one index."""
+    out: dict[str, float] = {}
+    if n_docs <= 0 or avgdl <= 0:
+        return out
+    idf = {}
+    for t in set(terms):
+        n = df.get(t, 0)
+        val = math.log((n_docs - n + 0.5) / (n + 0.5))
+        idf[t] = val if val > 0 else 1e-6
+    for did, (tf, dl) in docs.items():
+        s = 0.0
+        for t, f in tf.items():
+            if t in idf and f:
+                s += idf[t] * f * (FTS_K1 + 1) / (f + FTS_K1 * (1 - FTS_B + FTS_B * dl / avgdl))
+        if s > 0:
+            out[did] = s
+    return out
 
 
 def _row_record(row) -> Record:
@@ -850,11 +931,42 @@ def cache_key(conn: sqlite3.Connection, db_file) -> tuple | None:
     index file's identity plus its sync generation and row count. ``None``
     for an in-memory index (never cached - its content is per call)."""
     try:
+        main_file = next((row[2] for row in conn.execute("PRAGMA database_list")
+                          if row[1] == "main"), "")
+        if not main_file:
+            return None  # in-memory: rebuilt per call, never cached
         st = Path(db_file).stat()
         n, top = conn.execute("SELECT count(*), max(rowid) FROM memories").fetchone()
     except (OSError, sqlite3.Error, TypeError):
         return None
     return (str(db_file), st.st_ino, generation(conn), n, top)
+
+
+def known_terms(conn: sqlite3.Connection, terms) -> set[str]:
+    """The subset of *terms* that occur anywhere in the memory corpus (live
+    or not) - a cheap out-of-vocabulary signal for no-answer detection."""
+    terms = sorted({t for t in terms if t})
+    if not terms:
+        return set()
+    if _has_table_or_vtab(conn, "memories_vocab"):
+        try:
+            rows = conn.execute(
+                f"SELECT term FROM memories_vocab WHERE term IN ({','.join('?' * len(terms))})",
+                terms).fetchall()
+            return {r[0] for r in rows}
+        except sqlite3.Error:
+            pass
+    vocab: set[str] = set()
+    for rec in active_records(conn).values():
+        vocab.update(words(f"{rec.summary} {rec.body} {' '.join(rec.tags)}"))
+    return {t for t in terms if t in vocab}
+
+
+def _has_table_or_vtab(conn: sqlite3.Connection, name: str) -> bool:
+    try:
+        return conn.execute("SELECT 1 FROM sqlite_master WHERE name=?", (name,)).fetchone() is not None
+    except sqlite3.Error:
+        return False
 
 
 def _matrix(conn: sqlite3.Connection, key):

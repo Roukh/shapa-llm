@@ -357,7 +357,7 @@ class TestConfidenceFloorNoPaddedFiller(FetchMultirootTestCase):
     def test_off_topic_query_marker_in_context_block(self):
         repo = self._two_root_fixture()
         block = fetch.fetch_context("xylophone kumquat zephyr", start=repo, record=False)
-        self.assertIn("<!-- no query-relevant notes found -->", block)
+        self.assertIn(fetch.NO_MATCH_LINE, block)
         self.assertIn("r-meta", block)
         self.assertNotIn("g-meta", block)
         self.assertNotIn("g-topic", block)

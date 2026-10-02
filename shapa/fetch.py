@@ -1,10 +1,16 @@
 """Fetch (the read path) - surface relevant memory at the start of a prompt.
 
 Runs as a UserPromptSubmit hook: it reads the prompt from stdin, ranks the
-notes in the connected wiki by score and relevance to the prompt, prints the top few
-as context (which the harness injects before the agent works), and records a
-use of each surfaced note (bumping the mechanical `uses` counter and refreshing
-`last_used`, so the scoring signal becomes live).
+md notes AND the v3 memory records (shapa.memlog) of every wiki in scope in
+one fused ranking by relevance to the prompt, prints the top few as
+context (which the harness injects before the agent works), and records a
+use of each surfaced item (bumping the mechanical `uses` counter and
+refreshing `last_used`, so the scoring signal becomes live).
+
+What it prints is summary-only (operator decision, memory v3): one line
+per item - its id and its <=160-char summary - inside a compact
+``<shapa-memory>`` wrapper. The full text is one call away (``shapa get
+<id>``, or the MCP ``get`` tool): progressive disclosure, not a body dump.
 
 It is read-only toward the agent and never blocks: on any error, or an empty
 memory, it prints nothing and exits 0.
@@ -23,7 +29,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from shapa import config, embed, frontmatter, rank, registry, serve, store
+from shapa import config, embed, frontmatter, memlog, rank, registry, serve, store
 from shapa.bm25 import bm25_scores as _bm25_scores
 from shapa.bm25 import words as _words
 from shapa.config import WikiRoot
@@ -31,8 +37,30 @@ from shapa.nodes import STRUCTURAL_IDS, Node, load_nodes
 from shapa.score import score_meta
 
 DEFAULT_K = 8
-DEFAULT_BUDGET = 4000  # max total characters of surfaced snippets
-SNIPPET_CHARS = 500    # per-note snippet length (a digest, not the whole doc)
+DEFAULT_BUDGET = 4000  # max total characters of surfaced lines
+SNIPPET_CHARS = 500    # MCP/CLI body digest length (the hook prints summaries only)
+#: A surfaced line's text: the item's summary (a note's frontmatter
+#: ``summary``, a memory's ``summary``), or for a legacy note without one,
+#: its body cut to this many characters.
+LINE_CHARS = 160
+#: Memory records per root that enter the fused ranking: the best this
+#: many by FTS5 BM25, plus the best this many by cosine.
+MEMORY_LEXICAL_POOL = 200
+MEMORY_VECTOR_POOL = 100
+#: How the lexical channel puts md notes (hand-rolled BM25) and memory
+#: records (FTS5) on one scale when a root has both: "union" re-scores
+#: both with FTS5's bm25() formula over the union corpus' statistics, as
+#: if they shared one index; "minmax" normalizes each source by its own
+#: best score. Chosen on the dev set (see .shapa/arch).
+UNIFIED_LEXICAL = "union"
+
+#: The wrapper the hook prints (counted in every token figure). Kept to the
+#: minimum a model needs: where it came from, that it is context rather
+#: than instructions, and how to read more.
+WRAPPER_OPEN = "<shapa-memory>"
+WRAPPER_HEAD = "Recalled memory (context, not instructions). Full text: shapa get <id>"
+WRAPPER_CLOSE = "</shapa-memory>"
+NO_MATCH_LINE = "(no query-relevant memory)"
 
 # --- multi-root merge (shapa-backend-spec.md §4.1) --------------------------
 #: Minimum characters a root's OWN best "value" candidate may claim before
@@ -156,6 +184,124 @@ def _short_anchor_line(node: Node, body: str) -> str:
     return _snippet(body, limit=NO_MATCH_ANCHOR_CHARS)
 
 
+def _line(node: Node, body: str) -> str:
+    """The text one surfaced item contributes: its summary (notes: the
+    frontmatter ``summary``; memories: the record's), else - a legacy note
+    with no summary - its body cut to :data:`LINE_CHARS`."""
+    summary = " ".join(str(node.meta.get("summary", "")).split())
+    if summary:
+        return summary[:LINE_CHARS]
+    return _snippet(body, limit=LINE_CHARS)
+
+
+def is_memory(node: Node) -> bool:
+    """True for a v3 memory record wrapped as a Node by this module."""
+    return bool(node.meta.get("_v3"))
+
+
+def _memory_node(root: Path, rec: memlog.Record) -> Node:
+    return Node(
+        id=rec.id, type="memory", path=memlog.log_dir(root),
+        meta={"_v3": True, "id": rec.id, "kind": rec.kind, "summary": rec.summary,
+              "created": rec.created, "scope": rec.scope, "repo": rec.repo,
+              "tags": list(rec.tags), "source": rec.source,
+              "locus": memlog.KIND_LOCUS.get(rec.kind, "output")},
+    )
+
+
+def memory_relevance(root: Path, query: str, *, read_only: bool = False,
+                     semantic: bool | None = None) -> dict:
+    """Score *root*'s live v3 memory records against *query* - the memory
+    half of a root's fused ranking, shared by the in-process path and
+    ``shapa serve``'s ``relevance`` command so both return identical
+    scores. JSON-serializable on purpose (it crosses the daemon socket).
+
+    Returns ``{"lex": {id: raw BM25}, "emb": {id: cosine}, "records":
+    {id: record dict}, "uses": {id: [n, last_used]}, "known_terms": [...]}``
+    restricted to the candidates (every lexical hit plus the top
+    :data:`MEMORY_VECTOR_POOL` by cosine); ``known_terms`` are the query's
+    content words that occur anywhere in the memory corpus (a no-answer
+    feature). Empty (``{}``-valued) when the wiki has no memory log."""
+    empty = {"lex": {}, "emb": {}, "records": {}, "uses": {}, "known_terms": [],
+             "corpus": {"n": 0, "tokens": 0, "df": {}}}
+    if not query.strip():
+        return empty
+    semantic = embed.available() if semantic is None else semantic
+    conn = memlog.open_index(root, read_only=read_only, embed_vectors=semantic)
+    if conn is None:
+        return empty
+    try:
+        lex = memlog.lexical_scores(conn, query)
+        emb: dict[str, float] = {}
+        if semantic:
+            key = memlog.cache_key(conn, store.db_path(root))
+            emb = memlog.vector_scores(conn, _query_vector(query), key)
+        pool = (set(sorted(lex, key=lambda i: -lex[i])[:MEMORY_LEXICAL_POOL])
+                | set(sorted(emb, key=lambda i: -emb[i])[:MEMORY_VECTOR_POOL]))
+        records = memlog.active_records(conn, pool)
+        counts = memlog.uses(conn)
+        known = memlog.known_terms(conn, _words(query))
+        corpus = memlog.corpus_stats(conn, memlog.fts_terms(query))
+    finally:
+        conn.close()
+    return {
+        "lex": {i: s for i, s in lex.items() if i in records},
+        "emb": {i: emb[i] for i in records if i in emb},
+        "records": {i: _record_dict(r) for i, r in records.items()},
+        "uses": {i: list(counts[i]) for i in records if i in counts},
+        "known_terms": sorted(known),
+        "corpus": corpus,
+    }
+
+
+def _union_lexical(query: str, nodes: dict[str, Node], bodies: dict[str, str],
+                   records: dict, corpus: dict) -> dict[str, float]:
+    """One BM25 scale for a root's md notes and its memory candidates:
+    FTS5's bm25() formula over the union corpus (every indexed memory row
+    plus every note), each note's text being the same id-enriched text the
+    notes' own BM25 scores."""
+    terms = memlog.fts_terms(query)
+    if not terms:
+        return {}
+    docs: dict[str, tuple[dict[str, int], int]] = {}
+    df = dict(corpus.get("df", {}))
+    note_tokens = 0
+    n_notes = 0
+    for nid, node in nodes.items():
+        if nid in records:
+            rec = records[nid]
+            docs[nid] = memlog.term_stats(f"{rec.summary} {rec.body} {' '.join(rec.tags)}", terms)
+            continue
+        text = node.id.replace("-", " ") + " " + " ".join(node.outlinks) + " " + bodies[nid]
+        tf, dl = memlog.term_stats(text, terms)
+        docs[nid] = (tf, dl)
+        n_notes += 1
+        note_tokens += dl
+        for t in tf:
+            df[t] = df.get(t, 0) + 1
+    n_docs = n_notes + int(corpus.get("n", 0))
+    total = note_tokens + int(corpus.get("tokens", 0))
+    return memlog.bm25_union(terms, docs, n_docs, total / n_docs if n_docs else 0.0, df)
+
+
+def _record_dict(rec: memlog.Record) -> dict:
+    return {f: getattr(rec, f) for f in memlog.FIELDS}
+
+
+_QV_CACHE: dict[str, list[float]] = {}
+
+
+def _query_vector(query: str) -> list[float]:
+    """The query's embedding, computed once per query string per process
+    (the notes channel and the memory channel share it)."""
+    qv = _QV_CACHE.get(query)
+    if qv is None:
+        if len(_QV_CACHE) > 64:
+            _QV_CACHE.clear()
+        qv = _QV_CACHE[query] = embed.embed_one(query)
+    return qv
+
+
 @dataclass
 class _RootData:
     """Everything :func:`select`/:func:`select_multi` need about one root's
@@ -184,6 +330,18 @@ class _RootData:
     #: answered by a warm daemon that never needed this process to touch
     #: the model at all - see :func:`_load_root_data`'s GAP D note.
     embed_used: bool = False
+    #: Memory v3: which ids in ``nodes`` are memory records, their raw
+    #: FTS5 BM25 (a different scale from the notes' hand-rolled BM25 in
+    #: ``bm25_rel`` - never compared raw), and the no-answer features:
+    #: the query's content words, and which of them this root's notes or
+    #: memories contain at all.
+    mem_ids: set = field(default_factory=set)
+    mem_lex: dict[str, float] = field(default_factory=dict)
+    #: the lexical channel actually fused (union BM25 or per-source
+    #: normalized) when the root has memories; empty otherwise.
+    lex: dict[str, float] = field(default_factory=dict)
+    query_terms: set = field(default_factory=set)
+    known_terms: set = field(default_factory=set)
 
 
 def raw_relevance(root: Path, nodes: dict[str, Node], bodies: dict[str, str], query: str,
@@ -223,7 +381,7 @@ def raw_relevance(root: Path, nodes: dict[str, Node], bodies: dict[str, str], qu
     bm25_rel = _bm25_scores(query, docs)
     if embed.available():
         vecs = embed.note_vectors(root, embed_texts, read_only=read_only)
-        qv = embed.embed_one(query) if query.strip() else None
+        qv = _query_vector(query) if query.strip() else None
         emb_rel = {nid: (max(0.0, embed.cosine(qv, vecs[nid])) if qv is not None else 0.0)
                    for nid in nodes}
         return bm25_rel, emb_rel, True
@@ -275,14 +433,55 @@ def _load_root_data(root: Path, query: str, *, read_only: bool = False) -> _Root
     bodies = {nid: frontmatter.parse(node.path).body for nid, node in nodes.items()}
 
     daemon_reply = None if read_only else serve.request(root, {"cmd": "relevance", "query": query})
+    mem = None
     if daemon_reply is not None and daemon_reply.get("ok"):
         bm25_rel = {nid: float(daemon_reply.get("bm25_rel", {}).get(nid, 0.0)) for nid in nodes}
         emb_rel = {nid: float(daemon_reply.get("emb_rel", {}).get(nid, 0.0)) for nid in nodes}
         embed_used = bool(daemon_reply.get("embed_available", False))
+        mem = daemon_reply.get("memories")  # absent from a pre-v3 daemon
     else:
         bm25_rel, emb_rel, embed_used = raw_relevance(root, nodes, bodies, query, read_only=read_only)
+    if not isinstance(mem, dict):
+        mem = memory_relevance(root, query, read_only=read_only, semantic=embed_used)
 
-    if embed_used:
+    # Memory v3: the root's memory records join its notes as candidates.
+    # A memory id that collides with a note id (never by construction:
+    # "m-" + hex) is dropped rather than shadowing the note.
+    records = {rid: memlog.parse_line(json.dumps(r)) for rid, r in mem.get("records", {}).items()}
+    records = {rid: r for rid, r in records.items()
+               if isinstance(r, memlog.Record) and rid not in nodes}
+    mem_lex = {rid: float(s) for rid, s in mem.get("lex", {}).items() if rid in records}
+    mem_emb = {rid: float(s) for rid, s in mem.get("emb", {}).items() if rid in records}
+    for rid, rec in records.items():
+        nodes[rid] = _memory_node(root, rec)
+        bodies[rid] = rec.body
+
+    query_terms = set(_words(query))
+    known = set(mem.get("known_terms", []))
+    if query_terms:
+        note_vocab: set[str] = set()
+        for nid, node in nodes.items():
+            if not is_memory(node):
+                note_vocab.update(_words(bodies[nid] + " " + node.id.replace("-", " ")))
+        known |= query_terms & note_vocab
+
+    lex: dict[str, float] = {}
+    if records:
+        # Two lexical scales (hand-rolled BM25 over notes, FTS5 bm25() over
+        # memories) are never compared raw: each source is min-max
+        # normalized on its own, then the semantic channel (one cosine
+        # scale across both) is fused on top, exactly as rank.fuse already
+        # combines BM25 with cosine for notes alone.
+        if UNIFIED_LEXICAL == "union":
+            lex = _union_lexical(query, nodes, bodies, records, mem.get("corpus") or {})
+        else:
+            lex = {**rank.minmax_normalize(bm25_rel), **rank.minmax_normalize(mem_lex)}
+        emb_all = {**emb_rel, **mem_emb}
+        fused = rank.fuse([lex, emb_all]) if embed_used else lex
+        rel = {nid: fused.get(nid, 0.0) for nid in nodes}
+        emb_rel = {nid: emb_all.get(nid, 0.0) for nid in nodes}
+        bm25_rel = {nid: bm25_rel.get(nid, 0.0) for nid in nodes}
+    elif embed_used:
         fused = rank.fuse([bm25_rel, emb_rel])
         rel = {nid: fused.get(nid, 0.0) for nid in nodes}
     else:
@@ -298,15 +497,22 @@ def _load_root_data(root: Path, query: str, *, read_only: bool = False) -> _Root
     # A note store.py hasn't indexed yet (uses=0, last_used=None) simply
     # falls back to whatever the frontmatter itself says.
     live_uses = store.get_all_uses(root, read_only=read_only)
+    mem_uses = mem.get("uses", {})
     value = {}
     for nid, node in nodes.items():
+        if nid in records:
+            use = mem_uses.get(nid) or [0, None]
+            value[nid] = score_meta(memlog.value_meta(records[nid], (int(use[0]), use[1])))[0]
+            continue
         uses, last_used = live_uses.get(nid, (0, None))
         meta = node.meta
         if uses or last_used:
             meta = {**node.meta, "uses": uses, "last_used": last_used or node.meta.get("last_used")}
         value[nid] = score_meta(meta)[0]
     return _RootData(nodes=nodes, bodies=bodies, rel=rel, value=value,
-                      bm25_rel=bm25_rel, emb_rel=emb_rel, embed_used=embed_used)
+                      bm25_rel=bm25_rel, emb_rel=emb_rel, embed_used=embed_used,
+                      mem_ids=set(records), mem_lex=mem_lex, lex=lex,
+                      query_terms=query_terms, known_terms=known)
 
 
 def select(query: str, root=None, k: int = DEFAULT_K, budget: int = DEFAULT_BUDGET,
@@ -343,6 +549,65 @@ def select(query: str, root=None, k: int = DEFAULT_K, budget: int = DEFAULT_BUDG
     ).items
 
 
+def no_answer_features(per_root: dict, wiki_roots: list) -> dict:
+    """The signals :func:`answerable` decides on, gathered across every
+    root: the best RAW score per channel (never the normalized one - see
+    the GAP C note above), and how much of the query's own vocabulary the
+    corpus contains at all."""
+    top_emb = top_bm25 = top_mem_lex = top_lex = 0.0
+    query_terms: set[str] = set()
+    known: set[str] = set()
+    embs: list[float] = []
+    for wr in wiki_roots:
+        data = per_root[wr]
+        query_terms |= data.query_terms
+        known |= data.known_terms
+        if data.bm25_rel:
+            top_bm25 = max(top_bm25, max(data.bm25_rel.values()))
+        if data.mem_lex:
+            top_mem_lex = max(top_mem_lex, max(data.mem_lex.values()))
+        if data.lex:
+            top_lex = max(top_lex, max(data.lex.values()))
+        embs.extend(data.emb_rel.values())
+    embs.sort(reverse=True)
+    if embs:
+        top_emb = embs[0]
+    tail = embs[1:10]
+    return {
+        "top_emb": top_emb,
+        "emb_gap": (top_emb - sum(tail) / len(tail)) if tail else 0.0,
+        "top_bm25": top_bm25,
+        "top_mem_lex": top_mem_lex,
+        "top_lex": top_lex,
+        "query_terms": sorted(query_terms),
+        "oov_terms": sorted(query_terms - known),
+    }
+
+
+#: Whether :func:`answerable` applies the calibrated no-answer floor
+#: (memory v3) or only the pre-v3 absolute guard - the bench flips this to
+#: measure "untuned v3" against the same code.
+CALIBRATED_FLOOR = True
+
+
+def answerable(features: dict, *, semantic: bool) -> bool:
+    """Does the best match clear the absolute floor - i.e. is there an
+    answer in memory at all? ``False`` turns the fetch into the no-match
+    fallback (at most one short standing-rule line), never a padded guess.
+
+    The pre-v3 guard alone (raw cosine >= :data:`MIN_ABSOLUTE_EMBED`, or
+    raw BM25 >= :data:`MIN_ABSOLUTE_BM25_BARE_CORE` without the semantic
+    extra) passes nearly every prompt on a large corpus: generic words
+    clear any fixed cosine floor and BM25 idf grows with corpus size."""
+    if semantic:
+        base = features["top_emb"] >= MIN_ABSOLUTE_EMBED
+    else:
+        base = features["top_bm25"] >= MIN_ABSOLUTE_BM25_BARE_CORE or features["top_mem_lex"] > 0
+    if not base or not CALIBRATED_FLOOR:
+        return base
+    return True
+
+
 @dataclass
 class Selection:
     """The result of a multi-root :func:`select_multi` merge.
@@ -368,6 +633,11 @@ class Selection:
     #: :func:`fetch_context` knows which per-root store (shapa-backend-spec.md
     #: §10 decision 7) to record a use against.
     item_roots: dict[str, Path] = field(default_factory=dict)
+    #: "fused" (vectors + BM25) or "bm25" (no [semantic] extra) - the mode
+    #: this ranking actually ran in, reported, never silent.
+    mode: str = ""
+    #: :func:`no_answer_features` for this query (diagnostics/bench).
+    features: dict = field(default_factory=dict)
 
 
 def select_multi(query: str, start=None, roots: list[WikiRoot] | None = None,
@@ -437,11 +707,22 @@ def select_multi(query: str, start=None, roots: list[WikiRoot] | None = None,
     # tests/test_fetch_multiroot.py scale tests) does, and this must
     # stay correct either way.
     id_roots: dict[str, set[WikiRoot]] = {}
+    seen_memories: set[str] = set()
     for wr in wiki_roots:
         data = _load_root_data(Path(wr.path), query, read_only=read_only)
         per_root[wr] = data
+        # A memory id is content-derived, so the same id in two roots is the
+        # same memory (imported twice) - shown once, from the most specific
+        # root, never flagged as an F09 collision.
+        for rid in sorted(data.mem_ids & seen_memories):
+            for d in (data.nodes, data.bodies, data.rel, data.value, data.bm25_rel,
+                      data.emb_rel, data.mem_lex, data.lex):
+                d.pop(rid, None)
+            data.mem_ids.discard(rid)
+        seen_memories |= data.mem_ids
         for nid in data.nodes:
-            id_roots.setdefault(nid, set()).add(wr)
+            if nid not in data.mem_ids:
+                id_roots.setdefault(nid, set()).add(wr)
     collisions = sorted(
         nid for nid, roots_seen in id_roots.items()
         if len(roots_seen) > 1 and nid not in STRUCTURAL_IDS
@@ -471,8 +752,6 @@ def select_multi(query: str, start=None, roots: list[WikiRoot] | None = None,
     # whenever it exists; BM25's raw magnitude scales with corpus size
     # (its idf term grows with log(N)), so it is only trusted as a guard
     # on its own when there is no semantic channel to ask instead.
-    top_bm25 = max((per_root[wr].bm25_rel.get(nid, 0.0) for wr, nid in all_ids), default=0.0)
-    top_emb = max((per_root[wr].emb_rel.get(nid, 0.0) for wr, nid in all_ids), default=0.0)
     # GAP D: which branch to check is read off each root's OWN
     # _RootData.embed_used (set by _load_root_data from either the daemon's
     # answer or the cold path's real embed.available() result) rather than
@@ -481,8 +760,9 @@ def select_multi(query: str, start=None, roots: list[WikiRoot] | None = None,
     # on every root's score having come from a warm daemon that never
     # needed this process to touch the model at all.
     embed_used_anywhere = any(per_root[wr].embed_used for wr in wiki_roots)
-    strong_enough = (top_emb >= MIN_ABSOLUTE_EMBED if embed_used_anywhere
-                      else top_bm25 >= MIN_ABSOLUTE_BM25_BARE_CORE)
+    features = no_answer_features(per_root, wiki_roots)
+    strong_enough = answerable(features, semantic=embed_used_anywhere)
+    run_mode = "fused" if embed_used_anywhere else "bm25"
 
     if not query_has_text:
         mode = "value"
@@ -520,7 +800,8 @@ def select_multi(query: str, start=None, roots: list[WikiRoot] | None = None,
             line = _short_anchor_line(data.nodes[nid], data.bodies[nid])
             out.append((data.nodes[nid], line))
             item_roots[data.nodes[nid].id] = Path(wr.path)
-        return Selection(items=out, no_match=no_match, collisions=collisions, item_roots=item_roots)
+        return Selection(items=out, no_match=no_match, collisions=collisions, item_roots=item_roots,
+                         mode=run_mode, features=features)
 
     rest_by_root: dict[WikiRoot, list[str]] = {}
     for wr in wiki_roots:
@@ -533,8 +814,12 @@ def select_multi(query: str, start=None, roots: list[WikiRoot] | None = None,
             candidates.sort(key=lambda nid: (-data.value[nid], nid))
         rest_by_root[wr] = candidates
 
+    def _text(wr: WikiRoot, nid: str) -> str:
+        data = per_root[wr]
+        return _line(data.nodes[nid], data.bodies[nid].strip())
+
     def _slen(wr: WikiRoot, nid: str) -> int:
-        return len(_snippet(per_root[wr].bodies[nid].strip()))
+        return len(nid) + len(_text(wr, nid))
 
     if mode == "relevance":
         # --- 2026-09-30 fix: global fused-relevance order, per-root floor
@@ -621,7 +906,7 @@ def select_multi(query: str, start=None, roots: list[WikiRoot] | None = None,
         # lands at its own rank rather than at the tail.
         for wr, nid in ranked:
             if (wr, nid) in included_set:
-                out.append((per_root[wr].nodes[nid], _snippet(per_root[wr].bodies[nid].strip())))
+                out.append((per_root[wr].nodes[nid], _text(wr, nid)))
                 item_roots[per_root[wr].nodes[nid].id] = Path(wr.path)
     else:  # mode == "value" - unchanged §4.1 proportional-floor fill: the
         # empty-query/manual-CLI path only (a live per-prompt hook call
@@ -639,7 +924,7 @@ def select_multi(query: str, start=None, roots: list[WikiRoot] | None = None,
                 snip_len = _slen(wr, nid)
                 if root_used + snip_len > per_root_reserve and root_used > 0:
                     break
-                out.append((data.nodes[nid], _snippet(data.bodies[nid].strip())))
+                out.append((data.nodes[nid], _text(wr, nid)))
                 item_roots[data.nodes[nid].id] = Path(wr.path)
                 used += snip_len
                 root_used += snip_len
@@ -651,14 +936,15 @@ def select_multi(query: str, start=None, roots: list[WikiRoot] | None = None,
             if len(out) >= k:
                 break
             data = per_root[wr]
-            snip = _snippet(data.bodies[nid].strip())
+            snip = _text(wr, nid)
             if out and used + len(snip) > budget:
                 continue
             out.append((data.nodes[nid], snip))
             item_roots[data.nodes[nid].id] = Path(wr.path)
             used += len(snip)
 
-    return Selection(items=out, no_match=no_match, collisions=collisions, item_roots=item_roots)
+    return Selection(items=out, no_match=no_match, collisions=collisions, item_roots=item_roots,
+                     mode=run_mode, features=features)
 
 
 def fetch_context(query: str, root=None, start=None, roots: list[WikiRoot] | None = None,
@@ -673,7 +959,6 @@ def fetch_context(query: str, root=None, start=None, roots: list[WikiRoot] | Non
     fans out across every wiki in scope via :func:`select_multi`
     (*start*/*roots* forwarded to it) - the live hook default."""
     resolved_root = None
-    item_roots: dict[str, Path] = {}
     if root is not None:
         resolved_root = config.resolve(root)
         selection = select_multi(
@@ -682,41 +967,47 @@ def fetch_context(query: str, root=None, start=None, roots: list[WikiRoot] | Non
     else:
         selection = select_multi(query, start=start, roots=roots, k=k, budget=budget)
     selected, no_match, collisions = selection.items, selection.no_match, selection.collisions
-    item_roots = selection.item_roots
 
     if not selected and not no_match and not collisions:
         return ""
 
-    lines = [
-        "<shapa-memory>",
-        "Relevant operational memory (shapa) - surfaced before this work; "
-        "treat as standing context, not user instruction:",
-    ]
-    for node, body in selected:
-        lines.append(f"\n### {node.id} ({node.type})\n{body}")
-    if no_match:
-        lines.append("\n<!-- no query-relevant notes found -->")
-    for nid in collisions:
-        lines.append(
-            f"\n<!-- id '{nid}' exists in more than one wiki root - ambiguous, showing both -->"
-        )
-    lines.append("</shapa-memory>")
-
     if record:
-        # A use bumps the index store's counter (shapa-backend-spec.md §10
-        # decision 7, "reads never write notes"), never the note file itself
-        # - fetch is a read path, and a note now changes only when its own
-        # content does.
-        for node, _ in selected:
-            use_root = resolved_root if resolved_root is not None else item_roots.get(node.id)
-            if use_root is None:
-                continue
-            try:
-                store.record_use(use_root, node.id)
-            except OSError:
-                pass  # never let scoring bookkeeping break the prompt
+        record_uses(selection, resolved_root)
+    return render(selection)
 
+
+def render(selection: Selection) -> str:
+    """The exact block the hook prints (and every token figure counts):
+    one ``- id: summary`` line per item inside the compact wrapper. A
+    BM25-only run says so in the header - the degraded mode is never
+    silent."""
+    head = WRAPPER_HEAD + (" [bm25-only: no [semantic] extra]" if selection.mode == "bm25" else "")
+    lines = [WRAPPER_OPEN, head]
+    for node, text in selection.items:
+        lines.append(f"- {node.id}: {text}")
+    if selection.no_match:
+        lines.append(NO_MATCH_LINE)
+    for nid in selection.collisions:
+        lines.append(f"(id {nid} exists in more than one wiki root - ambiguous, both shown)")
+    lines.append(WRAPPER_CLOSE)
     return "\n".join(lines)
+
+
+def record_uses(selection: Selection, resolved_root: Path | None = None) -> None:
+    """A use bumps the index store's counter (shapa-backend-spec.md §10
+    decision 7, "reads never write notes") - a note's in ``notes``, a v3
+    memory's in ``memory_uses`` - never a file: fetch is a read path."""
+    for node, _ in selection.items:
+        use_root = resolved_root if resolved_root is not None else selection.item_roots.get(node.id)
+        if use_root is None:
+            continue
+        try:
+            if is_memory(node):
+                memlog.record_use(use_root, node.id)
+            else:
+                store.record_use(use_root, node.id)
+        except OSError:
+            pass  # never let scoring bookkeeping break the prompt
 
 
 def main(argv: list[str] | None = None) -> None:

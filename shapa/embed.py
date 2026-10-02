@@ -48,6 +48,19 @@ def available() -> bool:
     return _AVAILABLE
 
 
+def installed() -> bool:
+    """Whether the ``[semantic]`` extra is importable, WITHOUT loading the
+    model - for cheap mode reporting on hot paths (session start)."""
+    if _AVAILABLE is not None:
+        return _AVAILABLE
+    import importlib.util
+
+    try:
+        return importlib.util.find_spec("model2vec") is not None
+    except (ImportError, ValueError):
+        return False
+
+
 def embed_one(text: str) -> list[float]:
     """Embed a single string (normalized). Requires available()."""
     return _MODEL.encode([text])[0].tolist()  # type: ignore

@@ -51,7 +51,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from shapa import __version__, config, fetch, frontmatter
+from shapa import __version__, config, fetch, frontmatter, memlog
 from shapa.nodes import load_nodes
 from shapa.validate import validate_node
 
@@ -107,15 +107,22 @@ def tool_search(args: dict[str, Any], cwd: str | None) -> dict[str, Any]:
     # here; shapa-backend-spec.md Slice 6 report).
     selection = fetch.select_multi(query, start=start, k=k, read_only=True)
     results = []
-    for node, snippet in selection.items:
+    for node, summary in selection.items:
         root_path = selection.item_roots.get(node.id)
+        is_mem = fetch.is_memory(node)
         results.append({
             "id": node.id,
             "type": node.type,
+            "source": "memory" if is_mem else "note",
+            "kind": node.meta.get("kind") if is_mem else None,
             "root": str(root_path) if root_path is not None else None,
-            "snippet": snippet,
+            # Memory v3: summaries only (progressive disclosure) - `get`
+            # returns the full text of any id here.
+            "summary": summary,
+            "snippet": summary,
         })
-    out: dict[str, Any] = {"results": results, "no_match": selection.no_match}
+    out: dict[str, Any] = {"results": results, "no_match": selection.no_match,
+                           "mode": selection.mode}
     if selection.collisions:
         out["collisions"] = selection.collisions
     return out
@@ -132,6 +139,15 @@ def tool_get(args: dict[str, Any], cwd: str | None) -> dict[str, Any]:
         root_path = Path(wr.path)
         if not root_path.is_dir():
             continue
+        if note_id.startswith(memlog.ID_PREFIX):
+            hit = memlog.get(root_path, note_id)
+            if hit is not None:
+                rec, status = hit
+                matches.append({"id": note_id, "type": "memory", "source": "memory",
+                                "root_kind": wr.kind, "root": str(wr.path), "status": status,
+                                "record": {f: getattr(rec, f) for f in memlog.FIELDS},
+                                "body": rec.body})
+                continue
         nodes = load_nodes(root_path)
         node = nodes.get(note_id)
         if node is None:
@@ -148,6 +164,8 @@ def tool_get(args: dict[str, Any], cwd: str | None) -> dict[str, Any]:
 
     if not matches:
         return {"error": f"no note '{note_id}' found in any wiki in scope"}
+    if len(matches) > 1 and all(m.get("source") == "memory" for m in matches):
+        return matches[0]  # content-derived id: the same memory in two roots
     if len(matches) > 1:
         # The F09 cross-root-collision contract (§4.1): never silently pick
         # one - surface every match and let the caller decide.
@@ -276,9 +294,11 @@ TOOLS: list[dict[str, Any]] = [
         "name": "search",
         "description": (
             "Search every shapa wiki in scope (the global wiki plus this "
-            "repo's own, if it has one) for notes relevant to a query. "
-            "Returns ranked, snippet-truncated results - the same merge the "
-            "per-prompt fetch hook uses."
+            "repo's own, if it has one) for md notes and captured memory "
+            "records relevant to a query, in one fused ranking. Returns ids "
+            "and one-line summaries - the same merge the per-prompt fetch "
+            "hook uses - plus the retrieval mode (fused or bm25); call `get` "
+            "for an id's full text."
         ),
         "inputSchema": {
             "type": "object",
@@ -296,9 +316,10 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "get",
         "description": (
-            "Fetch one note's full body by id (no snippet truncation), "
-            "searching every wiki in scope. Errors, rather than guessing, if "
-            "the id exists in more than one wiki root, or in none."
+            "Fetch the full text of one note or memory record by id (a "
+            "memory id starts with 'm-'), searching every wiki in scope. "
+            "Errors, rather than guessing, if a note id exists in more than "
+            "one wiki root, or in none."
         ),
         "inputSchema": {
             "type": "object",

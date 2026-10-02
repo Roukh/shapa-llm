@@ -43,7 +43,9 @@ class TestFetch(unittest.TestCase):
         block = fetch.fetch_context("testing", root=FIX, record=False)
         self.assertTrue(block.startswith("<shapa-memory>"))
         self.assertTrue(block.rstrip().endswith("</shapa-memory>"))
-        self.assertIn("### f-meta (rule)", block)
+        # Memory v3: summary-only, one "- id: summary" line per item.
+        self.assertIn("- f-meta: ", block)
+        self.assertNotIn("###", block)
 
     def test_record_use_bumps_the_index_store_not_the_file(self):
         # shapa-backend-spec.md §10 decision 7 ("reads never write notes"):
