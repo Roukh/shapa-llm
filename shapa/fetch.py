@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -272,8 +273,7 @@ def _union_lexical(query: str, nodes: dict[str, Node], bodies: dict[str, str],
             rec = records[nid]
             docs[nid] = memlog.term_stats(f"{rec.summary} {rec.body} {' '.join(rec.tags)}", terms)
             continue
-        text = node.id.replace("-", " ") + " " + " ".join(node.outlinks) + " " + bodies[nid]
-        tf, dl = memlog.term_stats(text, terms)
+        tf, dl = _note_term_stats(node, bodies[nid], terms)
         docs[nid] = (tf, dl)
         n_notes += 1
         note_tokens += dl
@@ -282,6 +282,34 @@ def _union_lexical(query: str, nodes: dict[str, Node], bodies: dict[str, str],
     n_docs = n_notes + int(corpus.get("n", 0))
     total = note_tokens + int(corpus.get("tokens", 0))
     return memlog.bm25_union(terms, docs, n_docs, total / n_docs if n_docs else 0.0, df)
+
+
+_NOTE_TOKENS: dict[tuple, tuple[dict, int]] = {}
+
+
+def _note_term_stats(node: Node, body: str, terms) -> tuple[dict[str, int], int]:
+    """(tf for *terms*, length) of a note's id-enriched text under the
+    unicode61 mirror. The token counts are cached per (path, mtime, size)
+    so a long-lived process (the daemon, MCP) tokenizes a note once."""
+    try:
+        st = node.path.stat()
+        key = (str(node.path), st.st_mtime_ns, st.st_size)
+    except OSError:
+        key = None
+    hit = _NOTE_TOKENS.get(key) if key else None
+    if hit is None:
+        toks = memlog.unicode61_tokens(
+            node.id.replace("-", " ") + " " + " ".join(node.outlinks) + " " + body)
+        counts: dict[str, int] = {}
+        for t in toks:
+            counts[t] = counts.get(t, 0) + 1
+        hit = (counts, len(toks))
+        if key:
+            if len(_NOTE_TOKENS) > 4096:
+                _NOTE_TOKENS.clear()
+            _NOTE_TOKENS[key] = hit
+    counts, dl = hit
+    return {t: counts[t] for t in terms if t in counts}, dl
 
 
 def _record_dict(rec: memlog.Record) -> dict:
@@ -447,9 +475,9 @@ def _load_root_data(root: Path, query: str, *, read_only: bool = False) -> _Root
     # Memory v3: the root's memory records join its notes as candidates.
     # A memory id that collides with a note id (never by construction:
     # "m-" + hex) is dropped rather than shadowing the note.
-    records = {rid: memlog.parse_line(json.dumps(r)) for rid, r in mem.get("records", {}).items()}
-    records = {rid: r for rid, r in records.items()
-               if isinstance(r, memlog.Record) and rid not in nodes}
+    records = {rid: memlog.record_from_dict(r) for rid, r in mem.get("records", {}).items()
+               if isinstance(r, dict)}
+    records = {rid: r for rid, r in records.items() if r is not None and rid not in nodes}
     mem_lex = {rid: float(s) for rid, s in mem.get("lex", {}).items() if rid in records}
     mem_emb = {rid: float(s) for rid, s in mem.get("emb", {}).items() if rid in records}
     for rid, rec in records.items():
@@ -458,12 +486,15 @@ def _load_root_data(root: Path, query: str, *, read_only: bool = False) -> _Root
 
     query_terms = set(_words(query))
     known = set(mem.get("known_terms", []))
-    if query_terms:
-        note_vocab: set[str] = set()
-        for nid, node in nodes.items():
-            if not is_memory(node):
-                note_vocab.update(_words(bodies[nid] + " " + node.id.replace("-", " ")))
-        known |= query_terms & note_vocab
+    missing = query_terms - known
+    if missing:
+        # Which of the remaining query words any note contains - one
+        # word-boundary search per word over the notes' text, not a
+        # re-tokenization of every note.
+        notes_text = " ".join(
+            f"{node.id.replace('-', ' ')} {bodies[nid]}" for nid, node in nodes.items()
+            if not is_memory(node)).lower()
+        known |= {t for t in missing if re.search(rf"\b{re.escape(t)}\b", notes_text)}
 
     lex: dict[str, float] = {}
     if records:

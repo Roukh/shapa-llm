@@ -684,15 +684,33 @@ def sync(root, conn: sqlite3.Connection, *, embed_vectors: bool = False) -> Sync
     if rebuild or tails:
         _refresh_active(conn)
         _bump_generation(conn)
-    if embed_vectors:
+    if embed_vectors and _vectors_due(conn):
         stats.embedded = _embed_missing(conn)
     conn.commit()
     return stats
 
 
+def _vectors_due(conn: sqlite3.Connection) -> bool:
+    """Skip the missing-vector scan when nothing changed since the last
+    complete embedding pass for this model (the per-prompt common case)."""
+    try:
+        row = conn.execute("SELECT value FROM memory_meta WHERE key = ?",
+                           (f"embedded:{embed.model_name()}",)).fetchone()
+    except sqlite3.Error:
+        return True
+    return row is None or row[0] != generation(conn)
+
+
 def _embed_missing(conn: sqlite3.Connection) -> int:
     if not embed.available():
         return 0
+    total = _embed_rows(conn)
+    conn.execute("INSERT OR REPLACE INTO memory_meta(key, value) VALUES (?, ?)",
+                 (f"embedded:{embed.model_name()}", generation(conn)))
+    return total
+
+
+def _embed_rows(conn: sqlite3.Connection) -> int:
     model = embed.model_name()
     rows = conn.execute(
         "SELECT m.hash, m.kind, m.tags, m.summary, m.body FROM memories m "
@@ -816,7 +834,28 @@ def fts_query(query: str) -> str | None:
 
 
 def unicode61_tokens(text: str) -> list[str]:
-    return [t.lower() for t in _UNICODE61_RE.findall(text or "")]
+    return _UNICODE61_RE.findall((text or "").lower())
+
+
+def record_from_dict(data: dict) -> Record | None:
+    """A :class:`Record` from a dict carrying :data:`FIELDS` (the shape
+    a record crosses the daemon socket in), validated like a log line."""
+    try:
+        rec = Record(**{f: data.get(f) for f in FIELDS})
+    except TypeError:
+        return None
+    if not isinstance(rec.id, str) or not isinstance(rec.summary, str) or not rec.summary:
+        return None
+    rec.tags = [t for t in (rec.tags or []) if isinstance(t, str)]
+    rec.body = rec.body if isinstance(rec.body, str) else ""
+    for name in ("created", "session", "source", "hash"):
+        if not isinstance(getattr(rec, name), str):
+            setattr(rec, name, "")
+    if rec.kind not in KINDS:
+        rec.kind = "fact"
+    if rec.scope not in SCOPES:
+        rec.scope = "repo"
+    return rec
 
 
 def term_stats(text: str, terms) -> tuple[dict[str, int], int]:
