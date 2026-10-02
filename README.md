@@ -2,7 +2,7 @@
 
 **shapa** = **S**elf-**H**ealing **A**utonomous **P**ersistent **A**gent.
 
-The operational memory of an LLM agent: a persistent markdown graph of notes about *how the agent works*, scored by how much each note matters and kept healthy by automatic maintenance. The core engine is pure Python 3.11+ standard library; an optional `sentence-transformers` install activates semantic embeddings for retrieval (otherwise BM25).
+The operational memory of an LLM agent: a persistent markdown graph of notes about *how the agent works*, scored by how much each note matters and kept healthy by automatic maintenance. The core engine is pure Python 3.11+ standard library; the optional `[semantic]` extra (model2vec) adds vector search fused with BM25. Without it shapa runs BM25-only and says so. What the hooks capture on their own lands as small atomic records in an append-only log inside the wiki ([Captured memory](#captured-memory-format-3)).
 
 A note's value is its effect on the consuming agent's performance. shapa is **not** a topic knowledge base; it stores operational memory only.
 
@@ -51,6 +51,44 @@ score = locus_weight × (consequence / 10) × freshness × use_factor
 - **locus** — `output` (1.0), `output-meta` (1.5), or `meta` (2.0): what the note affects.
 - **freshness** — decays since `last_used`; stability grows with consequence.
 - **uses** — a mechanical counter bumped by `record_use` (never by an LLM); incremented by the fetch hook on every prompt a note is surfaced.
+
+---
+
+## Captured memory (format 3)
+
+The Stop/SubagentStop hook (`shapa capture`) never writes a note per session. It reads the session's final assistant message and the operator's later requests, and extracts a few atomic memories: an outcome, a fact with its file paths, each open decision, and stated preferences. The first prompt and tool output are never stored. Secrets are redacted (`shapa/redact.py`) before anything is hashed, embedded or written.
+
+- **Source of truth:** `<wiki>/memory/YYYY-MM.jsonl`, one JSON record per line (`id, created, session, repo, scope, kind, summary <=160, body <=600, tags, source, supersedes, hash`), committed with the wiki so a fresh clone keeps every memory. Lines are never edited: an update supersedes, a retirement appends an archive op, and `memory/*.jsonl merge=union` lets two branches' appends merge cleanly.
+- **Derived index:** tables in the gitignored `.shapa-index.db`, rebuilt incrementally from the log: FTS5 (unicode61), float32 model2vec vectors cached by content hash, and usage counters, which live only there.
+- **Dedup and placement:** exact and near duplicates are dropped, and close variants supersede. A repo session writes its own repo's log. Only clearly global preferences go to the global wiki.
+- **Recall:** `fetch`, `bootstrap` and MCP `search` rank md notes and memory records together in one fused list, keeping the per-root guarantees. The prompt hook injects one `- id: summary` line per hit inside a compact `<shapa-memory>` wrapper. The full text is one step away: `shapa get <id>`, or MCP `get`.
+- **No-answer floor:** a prompt that names something memory has never seen (an acronym, a camelCase word, a capitalized name), or that has no content word memory knows ("ok"), gets `(no query-relevant memory)` instead of a padded guess, unless the semantic match is strong anyway.
+- **Modes:** `fused` with the `[semantic]` extra, `bm25` without it. The mode is printed by `shapa status`, `shapa doctor`, the session header, the MCP search reply and the degraded hook header, never silently.
+- **Promotion:** `shapa maintain --memories` lists hot records (high use counts). `--promote ID` turns one into a curated note and archives the record. Nothing is ever deleted.
+- **Import:** `shapa upgrade [PATH] --import-memri FILE [--dry-run]` is an opt-in importer for memri JSON exports.
+
+### Measured
+
+The memory lab's harness measured the shipped code (0.8.0) and the previous release (0.7.1) on the same corpus: 609 curated rows from four project memory exports, plus a 56-note wiki. 0.8.0 holds them as 2,181 log records; 0.7.1 holds one md note per row. The held-out set has 82 questions, 10 of them with no answer anywhere in the corpus, and nothing was tuned on it. The no-answer floor was calibrated on a separate 110-question dev set, written by a different agent from different rows. Tokens are chars/4 of the injected block, wrapper included. Recall is over source documents.
+
+| | recall@1 | recall@3 | recall@5 | MRR | no-answer false positives | tokens / prompt |
+|---|---|---|---|---|---|---|
+| 0.7.1 (full-body injection) | 0.584 | 0.668 | **0.759** | **0.744** | 10/10 | 1,103 |
+| 0.8.0, floor off | 0.543 | 0.676 | 0.713 | 0.700 | 10/10 | 308 |
+| **0.8.0 fused** | 0.543 | 0.676 | 0.713 | 0.700 | **2/10** | **290** |
+| 0.8.0 bm25-only (no `[semantic]`) | 0.484 | 0.654 | 0.705 | 0.649 | 2/10 | 288 |
+
+Latency on the same corpus, all three timed back to back (20 runs each, on a shared machine at load average 8-14, so the absolute figures are noisy):
+
+| | warm fetch p50 / p95 | hook wall p50 / p95 | peak RSS | disk per 100 memories |
+|---|---|---|---|---|
+| 0.7.1 | 379 / 857 ms | 1,865 / 5,065 ms | 153 MB | 751 KB (notes + caches) |
+| 0.8.0 fused | 160 / 260 ms | 1,380 / 2,627 ms | 145 MB | 64 KB log + 262 KB index |
+| 0.8.0 bm25-only | 105 / 173 ms | 238 / 530 ms | 30 MB | same |
+
+The fused hook's wall time is mostly the model2vec load, which the optional `shapa serve` daemon pays once. The capture hook, run fresh on a 1.2 MB transcript into a 2.2k-record log, took p50 231 / p95 323 ms (an incremental Stop took 160 / 217 ms); a 50 MB transcript takes 0.5 s.
+
+The trade is honest: 0.8.0 injects 74% fewer tokens and stops answering most off-topic prompts, and it trails 0.7.1 by 4.6 points of recall@5. The loss is on paraphrased and multi-document questions; exact-match recall goes from 0.95 to 1.00. The floor itself costs no recall: no answerable question was rejected. The two no-answer questions it still answers ask about a known project, using only lowercase words for something it lacks. Method, the lab's 32-variant storage grid, and the floor's calibration are in `.shapa/arch/shapa-memory-v3-results.md`.
 
 ---
 
@@ -109,9 +147,14 @@ start flags a wiki that is behind. They also install the `shapa-upgrade`
 skill for Claude Code, Codex and OpenCode, which gives one agent per wiki
 that is behind.
 
+Format 3 adds the captured-memory log. `shapa upgrade` converts each
+`memory-session-*.md` note into one log record, carries its use count over,
+archives the md file (never deletes it), and marks the log `merge=union` in
+`.gitattributes`. A malformed log line is listed as a judgment item.
+
 ```
 pipx install shapa                # the tool (retrieval via BM25)
-pipx install "shapa[semantic]"    # + local embeddings (sentence-transformers)
+pipx install "shapa[semantic]"    # + local embeddings (model2vec), fused with BM25
 ```
 
 ### Where memory lives
@@ -148,11 +191,17 @@ vault). Contributors can `git clone` and work from the repo.
 shapa init [DIR] [--global]            # scaffold/adopt a wiki (default: ./shapa)
 shapa where                            # print the resolved memory directory
 shapa fetch --query "fix the git flow" # surface relevant memory (read path)
+shapa get m-1a2b3c4d5e                 # the full text of a memory record or note
+shapa status                           # wikis, memory counts, and the recall mode (fused/bm25)
+shapa doctor                           # the same, exiting 1 when something needs fixing
 shapa heartbeat --dry-run              # preview orphan pruning
 shapa maintain --dry-run               # preview merges/prunes (nothing changes)
 shapa maintain --prune                 # prune orphans/stale + auto-merge duplicates
+shapa maintain --memories              # hot memory records: candidates for a curated note
+shapa maintain --promote ID            # promote one into a note, archive the record
 shapa upgrade --all --check            # which known wikis are behind the current format
 shapa upgrade PATH                     # apply mechanical migrations, list the judgment work
+shapa upgrade PATH --import-memri FILE # opt-in: import a memri JSON export as memory records
 shapa maintain --resolve               # LLM-reconcile contradictions (claude CLI)
 shapa score                            # rank notes by value
 shapa validate                         # validate every note's frontmatter
@@ -172,6 +221,8 @@ shapa-llm/
     cli.py               ← the unified `shapa` command (incl. `init`)
     frontmatter.py · nodes.py · heartbeat.py · validate.py · score.py
     bootstrap.py · fetch.py · capture.py · maintain.py · embed.py
+    memlog.py · redact.py  ← the format-3 memory log, its derived index, secret redaction
+    get.py · status.py · memri_import.py  ← `shapa get`, `shapa status`/`doctor`, the memri importer
     registry.py · upgrade.py  ← format marker, wiki registry, `shapa upgrade`
     assets/              ← docs installed into every wiki by `shapa init`
       AGENTS.md          ← the schema and rules (also the wiki marker)
@@ -220,7 +271,7 @@ One heartbeat cycle (`shapa/heartbeat.py`) runs two phases over the wikilink gra
 |-------|---------|---------|
 | `SessionStart` | `shapa bootstrap` | Read path — once per session, a metadata-only overview (id/type/summary, never bodies) of every wiki in scope, within a small token budget. |
 | `UserPromptSubmit` | `shapa fetch` | Read path — surfaces the most relevant, highest-scored notes at the start of each prompt; calls `record_use` on each. |
-| `Stop` | `shapa capture` | Write path — distils the finished session into one memory note (heuristic, stdlib-only; no LLM salience judgement), linked into the graph. |
+| `Stop` | `shapa capture` | Write path — distils the finished session into a few atomic, redacted memory records appended to the wiki's `memory/` log (heuristic, stdlib-only; an LLM distiller is opt-in). |
 | `Stop` | `shapa maintain --prune` | Prunes orphans/stale notes and auto-merges near-duplicates. |
 | `SubagentStop` | `shapa capture` | Same as the `Stop` capture, so subagent work is captured too. |
 
@@ -241,7 +292,6 @@ Hooks receive a JSON payload on stdin (`transcript_path`, `session_id`, `cwd`, p
 
 ## What is deferred
 
-- **Semantic embeddings** for retrieval. `fetch` uses BM25 (zero-dep) today; true embedding-similarity would need a model dependency or an API.
 - **Contradiction resolution.** `maintain` *detects* similar/contradiction-candidate pairs; *reconciling* them (merge a duplicate, resolve a conflict) is a semantic judgement left to the maintaining agent.
 
 ---
