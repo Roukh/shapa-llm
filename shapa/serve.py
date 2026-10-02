@@ -111,13 +111,16 @@ def _answer(root: Path, payload: dict) -> dict:
             # with ``fetch.py`` (which imports ``shapa.serve`` to reach
             # :func:`request`) - safe here since this only runs once the
             # whole package has already finished importing.
-            from shapa.fetch import raw_relevance
+            from shapa.fetch import memory_relevance, raw_relevance
             query = str(payload.get("query", ""))
             nodes = load_nodes(root)
             bodies = {nid: frontmatter.parse(node.path).body for nid, node in nodes.items()}
             bm25_rel, emb_rel, embed_used = raw_relevance(root, nodes, bodies, query, read_only=False)
+            # Memory v3: the same memory half fetch computes in-process,
+            # from this process's warm model and cached vector matrix.
+            memories = memory_relevance(root, query, read_only=False, semantic=embed_used)
             return {"ok": True, "bm25_rel": bm25_rel, "emb_rel": emb_rel,
-                    "embed_available": embed_used}
+                    "embed_available": embed_used, "memories": memories}
         return {"ok": False, "error": f"unknown cmd {cmd!r}"}
     except Exception as exc:
         return {"ok": False, "error": str(exc)}

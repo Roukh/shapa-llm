@@ -36,10 +36,13 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from shapa import config, embed, frontmatter, validate
+from shapa import config, embed, frontmatter, memlog, save, validate
 from shapa.heartbeat import find_orphans
 from shapa.nodes import build_graph, is_protected, load_nodes
 from shapa.score import _parse_ts, score_meta
+
+#: Default minimum use count for ``--memories``/promotion candidates.
+DEFAULT_MIN_MEMORY_USES = 5
 
 MERGE_THRESHOLD_JACCARD = 0.9   # >= this token-Jaccard similarity -> auto-merge
 # Embedding cosine similarity runs "hotter" than shingle-Jaccard on short notes
@@ -394,6 +397,55 @@ def lean_report(directory) -> dict:
     return {"violations": violations, "superseded": superseded}
 
 
+# ---------------------------------------------------------------------------
+# Memory-log promotion (format 3, spec item 5): never auto-deletes a memory
+# record - a promotion writes a curated note then archives the record it
+# came from; a plain archive just retires one. The default --prune path
+# below never reads the memory log beyond the one-line candidate count.
+# ---------------------------------------------------------------------------
+
+def memories_report(directory, min_uses: int = DEFAULT_MIN_MEMORY_USES
+                    ) -> list[tuple]:
+    """Hot live memory-log records (:func:`shapa.memlog.hot`) with at least
+    *min_uses* uses - promotion candidates for a curated note. Each item is
+    ``(record, uses, last_used)``."""
+    return memlog.hot(Path(directory), min_uses)
+
+
+def promote_memory(directory, mem_id: str, *, note_id: str | None = None,
+                   note_type: str = "memory", scope: str | None = None) -> dict:
+    """Promote a live memory-log record into a curated note
+    (:func:`shapa.save.save_note`), then archive the record it came from
+    (:func:`shapa.memlog.archive` - never deletes). A failed save archives
+    nothing. Returns the ``save_note`` result dict (``"id"``/``"path"``/
+    ``"scope"``, or ``"error"``)."""
+    directory = Path(directory)
+    found = memlog.get(directory, mem_id)
+    if found is None:
+        return {"error": f"memory '{mem_id}' was not found in the log at {directory}"}
+    record, status = found
+    if status != "active":
+        return {"error": f"memory '{mem_id}' is {status}, not active - nothing to promote"}
+
+    resolved_scope = scope or record.scope
+    result = save.save_note(
+        resolved_scope, record.summary, record.body,
+        note_type=note_type, tags=list(record.tags), id=note_id,
+        start=directory.parent,
+    )
+    if "error" in result:
+        return result
+    memlog.archive(directory, mem_id, reason=f"promoted:{result['id']}")
+    return result
+
+
+def archive_memory(directory, mem_id: str, reason: str = "") -> bool:
+    """Archive one memory-log record directly (:func:`shapa.memlog.archive`
+    - never deletes). Returns False when *mem_id* is unknown or already
+    archived."""
+    return memlog.archive(Path(directory), mem_id, reason=reason)
+
+
 def maintain(directory, prune: bool = False, resolve: bool = False,
              max_age_days: int = 90, now: datetime | None = None,
              dry_run: bool = False, merge_threshold: float | None = None) -> dict:
@@ -454,7 +506,58 @@ def main(argv: list[str] | None = None) -> None:
                              "index store now, keyed by root+id - see shapa.store). A note "
                              "with neither field is left untouched. Ignores "
                              "--prune/--resolve/--lean/--merge-threshold.")
+    parser.add_argument("--memories", action="store_true",
+                        help="List hot live memory-log records (shapa.memlog) with at least "
+                             "--min-uses uses: promotion candidates for a curated note.")
+    parser.add_argument("--min-uses", type=int, default=DEFAULT_MIN_MEMORY_USES, dest="min_uses",
+                        help=f"--memories: minimum uses to list (default {DEFAULT_MIN_MEMORY_USES}).")
+    parser.add_argument("--promote", default=None, metavar="MEM_ID", dest="promote",
+                        help="Promote a memory-log record into a curated note (shapa.save), "
+                             "then archive the record - never deletes; a failed save archives "
+                             "nothing.")
+    parser.add_argument("--id", default=None, dest="note_id",
+                        help="--promote: explicit note id (default: slugified summary).")
+    parser.add_argument("--type", default="memory", dest="note_type",
+                        choices=sorted(save.VALID_NOTE_TYPES),
+                        help="--promote: the curated note's type (default memory).")
+    parser.add_argument("--scope", default=None, choices=("global", "repo"), dest="scope",
+                        help="--promote: the curated note's scope (default: the record's own scope).")
+    parser.add_argument("--archive-memory", default=None, metavar="MEM_ID", dest="archive_memory",
+                        help="Archive one memory-log record directly - never deletes.")
+    parser.add_argument("--reason", default="", dest="reason",
+                        help="--archive-memory: free-text reason recorded in the archive op.")
     args = parser.parse_args(argv)
+
+    if args.memories:
+        directory = config.resolve(args.directory)
+        rows = memories_report(directory, args.min_uses)
+        print(f"=== shapa maintain --memories (min uses {args.min_uses}) ===")
+        if not rows:
+            print("  no candidates")
+        for rec, uses, _last_used in rows:
+            print(f"  {rec.id}  uses={uses}  [{rec.kind}]  {rec.summary}")
+        sys.exit(0)
+
+    if args.promote:
+        directory = config.resolve(args.directory)
+        result = promote_memory(directory, args.promote, note_id=args.note_id,
+                                note_type=args.note_type, scope=args.scope)
+        if "error" in result:
+            print(f"shapa maintain: {result['error']}", file=sys.stderr)
+            sys.exit(1)
+        print(f"promoted {args.promote} -> '{result['id']}' (scope: {result['scope']}) "
+              f"at {result['path']}")
+        sys.exit(0)
+
+    if args.archive_memory:
+        directory = config.resolve(args.directory)
+        ok = archive_memory(directory, args.archive_memory, reason=args.reason)
+        if not ok:
+            print(f"shapa maintain: '{args.archive_memory}' is unknown or already archived "
+                  f"in the log at {directory}", file=sys.stderr)
+            sys.exit(1)
+        print(f"archived memory {args.archive_memory}" + (f" ({args.reason})" if args.reason else ""))
+        sys.exit(0)
 
     if args.backfill:
         directory = config.resolve(args.directory)
@@ -501,6 +604,14 @@ def main(argv: list[str] | None = None) -> None:
     if args.prune:
         pverb = "would prune" if args.dry_run else "pruned"
         print(f"{pverb} orphans+stale ({len(r['pruned'])}): {', '.join(r['pruned']) or 'none'}")
+    # The default/--prune path never otherwise reads the memory log - this
+    # is the one optional, one-line exception (memlog.hot no-ops when the
+    # wiki has no log at all): a cheap nudge toward --memories/--promote,
+    # not a scan.
+    directory = config.resolve(args.directory)
+    if memlog.has_log(directory):
+        n = len(memories_report(directory))
+        print(f"memory candidates ready for promotion (uses>={DEFAULT_MIN_MEMORY_USES}): {n}")
     sys.exit(0)
 
 

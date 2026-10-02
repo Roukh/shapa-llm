@@ -27,6 +27,7 @@ for correctness.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -37,6 +38,8 @@ from shapa.bm25 import bm25_scores, words
 from shapa.nodes import extract_links, is_excluded_path
 
 INDEX_FILENAME = ".shapa-index.db"
+#: Where an unreadable index is set aside before the rebuild (gitignored).
+CORRUPT_FILENAME = INDEX_FILENAME + ".corrupt"
 
 _SCHEMA_NOTES = """
 CREATE TABLE IF NOT EXISTS notes (
@@ -91,6 +94,21 @@ def _has_fts5_table(conn: sqlite3.Connection) -> bool:
     return row is not None
 
 
+def _connect_rw(path: Path) -> sqlite3.Connection:
+    """A read-write connection to *path* that has proved it is a database
+    (the WAL pragma reads the header, so a garbage file fails here)."""
+    conn = sqlite3.connect(path)
+    conn.row_factory = sqlite3.Row
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+    except sqlite3.OperationalError:
+        pass  # some filesystems (network mounts, read-only tmpfs) reject WAL
+    except sqlite3.DatabaseError:
+        conn.close()
+        raise
+    return conn
+
+
 def db_path(root) -> Path:
     return Path(root) / INDEX_FILENAME
 
@@ -130,12 +148,18 @@ def open_index(root, *, read_only: bool = False) -> sqlite3.Connection:
         conn.row_factory = sqlite3.Row
         return conn
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path)
-    conn.row_factory = sqlite3.Row
     try:
-        conn.execute("PRAGMA journal_mode=WAL")
-    except sqlite3.OperationalError:
-        pass  # some filesystems (network mounts, read-only tmpfs) reject WAL
+        conn = _connect_rw(path)
+    except sqlite3.DatabaseError as exc:
+        if isinstance(exc, sqlite3.OperationalError):
+            raise  # locked/busy/IO - transient, never a reason to drop the file
+        # Not a database, or a malformed image: the index is derived, so set
+        # the bad file aside (one gitignored copy, overwritten next time) and
+        # rebuild from the notes and the memory log on this same call.
+        os.replace(path, path.with_name(CORRUPT_FILENAME))
+        for side in ("-wal", "-shm"):
+            path.with_name(path.name + side).unlink(missing_ok=True)
+        conn = _connect_rw(path)
     conn.execute(_SCHEMA_NOTES)
     conn.execute(_SCHEMA_ID_INDEX)
     if fts5_available():

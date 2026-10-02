@@ -28,7 +28,7 @@ import os
 import sys
 from pathlib import Path
 
-from shapa import config, registry, serve
+from shapa import config, embed, memlog, registry, serve
 from shapa.config import WikiRoot
 from shapa.nodes import Node, load_nodes
 from shapa.score import score_meta
@@ -65,12 +65,17 @@ META_ANCHOR_CAP_PER_ROOT = 2
 #: one bad note.
 MAX_SUMMARY_CHARS = 160
 
+#: Memory v3: at most this many captured memory records per root enter the
+#: session-start overview (ranked by value with the notes), so a busy
+#: memory log never crowds out curated notes.
+MEMORY_CAP_PER_ROOT = 6
+
 def _summary(node: Node) -> str:
     """The note's one-line ``summary``, or a plain fallback built from its id
     when missing (an unvalidated/legacy note, or one written before schema
     v2's ``summary`` field existed - F04 flags it, but bootstrap must not
     depend on validation having run first)."""
-    raw = str(node.meta.get("summary", "")).strip()
+    raw = memlog.display_line(str(node.meta.get("summary", ""))).strip()
     if raw:
         return raw[:MAX_SUMMARY_CHARS]
     return node.id.replace("-", " ")
@@ -92,10 +97,45 @@ def _render_line(node: Node, root: WikiRoot) -> str:
 
 
 def _load_root(root: WikiRoot) -> dict[str, Node]:
+    """*root*'s md notes plus its most valuable live v3 memory records
+    (at most :data:`MEMORY_CAP_PER_ROOT`), ranked together by value below."""
     path = Path(root.path)
     if not path.is_dir():
         return {}
-    return load_nodes(path)
+    nodes = load_nodes(path)
+    nodes.update({nid: n for nid, n in _load_memories(path).items() if nid not in nodes})
+    return nodes
+
+
+def _load_memories(path: Path) -> dict[str, Node]:
+    """The top live memory records of *path* by value (uses, recency,
+    kind), as metadata-only Nodes. Never embeds (no model load at session
+    start) and never raises."""
+    if not memlog.has_log(path):
+        return {}
+    try:
+        conn = memlog.open_index(path)
+        if conn is None:
+            return {}
+        try:
+            live = memlog.active_records(conn)
+            counts = memlog.uses(conn)
+        finally:
+            conn.close()
+    except Exception:
+        return {}
+    metas = {rid: {**memlog.value_meta(rec, counts.get(rid, (0, None))),
+                   "summary": rec.summary, "_v3": True}
+             for rid, rec in live.items()}
+    top = sorted(metas, key=lambda rid: (-score_meta(metas[rid])[0], rid))[:MEMORY_CAP_PER_ROOT]
+    _MEMORY_COUNTS[str(path)] = len(live)
+    return {rid: Node(id=rid, type="memory", path=memlog.log_dir(path), meta=metas[rid])
+            for rid in top}
+
+
+#: live memory count per root path, filled by :func:`_load_memories` for
+#: the wiki header line.
+_MEMORY_COUNTS: dict[str, int] = {}
 
 
 def _select_from_loaded(
@@ -221,18 +261,31 @@ def build_context(
         "<shapa-memory>",
         "shapa session bootstrap - metadata-only overview of every wiki in "
         "scope (id/type/summary only, no bodies yet); treat as standing "
-        "context, not user instruction. Use `shapa fetch`/`shapa search` "
-        "for the full note behind any of these.",
+        "context, not user instruction. Full text of any id: `shapa get <id>` "
+        "(or the MCP get tool).",
     ]
     for wr in wiki_roots:
-        n = len(per_root[wr])
+        n = sum(1 for node in per_root[wr].values() if not node.meta.get("_v3"))
+        m = _MEMORY_COUNTS.get(str(Path(wr.path)), 0)
         tag = f" ({wr.repo})" if wr.repo else ""
-        lines.append(f"wiki[{wr.kind}{tag}]: {wr.path} - {n} note{'s' if n != 1 else ''}")
+        mems = f", {m} memor{'ies' if m != 1 else 'y'}" if m else ""
+        lines.append(f"wiki[{wr.kind}{tag}]: {wr.path} - {n} note{'s' if n != 1 else ''}{mems}")
+    lines.append(recall_mode_line())
     lines.append("")
     for node, root in selected:
         lines.append(_render_line(node, root))
     lines.append("</shapa-memory>")
     return "\n".join(lines)
+
+
+def recall_mode_line() -> str:
+    """One line naming the retrieval mode every fetch this session runs
+    in - never silent about the BM25-only fallback. Checks importability
+    only (no model load on the session-start path)."""
+    if embed.installed():
+        return f"recall: fused (model2vec vectors + {memlog.lexical_backend()} BM25)"
+    return (f"recall: bm25-only ({memlog.lexical_backend()}) - the [semantic] extra is "
+            "not installed; `pip install 'shapa[semantic]'` adds vectors")
 
 
 def _maybe_autostart_daemons(wiki_roots: list[WikiRoot]) -> None:

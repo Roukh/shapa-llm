@@ -5,7 +5,7 @@ created: "2026-09-30T02:00:00Z"
 consequence: 9
 locus: output-meta
 scope: repo
-summary: Index of shapa's multi-root backend spec - target architecture, install, upgrades, open risks; links the five part refs and the decision log.
+summary: Index of shapa's multi-root backend spec - target architecture, install, upgrades, open risks; links the part refs, memory v3 and the decision log.
 ---
 
 Final architecture for shapa's multi-root memory backend: global+repo dual-wiki loading, semantic search/RAG, and context-optimized note structure, so `pip install shapa` fully operates for any user on any harness. Synthesized from a 3-design tournament (winner: design 0, total 6.6) plus grafts from designs 1/2 and fixes for every fatal flaw the judges found.
@@ -19,6 +19,8 @@ This index stays under the 2,000-word reference cap by splitting the spec into l
 - §6 note schema v2 and validator codes: [[shapa-note-schema-v2]]
 - §7 what moved out of roukh-llm, Codex/OpenCode surface: [[shapa-roukh-llm-consumer]]
 - §10 operator decisions (taken and open): [[shapa-operator-decisions]]
+- Memory format v3 (records log, capture, fused recall, no-answer floor): [[shapa-memory-v3]]
+- Memory v3 lab grid and measured results: [[shapa-memory-v3-results]]
 
 The original single-file spec, including the 2026-09-30 empirical probe (§1), the implementation slices (§8) and the decision options as first posed (§10), is archived verbatim at `archive/shapa-backend-spec-2026-09-30.md`.
 

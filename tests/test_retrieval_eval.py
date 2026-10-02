@@ -108,7 +108,7 @@ class TestRetrievalEvalAcceptance(unittest.TestCase):
         for q in OFF_TOPIC:
             with self.subTest(prompt=q):
                 ctx = fetch.fetch_context(q, root=WIKI, k=5, record=False)
-                self.assertIn("<!-- no query-relevant notes found -->", ctx,
+                self.assertIn(fetch.NO_MATCH_LINE, ctx,
                               f"{q!r} did not surface the no-match marker")
                 selected = fetch.select(q, root=WIKI, k=5, read_only=True)
                 ids = {n.id for n, _ in selected}
@@ -141,7 +141,7 @@ class TestRetrievalEvalAcceptance(unittest.TestCase):
         for q, _expected in ON_TOPIC:
             with self.subTest(prompt=q):
                 ctx = fetch.fetch_context(q, root=WIKI, k=5, record=False)
-                self.assertNotIn("<!-- no query-relevant notes found -->", ctx)
+                self.assertNotIn(fetch.NO_MATCH_LINE, ctx)
 
 
 if __name__ == "__main__":
