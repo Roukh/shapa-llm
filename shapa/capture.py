@@ -63,7 +63,7 @@ import tempfile
 from pathlib import Path
 from datetime import datetime
 
-from shapa import config, memlog, store
+from shapa import config, memlog, redact, store
 
 #: The scopes a manual capture invocation may target (mirrors `shapa save`).
 #: "external" is CLI-only convenience: it writes into a DIFFERENT repo's own
@@ -463,9 +463,11 @@ def _try_distill(request_texts: list[str], final_text: str) -> list[dict] | None
     any failure at all (bad exit, timeout, unparsable output) - the caller
     falls back to the heuristic candidates."""
     try:
-        argv = _distill_command() + [_distill_prompt(request_texts, final_text)]
+        # The prompt goes in on stdin, redacted: session text never reaches
+        # argv (visible to every process) or the model unscrubbed.
         proc = subprocess.run(
-            argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            _distill_command(), input=redact.redact(_distill_prompt(request_texts, final_text)),
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
             cwd=tempfile.gettempdir(), timeout=DISTILL_TIMEOUT, text=True,
         )
     except (OSError, subprocess.SubprocessError):
@@ -500,27 +502,26 @@ def _spawn_distill_worker(transcript, session, root, scope, applies_to, cwd,
                           agent_transcript, last_msg) -> None:
     """Detached background re-invocation of this same module with
     ``--distill --_worker`` - the hook returns immediately; the worker does
-    the (possibly slow) model call and writes on its own."""
-    argv = [sys.executable, "-m", "shapa.capture", "--_worker", "--distill",
-            "--session", session or "manual"]
-    if transcript:
-        argv += ["--transcript", str(transcript)]
+    the (possibly slow) model call and writes on its own. The hook payload
+    (which may carry the final assistant message) goes over a pipe, never
+    argv."""
+    argv = [sys.executable, "-m", "shapa.capture", "--_worker", "--distill"]
     if root:
         argv += ["--root", str(root)]
     if scope:
         argv += ["--scope", scope]
     if applies_to:
         argv += ["--applies-to", applies_to]
-    if cwd:
-        argv += ["--cwd", str(cwd)]
-    if agent_transcript:
-        argv += ["--agent-transcript", str(agent_transcript)]
-    if last_msg:
-        argv += ["--last-assistant-message", last_msg]
+    payload = json.dumps({"transcript_path": str(transcript or ""), "session_id": session or "manual",
+                          "cwd": str(cwd) if cwd else None,
+                          "agent_transcript_path": str(agent_transcript) if agent_transcript else None,
+                          "last_assistant_message": last_msg})
     try:
-        subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                         stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True)
-    except OSError:
+        proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True)
+        proc.stdin.write(payload.encode("utf-8"))
+        proc.stdin.close()
+    except (OSError, ValueError):
         pass
 
 

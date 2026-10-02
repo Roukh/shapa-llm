@@ -513,6 +513,20 @@ class TestDistill(CaptureTestCase):
         self.assertEqual(written[0].kind, "decision")
         self.assertIn("SQLite", written[0].summary)
 
+    def test_distill_prompt_goes_in_redacted_on_stdin(self):
+        key = "sk-ant-api03-" + "Q" * 40
+        t = self.write("s.jsonl", [msg("user", "brief"), msg("assistant", REPORT_NONE + " " + key)])
+        seen = self.tmp / "seen.txt"
+        fake = self.tmp / "fake-distill-stdin.sh"
+        fake.write_text(f"#!/bin/sh\ncat > '{seen}'\necho \"$@\" >> '{seen}'\nexit 1\n",
+                        encoding="utf-8")
+        fake.chmod(0o755)
+        with mock.patch.dict(os.environ, {"SHAPA_DISTILL_CMD": str(fake)}):
+            capture.capture_session(str(t), "sessDISTIL3", root=self.root, distill=True)
+        text = seen.read_text()
+        self.assertIn("Final assistant message", text)
+        self.assertNotIn(key, text)
+
     def test_distill_failure_falls_back_to_heuristic(self):
         with mock.patch.dict(os.environ, {"SHAPA_DISTILL_CMD": "/nonexistent/no-such-binary-xyz"}):
             written = capture.capture_session(str(self.t), "sessDISTIL2", root=self.root, distill=True)
@@ -543,7 +557,10 @@ class TestDistill(CaptureTestCase):
                 args, kwargs = popen.call_args
                 self.assertIn("--_worker", args[0])
                 self.assertTrue(kwargs.get("start_new_session"))
-                self.assertEqual(kwargs.get("stdin"), subprocess.DEVNULL)
+                self.assertEqual(kwargs.get("stdin"), subprocess.PIPE)
+                self.assertNotIn(str(self.t), " ".join(args[0]))  # payload over the pipe
+                sent = json.loads(popen.return_value.stdin.write.call_args[0][0])
+                self.assertEqual(sent["transcript_path"], str(self.t))
         finally:
             sys.stdin = old_stdin
         self.assertEqual(exc.exception.code, 0)
