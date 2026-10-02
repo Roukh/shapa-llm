@@ -398,7 +398,8 @@ class AppendResult:
     path: Path | None = None
 
 
-def append(root, records, *, ops=(), dedup: bool = True, now: datetime | None = None) -> AppendResult:
+def append(root, records, *, ops=(), dedup: bool = True, now: datetime | None = None,
+           limit: int = MAX_APPEND) -> AppendResult:
     """Append *records* (and archive *ops*) to *root*'s current month log,
     under an exclusive lock on that file so concurrent sessions never
     interleave a check with a write.
@@ -408,10 +409,11 @@ def append(root, records, *, ops=(), dedup: bool = True, now: datetime | None = 
     (shingle Jaccard >= :data:`DUP_THRESHOLD`) of a live record of the same
     kind; a record in [:data:`SUPERSEDE_THRESHOLD`, DUP) of one live record
     of the same kind and repo is written with ``supersedes`` set to it.
-    Never writes more than :data:`MAX_APPEND` records per call."""
+    Never writes more than *limit* records per call (:data:`MAX_APPEND` -
+    a hook's flood guard; a bulk importer passes its own)."""
     root = Path(root)
     result = AppendResult()
-    candidates = [r for r in records if isinstance(r, Record)][:MAX_APPEND]
+    candidates = [r for r in records if isinstance(r, Record)][:max(0, limit)]
     ops = list(ops)
     if not candidates and not ops:
         return result
