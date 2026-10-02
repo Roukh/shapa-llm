@@ -488,12 +488,13 @@ def _load_root_data(root: Path, query: str, *, read_only: bool = False) -> _Root
     known = set(mem.get("known_terms", []))
     missing = query_terms - known
     if missing:
-        # Which of the remaining query words any note contains - one
-        # word-boundary search per word over the notes' text, not a
-        # re-tokenization of every note.
+        # Which of the remaining query words any note contains (id, summary,
+        # tags, body) - one word-boundary search per word over the notes'
+        # text, not a re-tokenization of every note.
         notes_text = " ".join(
-            f"{node.id.replace('-', ' ')} {bodies[nid]}" for nid, node in nodes.items()
-            if not is_memory(node)).lower()
+            f"{node.id.replace('-', ' ')} {node.meta.get('summary', '')} "
+            f"{' '.join(map(str, node.meta.get('tags') or []))} {bodies[nid]}"
+            for nid, node in nodes.items() if not is_memory(node)).lower()
         known |= {t for t in missing if re.search(rf"\b{re.escape(t)}\b", notes_text)}
 
     lex: dict[str, float] = {}
@@ -580,11 +581,33 @@ def select(query: str, root=None, k: int = DEFAULT_K, budget: int = DEFAULT_BUDG
     ).items
 
 
-def no_answer_features(per_root: dict, wiki_roots: list) -> dict:
+_NAME_RE = re.compile(r"[A-Za-z][A-Za-z0-9]*")
+
+
+def entity_terms(query: str, terms) -> list[str]:
+    """The subset of *terms* (lowercase content words) that *query* writes
+    as a name: an acronym (``SAML``), camelCase (``PyTorch``, ``iOS``) or a
+    capitalized word that does not start a sentence (``Kafka``)."""
+    terms = set(terms)
+    out: list[str] = []
+    for m in _NAME_RE.finditer(query):
+        form, low = m.group(0), m.group(0).lower()
+        if low not in terms or low in out:
+            continue
+        before = query[:m.start()].rstrip()
+        sentence_start = not before or before[-1] in ".?!:\n"
+        if ((form.isupper() and len(form) >= 2) or re.search(r"[a-z][A-Z]", form)
+                or (form[0].isupper() and not sentence_start)):
+            out.append(low)
+    return out
+
+
+def no_answer_features(per_root: dict, wiki_roots: list, query: str = "") -> dict:
     """The signals :func:`answerable` decides on, gathered across every
     root: the best RAW score per channel (never the normalized one - see
-    the GAP C note above), and how much of the query's own vocabulary the
-    corpus contains at all."""
+    the GAP C note above), how much of the query's own vocabulary the
+    corpus contains at all, and which unseen words the query writes as a
+    name (:func:`entity_terms`)."""
     top_emb = top_bm25 = top_mem_lex = top_lex = 0.0
     query_terms: set[str] = set()
     known: set[str] = set()
@@ -612,6 +635,7 @@ def no_answer_features(per_root: dict, wiki_roots: list) -> dict:
         "top_lex": top_lex,
         "query_terms": sorted(query_terms),
         "oov_terms": sorted(query_terms - known),
+        "entity_oov": entity_terms(query, query_terms - known),
     }
 
 
@@ -619,6 +643,11 @@ def no_answer_features(per_root: dict, wiki_roots: list) -> dict:
 #: (memory v3) or only the pre-v3 absolute guard - the bench flips this to
 #: measure "untuned v3" against the same code.
 CALIBRATED_FLOOR = True
+#: The calibrated floor's semantic override: a query naming an unseen
+#: entity is still answered when its best cosine reaches this. Calibrated on
+#: the dev set (built by a separate agent from rows outside the held-out
+#: set): every off-domain dev question stayed below 0.74 cosine.
+ENTITY_FLOOR_MAX_EMB = 0.75
 
 
 def answerable(features: dict, *, semantic: bool) -> bool:
@@ -629,13 +658,24 @@ def answerable(features: dict, *, semantic: bool) -> bool:
     The pre-v3 guard alone (raw cosine >= :data:`MIN_ABSOLUTE_EMBED`, or
     raw BM25 >= :data:`MIN_ABSOLUTE_BM25_BARE_CORE` without the semantic
     extra) passes nearly every prompt on a large corpus: generic words
-    clear any fixed cosine floor and BM25 idf grows with corpus size."""
+    clear any fixed cosine floor and BM25 idf grows with corpus size.
+
+    The calibrated floor (memory v3) adds one rule: a query that names a
+    specific thing - an acronym, a camelCase word or a capitalized name
+    (:func:`entity_terms`) - which occurs nowhere in memory asks about
+    something memory does not hold ("does it run on Kafka?"), unless the
+    semantic match is strong anyway (:data:`ENTITY_FLOOR_MAX_EMB`). Unseen
+    lowercase words never trigger it: answerable paraphrases routinely use
+    ordinary English the corpus lacks. Lexical, so it holds in bm25-only
+    mode too; a fully lowercase off-topic prompt can still get through."""
     if semantic:
         base = features["top_emb"] >= MIN_ABSOLUTE_EMBED
     else:
         base = features["top_bm25"] >= MIN_ABSOLUTE_BM25_BARE_CORE or features["top_mem_lex"] > 0
     if not base or not CALIBRATED_FLOOR:
         return base
+    if features.get("entity_oov"):
+        return semantic and features["top_emb"] >= ENTITY_FLOOR_MAX_EMB
     return True
 
 
@@ -791,7 +831,7 @@ def select_multi(query: str, start=None, roots: list[WikiRoot] | None = None,
     # on every root's score having come from a warm daemon that never
     # needed this process to touch the model at all.
     embed_used_anywhere = any(per_root[wr].embed_used for wr in wiki_roots)
-    features = no_answer_features(per_root, wiki_roots)
+    features = no_answer_features(per_root, wiki_roots, query)
     strong_enough = answerable(features, semantic=embed_used_anywhere)
     run_mode = "fused" if embed_used_anywhere else "bm25"
 

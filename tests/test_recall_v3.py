@@ -111,6 +111,39 @@ class TestFusedRanking(RecallCase):
         self.assertEqual(sel.items[0][0].id, self.webhook.id)
 
 
+class TestNoAnswerFloor(RecallCase):
+    def test_entity_terms_shapes(self):
+        q = "Does the deploy use Kafka, gRPC or SAML? Postgres is fine; community plugins."
+        terms = ["deploy", "kafka", "grpc", "saml", "postgres", "community", "plugins"]
+        self.assertEqual(sorted(fetch.entity_terms(q, terms)), ["grpc", "kafka", "saml"])
+        self.assertEqual(fetch.entity_terms("Kafka first.", ["kafka"]), [])
+
+    def test_unseen_named_entity_is_no_answer(self):
+        sel = fetch.select_multi("Do the webhook retries go through RabbitMQ?", roots=self.roots)
+        self.assertTrue(sel.no_match)
+        self.assertEqual(sel.features["entity_oov"], ["rabbitmq"])
+
+    def test_unseen_lowercase_word_still_answers(self):
+        sel = fetch.select_multi("why do webhook retries flood the queue so frequently",
+                                 roots=self.roots)
+        self.assertFalse(sel.no_match)
+        self.assertEqual(sel.items[0][0].id, self.webhook.id)
+
+    def test_known_named_entity_answers(self):
+        sel = fetch.select_multi("Why do Stripe webhook retries flood the queue?", roots=self.roots)
+        self.assertFalse(sel.no_match)
+
+    def test_untuned_switch_restores_the_pre_v3_guard(self):
+        with mock.patch.object(fetch, "CALIBRATED_FLOOR", False):
+            sel = fetch.select_multi("Do the webhook retries go through RabbitMQ?", roots=self.roots)
+        self.assertFalse(sel.no_match)
+
+    def test_floor_holds_in_bm25_mode(self):
+        with mock.patch.object(embed, "_AVAILABLE", False):
+            sel = fetch.select_multi("Do the webhook retries go through RabbitMQ?", roots=self.roots)
+        self.assertTrue(sel.no_match)
+
+
 class TestModeReporting(RecallCase):
     def test_bm25_only_mode_is_reported_and_still_recalls(self):
         with mock.patch.object(embed, "_AVAILABLE", False):
