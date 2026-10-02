@@ -14,10 +14,11 @@ import tempfile
 import textwrap
 import unittest
 from contextlib import redirect_stdout
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
-from shapa import bootstrap, cli, config, fetch, registry, store, upgrade
+from shapa import bootstrap, cli, config, fetch, memlog, registry, store, upgrade
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -51,6 +52,35 @@ def _note(d: Path, nid: str, body: str, *, ntype: str = "memory", summary: bool 
 def _agenda(wiki: Path, items: int = 2, *, uses: int | None = None) -> None:
     fires = "\n".join(f"{i}. fire number {chr(96 + i)} needs attention" for i in range(1, items + 1))
     _note(wiki, "agenda", f"# Agenda\n\n{fires}", locus="meta", uses=uses)
+
+
+def _session_note(wiki: Path, sid: str, requests: str, *, related: tuple = (),
+                  uses: int = 0, created: str = "2026-09-01T00:00:00Z") -> Path:
+    """A v2 capture-hook note (``shapa.capture.capture_session``'s exact
+    on-disk shape), for exercising ``shapa upgrade``'s session-note
+    conversion against real pre-v3 fixtures."""
+    note_id = f"memory-session-{sid}"
+    related_str = " ".join(f"[[{r}]]" for r in related)
+    body = (
+        f"Captured at the end of session {sid}. The operator's requests this "
+        f"session: {requests}\n\n"
+        "Type: [[memory]]." + (f" Related: {related_str}." if related_str else "")
+    )
+    text = (
+        "---\n"
+        f"id: {note_id}\n"
+        "type: memory\n"
+        f'created: "{created}"\n'
+        "consequence: 4\n"
+        "locus: output-meta\n"
+        f"uses: {uses}\n"
+        "---\n"
+        f"{body}\n"
+    )
+    wiki.mkdir(parents=True, exist_ok=True)
+    path = wiki / f"{note_id}.md"
+    path.write_text(text, encoding="utf-8")
+    return path
 
 
 def make_old_wiki(wiki: Path) -> Path:
@@ -123,7 +153,7 @@ class TestEndToEnd(UpgradeTestCase):
         self.assertEqual(report["wikis"][0]["status"], "behind")
         self.assertEqual(report["wikis"][0]["format"], 1)
         self.assertEqual(set(report["wikis"][0]["mechanical"]),
-                         {"docs", "gitignore", "counters", "frontmatter", "format"})
+                         {"docs", "gitignore", "gitattributes", "counters", "frontmatter", "format"})
         self.assertEqual(report["wikis"][0]["work"], [])
         self.assertEqual(_snapshot(wiki), before, "--check must change nothing")
 
@@ -515,6 +545,261 @@ class TestHookIntegration(UpgradeTestCase):
             with self.assertRaises(SystemExit):
                 fetch.main(["--query", "branch rebase", "--root", str(wiki), "--no-record"])
         self.assertIn(str(wiki.resolve()), registry.load())
+
+
+# --- format 3: memory-session conversion ----------------------------------------
+
+class TestMemoryConversion(UpgradeTestCase):
+    """``shapa upgrade``'s format-2 -> 3 session-note conversion: every live
+    ``memory-session-*.md`` note becomes one v3 memory-log record
+    (shapa.memlog), carries its use counter over, and is archived - never
+    deleted."""
+
+    def _wiki_with_sessions(self) -> Path:
+        wiki = make_old_wiki(self.repo_wiki())
+        _session_note(wiki, "abc12345", "Wire the new memlog store into capture.",
+                      related=("git-flow",), uses=3)
+        _session_note(
+            wiki, "def67890",
+            "Rotate the deploy key sk-ant-api03-abcdefghijklmnopqrstuvwx before shipping.",
+            uses=0,
+        )
+        return wiki
+
+    def test_check_lists_memory_and_gitattributes_without_changing_a_byte(self):
+        wiki = self._wiki_with_sessions()
+        before = _snapshot(wiki)
+
+        code, out = self.run_cli([str(wiki), "--check", "--json"])
+        self.assertEqual(code, 1)
+        report = json.loads(out)["wikis"][0]
+        self.assertIn("memory", report["mechanical"])
+        self.assertIn("gitattributes", report["mechanical"])
+        self.assertEqual(
+            sorted(report["mechanical"]["memory"]),
+            ["memory-session-abc12345.md", "memory-session-def67890.md"],
+        )
+        self.assertEqual(_snapshot(wiki), before, "--check must change nothing")
+
+    def test_upgrade_converts_archives_redacts_and_carries_uses(self):
+        wiki = self._wiki_with_sessions()
+
+        code, out = self.run_cli([str(wiki)])
+        self.assertEqual(code, 0, out)
+
+        # The session notes are gone from the root, archived (never deleted).
+        self.assertFalse((wiki / "memory-session-abc12345.md").exists())
+        self.assertFalse((wiki / "memory-session-def67890.md").exists())
+        self.assertTrue((wiki / "archive" / "memory-session-abc12345.md").exists())
+        self.assertTrue((wiki / "archive" / "memory-session-def67890.md").exists())
+
+        # One v3 record per note, in the note's created month's log file.
+        self.assertTrue((wiki / "memory" / "2026-09.jsonl").is_file())
+        view = memlog.read_log(wiki)
+        self.assertEqual(len(view.records), 2)
+        by_source = {r.source: r for r in view.records.values()}
+        rec1 = by_source["upgrade:memory-session-abc12345.md"]
+        rec2 = by_source["upgrade:memory-session-def67890.md"]
+
+        self.assertEqual(rec1.kind, "decision")
+        self.assertEqual(rec1.session, "abc12345")
+        self.assertEqual(rec1.scope, "repo")
+        self.assertIn("git-flow", rec1.tags)
+        self.assertNotIn("Captured at the end of session", rec1.summary)
+        self.assertIn("Wire the new memlog store", rec1.summary)
+
+        # The planted secret never reaches the log.
+        self.assertNotIn("sk-ant", rec2.summary)
+        self.assertNotIn("sk-ant", rec2.body)
+        raw = (wiki / "memory" / "2026-09.jsonl").read_text(encoding="utf-8")
+        self.assertNotIn("sk-ant", raw)
+
+        # The note's legacy `uses: 3` carried into memory_uses for the new id.
+        conn = memlog.open_index(wiki)
+        try:
+            row = conn.execute(
+                "SELECT uses FROM memory_uses WHERE id = ?", (rec1.id,)).fetchone()
+        finally:
+            conn.close()
+        self.assertEqual(row[0], 3)
+
+        # .gitattributes marks the log merge=union; format marker is 3.
+        self.assertIn(memlog.GITATTRIBUTES_LINE,
+                      (wiki / ".gitattributes").read_text(encoding="utf-8"))
+        self.assertEqual(registry.read_format(wiki), 3)
+
+    def test_second_upgrade_is_a_noop_and_check_then_passes(self):
+        wiki = self._wiki_with_sessions()
+        self.run_cli([str(wiki)])
+        after_first = _snapshot(wiki)
+
+        code, out = self.run_cli([str(wiki)])
+        self.assertEqual(code, 0, out)
+        self.assertEqual(_snapshot(wiki), after_first, "a second upgrade must be a no-op")
+
+        code, out = self.run_cli([str(wiki), "--check"])
+        self.assertEqual(code, 0, out)
+
+    def test_unparseable_session_note_is_still_archived_and_reported(self):
+        wiki = make_old_wiki(self.repo_wiki())
+        p = wiki / "memory-session-weird001.md"
+        p.write_text(
+            "---\nid: memory-session-weird001\ntype: memory\n"
+            'created: "2026-09-01T00:00:00Z"\nconsequence: 4\nlocus: output-meta\n---\n'
+            "not the capture-hook shape at all\n",
+            encoding="utf-8",
+        )
+        report = upgrade.upgrade_wiki(wiki)
+        self.assertIn("memory-session-weird001.md", report.mechanical.get("memory", []))
+        self.assertFalse(p.exists())
+        self.assertTrue((wiki / "archive" / "memory-session-weird001.md").exists())
+        self.assertEqual(len(memlog.read_log(wiki).records), 0)
+
+
+class TestMemlogJudgment(UpgradeTestCase):
+    def test_malformed_memory_log_line_is_a_work_item(self):
+        wiki = make_old_wiki(self.repo_wiki())
+        rec = memlog.make_record(kind="fact", summary="A seed memory.", scope="repo")
+        memlog.append(wiki, [rec])
+        log = memlog.current_log(wiki)
+        with open(log, "a", encoding="utf-8") as fh:
+            fh.write("not json at all\n")
+        codes = self.codes(wiki)
+        self.assertIn("MEMLOG", codes)
+        self.assertIn(log.name, "".join(codes["MEMLOG"]))
+
+
+class TestMemoryConversionGit(unittest.TestCase):
+    """A real git checkout: the archive move is a ``git mv``, and two
+    branches that each append to the same month file merge cleanly via the
+    ``merge=union`` attribute (shapa-backend-spec.md)."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.repo = self.tmp / "repo"
+        self.wiki = self.repo / ".shapa"
+        self.patches = [
+            mock.patch.object(config, "CONFIG_FILE", self.tmp / "config.json"),
+            mock.patch.dict(os.environ, {registry.REGISTRY_ENV_VAR: str(self.tmp / "wikis.json")}),
+        ]
+        for p in self.patches:
+            p.start()
+        self.repo.mkdir(parents=True)
+        self._git("init", "-q")
+        self._git("config", "user.email", "test@example.com")
+        self._git("config", "user.name", "Test")
+
+    def tearDown(self):
+        for p in self.patches:
+            p.stop()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _git(self, *args) -> subprocess.CompletedProcess:
+        return subprocess.run(["git", *args], cwd=str(self.repo), capture_output=True,
+                              text=True, timeout=30)
+
+    def _commit(self, message: str) -> None:
+        # --no-verify: this is a disposable fixture repo created purely to
+        # exercise `git mv`/`git merge` semantics in isolation - not a real
+        # commit to this (or any) project history, so the host's commit
+        # hooks (e.g. an identity check meant for real commits) don't apply.
+        self._git("add", "-A")
+        r = self._git("commit", "-q", "--no-verify", "-m", message)
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_archive_is_a_git_mv(self):
+        make_old_wiki(self.wiki)
+        _session_note(self.wiki, "abc12345", "A session worth remembering.")
+        self._commit("initial wiki + session note")
+
+        upgrade.upgrade_wiki(self.wiki)
+
+        status = self._git("status", "--porcelain").stdout
+        self.assertIn(".shapa/archive/memory-session-abc12345.md", status)
+        # `git mv` stages the move directly as a rename (R), not an
+        # untracked new file plus a deletion - proving the plain-move
+        # fallback never ran inside this checkout.
+        self.assertRegex(
+            status,
+            r"R\s+\.shapa/memory-session-abc12345\.md -> \.shapa/archive/memory-session-abc12345\.md",
+        )
+
+    def test_two_branches_appending_the_same_month_merge_cleanly(self):
+        make_old_wiki(self.wiki)
+        upgrade.upgrade_wiki(self.wiki)  # format 3: .gitattributes union line in place
+        self._commit("wiki at format 3")
+        main_branch = self._git("symbolic-ref", "--short", "HEAD").stdout.strip()
+
+        now = datetime(2026, 9, 10, tzinfo=timezone.utc)
+
+        self._git("checkout", "-q", "-b", "branch-a")
+        rec_a = memlog.make_record(kind="decision", summary="Branch A's own memory.",
+                                   source="test:a", scope="repo", created=memlog.now_iso(now))
+        memlog.append(self.wiki, [rec_a], now=now)
+        self._commit("branch a appends")
+
+        self._git("checkout", "-q", main_branch)
+        self._git("checkout", "-q", "-b", "branch-b")
+        rec_b = memlog.make_record(kind="decision", summary="Branch B's own memory.",
+                                   source="test:b", scope="repo", created=memlog.now_iso(now))
+        memlog.append(self.wiki, [rec_b], now=now)
+        self._commit("branch b appends")
+
+        self._git("checkout", "-q", main_branch)
+        r1 = self._git("merge", "--no-edit", "branch-a")
+        self.assertEqual(r1.returncode, 0, r1.stdout + r1.stderr)
+        r2 = self._git("merge", "--no-edit", "branch-b")
+        self.assertEqual(r2.returncode, 0, r2.stdout + r2.stderr)
+
+        merged = (self.wiki / "memory" / "2026-09.jsonl").read_text(encoding="utf-8")
+        self.assertIn("Branch A's own memory.", merged)
+        self.assertIn("Branch B's own memory.", merged)
+
+
+# --- CLI: --import-memri (opt-in, never part of a plain upgrade) ----------------
+
+class TestImportMemriCli(UpgradeTestCase):
+    def _export(self, wiki: Path, rows) -> Path:
+        path = wiki.parent / "export.json"
+        path.write_text(json.dumps(rows), encoding="utf-8")
+        return path
+
+    def test_plain_upgrade_never_imports_memri(self):
+        wiki = make_old_wiki(self.repo_wiki())
+        self.run_cli([str(wiki)])
+        self.assertFalse(memlog.has_log(wiki) and any(
+            r.source.startswith("memri:") for r in memlog.read_log(wiki).records.values()
+        ))
+
+    def test_import_memri_writes_into_the_given_path(self):
+        wiki = make_old_wiki(self.repo_wiki())
+        export = self._export(wiki, [
+            {"id": "r1", "type": "memory", "title": "Imported fact",
+             "body": "A fact worth importing from the old memri store for good.",
+             "created_at": "2026-01-01T00:00:00Z"},
+        ])
+        code, out = self.run_cli([str(wiki), "--import-memri", str(export)])
+        self.assertEqual(code, 0, out)
+        self.assertIn("records wrote: 1", out)
+        view = memlog.read_log(wiki)
+        self.assertEqual(len(view.records), 1)
+
+    def test_import_memri_dry_run_writes_nothing(self):
+        wiki = make_old_wiki(self.repo_wiki())
+        export = self._export(wiki, [
+            {"id": "r1", "type": "memory", "title": "Would be imported",
+             "body": "This body would become a record without --dry-run.",
+             "created_at": "2026-01-01T00:00:00Z"},
+        ])
+        code, out = self.run_cli([str(wiki), "--import-memri", str(export), "--dry-run"])
+        self.assertEqual(code, 0, out)
+        self.assertIn("[dry-run]", out)
+        self.assertFalse(memlog.has_log(wiki))
+
+    def test_import_memri_rejects_all_with_a_clean_usage_error(self):
+        with self.assertRaises(SystemExit) as exc:
+            upgrade.main(["--all", "--import-memri", "whatever.json"])
+        self.assertEqual(exc.exception.code, 2)
 
 
 if __name__ == "__main__":
