@@ -1,5 +1,5 @@
 ---
-id: roukh-entity-orrery-framework
+id: roukh-entity-framework
 type: memory
 created: "2026-05-12T16:05:06.875055+00:00"
 consequence: 3

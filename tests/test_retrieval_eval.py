@@ -53,7 +53,7 @@ PROMPTS: list[tuple[str, str | None]] = [
     ("the pipeline named step 3 as mine, should I also start step 4", "finish-current-pipeline-step-not-next"),
     ("can you just go ahead and remember this for next time without asking first", "operator-escalation-protocol"),
     ("does this note belong in the global wiki or the repo's own", "placement"),
-    ("what is ORRERY and who is Roukh", "roukh-entity-orrery-framework"),
+    ("what is ORRERY and who is Roukh", "roukh-entity-framework"),
     ("a note only links back to its own type page, is that a problem", "shapa-notes-need-rich-links"),
     ("can I trust an agent's own summary of what it did", "trust-verification-not-agent-reports"),
     ("eight worktrees running in parallel, what could go wrong", "wave-pipeline-multiworktree-safety-lessons"),

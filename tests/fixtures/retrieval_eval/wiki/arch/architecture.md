@@ -30,7 +30,7 @@ task queue, registration gate, research-checkpoint, or mandatory
 review-loop service** — the earlier flow-feat build→review→merge loop, its
 DB-backed jobs queue, the in-repo MCP server, `claude-runner`, the Hermes
 agent runtime, the Telegram bridge, and VPS install/ops were all built during
-the "orrery" push and later removed (see Key decisions).
+an earlier push and later removed (see Key decisions).
 
 ## Components
 

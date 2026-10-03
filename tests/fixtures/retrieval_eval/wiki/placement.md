@@ -15,6 +15,6 @@ Every `.shapa` note lands in exactly one wiki. `memory.py save` enforces this as
 
 **GLOBAL** (`roukh-llm/.shapa`) — a rule or fact that changes agent behaviour in ANY repo: workflow, tooling, the harness itself, hooks, skills, git/gh conventions, operator preferences, accounts. Also global when the note spans 2+ repos rather than belonging to one.
 
-**LOCAL** (`<repo>/.shapa`): only true or useful inside that one project. This applies to every project, whether or not it's in the orrery workspace (open-trader, ghobz_projects, lern, and so on). A project's memories live only in that project's own `.shapa`, and never in the global wiki (operator, 2026-09-30). If the project isn't checked out locally, ask; don't park its notes here.
+**LOCAL** (`<repo>/.shapa`): only true or useful inside that one project. This applies to every project, whether or not it's in the shared workspace (open-trader, ghobz_projects, lern, and so on). A project's memories live only in that project's own `.shapa`, and never in the global wiki (operator, 2026-09-30). If the project isn't checked out locally, ask; don't park its notes here.
 
 When unsure whether something is global or local, ask: would this still be true if the agent were working in a different repo tomorrow? Yes → global. No → local, in that project's own `.shapa`.

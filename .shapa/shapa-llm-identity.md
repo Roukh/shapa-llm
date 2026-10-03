@@ -12,7 +12,7 @@ What this repo is, how it relates to the roukh-llm brain, and what that means fo
 
 **The tool.** shapa = Self-Healing Autonomous Persistent Agent: a markdown-graph *operational* memory for an LLM agent. A note's value is its effect on the consuming LLM, not topic coverage. Types are MemRI (memory, rule, issue) plus reference. The core is pure stdlib; `[semantic]` (model2vec) and `[mcp]` are optional extras.
 
-**Runtime vs governance.** "Standalone" describes the runtime only: shapa has zero DB/infra coupling, and brain-DB ↔ wiki coherence must be an external integration, never shapa core (operator, 2026-07-10). It does not exempt the repo from governance. An early call that shapa-llm was exempt was corrected by the operator on 2026-07-10: shapa-llm is registered as a repo under subcomponent workspace (project ORRERY) with its own repo-level macro.
+**Runtime vs governance.** "Standalone" describes the runtime only: shapa has zero DB/infra coupling, and brain-DB ↔ wiki coherence must be an external integration, never shapa core (operator, 2026-07-10). It does not exempt the repo from governance. An early call that shapa-llm was exempt was corrected by the operator on 2026-07-10: shapa-llm is registered as a repo in the operator's project registry with its own repo-level macro. Never name the parent project anywhere in this repo (operator, 2026-10-02).
 
 **Public remote.** `github.com/Roukh/shapa-llm`, branch `main`, git identity Roukh. The repo is public, so everything tracked here, including this `.shapa/`, is published on push. Keep secrets, client names and other projects' details out of these notes.
 

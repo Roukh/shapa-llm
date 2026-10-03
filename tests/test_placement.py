@@ -77,9 +77,11 @@ class TestPlacementAsset(IsolatedTestCase):
 
     def test_is_generic_no_hardcoded_repo_allowlist(self):
         # A per-project asset must not bake in *this* workspace's own repo
-        # names - it ships to every user of the tool, on any project.
+        # names - it ships to every user of the tool, on any project. The
+        # folder this checkout sits in stands for the workspace's own name.
         text = cli.ASSETS_DIR.joinpath("placement.md").read_text(encoding="utf-8")
-        for name in ("roukh-llm", "roukh-brain", "shapa-llm", "workspace", "open-trader"):
+        workspace = Path(__file__).resolve().parents[2].name
+        for name in ("roukh-llm", "roukh-brain", "shapa-llm", "open-trader", workspace):
             self.assertNotIn(name, text)
 
     def test_valid_as_a_node(self):
