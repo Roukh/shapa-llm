@@ -26,8 +26,8 @@ Never tick a box by hand.
 
 ## sandboxed recall fix · 2026-10-02
 
-- [~] **SL6** The semantic model loads from the local cache with no hub round-trip, so a network-sandboxed shell keeps fused recall — verify: `.venv/bin/python -m pytest -q tests/test_embed.py` — claimed 2026-10-02 8288b87e
-- [ ] **SL7** The live CLI carries SL6 (operator: `uv tool install --force` from this checkout with the `[semantic,mcp]` extras) — verify: `diff -q shapa/embed.py /home/roukh/.local/share/uv/tools/shapa/lib/python3.12/site-packages/shapa/embed.py`
+- [x] **SL6** The semantic model loads from the local cache with no hub round-trip, so a network-sandboxed shell keeps fused recall — verify: `.venv/bin/python -m pytest -q tests/test_embed.py` — done 2026-10-02 8288b87e
+- [x] **SL7** The live CLI carries SL6 (operator: `uv tool install --force` from this checkout with the `[semantic,mcp]` extras) — verify: `diff -q shapa/embed.py /home/roukh/.local/share/uv/tools/shapa/lib/python3.12/site-packages/shapa/embed.py` — done 2026-10-02 8288b87e
 
 ## [[agenda]] · fires
 
