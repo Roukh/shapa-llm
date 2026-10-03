@@ -127,6 +127,43 @@ class TestNoteVectorsCaching(unittest.TestCase):
         self.assertEqual((self.tmp / embed._CACHE_FILE).read_text(), before)  # cache on disk untouched
 
 
+class TestModelLoading(unittest.TestCase):
+    """``available()`` loads the cached model without a hub round-trip, so
+    an offline or network-sandboxed shell keeps semantic recall."""
+
+    def setUp(self):
+        self.calls = []
+        self.fake = mock.Mock()
+        self.fake.StaticModel.from_pretrained.side_effect = self._from_pretrained
+        for name, value in (("_AVAILABLE", None), ("_MODEL", None)):
+            patcher = mock.patch.object(embed, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        patcher = mock.patch.dict("sys.modules", {"model2vec": self.fake})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.reject_kwarg = False
+
+    def _from_pretrained(self, name, **kwargs):
+        self.calls.append(kwargs)
+        if self.reject_kwarg and "force_download" in kwargs:
+            raise TypeError("unexpected keyword argument 'force_download'")
+        return "model"
+
+    def test_loads_the_cached_copy_instead_of_forcing_a_download(self):
+        self.assertTrue(embed.available())
+        self.assertEqual(self.calls, [{"normalize": True, "force_download": False}])
+
+    def test_falls_back_when_model2vec_predates_force_download(self):
+        self.reject_kwarg = True
+        self.assertTrue(embed.available())
+        self.assertEqual(self.calls[-1], {"normalize": True})
+
+    def test_a_load_failure_reports_unavailable(self):
+        self.fake.StaticModel.from_pretrained.side_effect = OSError("offline, no cache")
+        self.assertFalse(embed.available())
+
+
 @unittest.skipUnless(embed.available(), "model2vec ([semantic] extra) not installed")
 class TestRealModel2VecBackend(unittest.TestCase):
     """Exercised only when the real backend is installed - the contract

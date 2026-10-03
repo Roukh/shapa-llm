@@ -32,16 +32,28 @@ CACHE_FILENAME = ".shapa-vectors.json"
 _CACHE_FILE = CACHE_FILENAME
 
 
+def _load():
+    from model2vec import StaticModel  # type: ignore
+    # normalize=True: vectors come back unit-length, matching the
+    # sentence-transformers backend's normalize_embeddings=True this
+    # replaces - cosine() below assumes normalized input either way.
+    try:
+        # force_download=False loads the cached copy when there is one.
+        # model2vec's default re-fetches from the hub on every load, which
+        # fails offline or in a network-sandboxed shell and silently drops
+        # recall to BM25 even though the model is on disk.
+        return StaticModel.from_pretrained(_MODEL_NAME, normalize=True,
+                                           force_download=False)
+    except TypeError:  # a model2vec older than the force_download kwarg
+        return StaticModel.from_pretrained(_MODEL_NAME, normalize=True)
+
+
 def available() -> bool:
     """True if a local embedding model could be loaded."""
     global _AVAILABLE, _MODEL
     if _AVAILABLE is None:
         try:
-            from model2vec import StaticModel  # type: ignore
-            # normalize=True: vectors come back unit-length, matching the
-            # sentence-transformers backend's normalize_embeddings=True this
-            # replaces - cosine() below assumes normalized input either way.
-            _MODEL = StaticModel.from_pretrained(_MODEL_NAME, normalize=True)
+            _MODEL = _load()
             _AVAILABLE = True
         except Exception:
             _AVAILABLE = False

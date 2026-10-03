@@ -24,6 +24,11 @@ Never tick a box by hand.
 - [x] **SL2** Full suite green, socket and installer tests included (the hook runs it outside the sandbox) — verify: `.venv/bin/python -m pytest -q` — done 2026-10-02 9b195457
 - [x] **SL3** The live CLI carries the fix (operator: `uv tool install --force` from this checkout, then `shapa upgrade --all`) — verify: `diff -q shapa/capture.py /home/roukh/.local/share/uv/tools/shapa/lib/python3.12/site-packages/shapa/capture.py && diff -q shapa/validate.py /home/roukh/.local/share/uv/tools/shapa/lib/python3.12/site-packages/shapa/validate.py` — done 2026-10-02 9b195457
 
+## sandboxed recall fix · 2026-10-02
+
+- [~] **SL6** The semantic model loads from the local cache with no hub round-trip, so a network-sandboxed shell keeps fused recall — verify: `.venv/bin/python -m pytest -q tests/test_embed.py` — claimed 2026-10-02 8288b87e
+- [ ] **SL7** The live CLI carries SL6 (operator: `uv tool install --force` from this checkout with the `[semantic,mcp]` extras) — verify: `diff -q shapa/embed.py /home/roukh/.local/share/uv/tools/shapa/lib/python3.12/site-packages/shapa/embed.py`
+
 ## [[agenda]] · fires
 
 - [ ] **SL4** Every registered wiki is current with the installed shapa — verify: `shapa upgrade --all --check`
