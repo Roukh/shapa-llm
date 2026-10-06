@@ -303,6 +303,16 @@ def _is_tool_result_entry(obj: dict, blocks: list[dict]) -> bool:
     return any(b.get("type") == "tool_result" for b in blocks)
 
 
+#: User-role entries the harness writes, never the operator: an interrupt
+#: marker, a compaction summary, another agent's hand-back, a task notice.
+HARNESS_TEXT_PREFIXES = (
+    "[Request interrupted",
+    "This session is being continued from a previous conversation",
+    "Another Claude session sent a message",
+    "[SYSTEM NOTIFICATION",
+)
+
+
 def _operator_messages(entries: list[dict]) -> list[str]:
     """Qualifying operator-request texts, in order: user-role, not a tool
     result, not isMeta/isSidechain, not a hook/system injection (starts with
@@ -310,7 +320,7 @@ def _operator_messages(entries: list[dict]) -> list[str]:
     in the session (the raw task brief is never stored)."""
     out = []
     for obj in entries:
-        if obj.get("isMeta") or obj.get("isSidechain"):
+        if obj.get("isMeta") or obj.get("isSidechain") or obj.get("isCompactSummary"):
             continue
         if _entry_role(obj) != "user":
             continue
@@ -318,7 +328,7 @@ def _operator_messages(entries: list[dict]) -> list[str]:
         if _is_tool_result_entry(obj, blocks):
             continue
         text = _clean_user_text(_text_blocks(blocks))
-        if not text or text.startswith("<") or text.startswith("[Request interrupted"):
+        if not text or text.startswith("<") or text.startswith(HARNESS_TEXT_PREFIXES):
             continue
         out.append(text)
     return out
