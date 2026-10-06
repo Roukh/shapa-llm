@@ -54,6 +54,17 @@ score = locus_weight × (consequence / 10) × freshness × use_factor
 
 ---
 
+## The database (format 4)
+
+Format 4 keeps a wiki's work and memory in one SQLite file, `<wiki>/shapa.db`, tracked in git as the file itself. Context efficiency is the point: a session loads only open work and the rows that bear on it, and every merged feature cleans the database.
+
+- **Work ledger** (repo wikis only): `F` features (a branch and a PR; close on merge) hold `J` jobs (one commit whose subject starts `J<n>:`; close on that commit) which hold `T` tasks (no git artifact; an agent closes them). IDs are a kind letter plus a per-wiki counter, never reused. `shapa ledger add|claim|close|tree|branch|issues`.
+- **Rows:** `M` memories (something the operator said that matters, captured from the operator's own messages, never from agent reports), `R` rules, and `I` issues: every operator correction ("no", "wrong", "not like this") becomes an issue through the UserPromptSubmit hook (`shapa correction`), linked to the work claimed at the time. Claiming work prints its most related past issues. `shapa row add|edit|rm|link|tag|list`.
+- **Triggers:** `shapa ledger git-hooks` installs a repo's git hooks: `post-commit` runs `shapa ledger on-commit` and `pre-commit` runs `shapa ledger pre-commit`; after `gh pr merge` a PostToolUse hook runs `shapa ledger hook-posttool`; SessionStart runs `shapa ledger hook-start`. A merged feature closes its children, deletes `temp/<feature>/`, and sweeps: rows open more than 30 days expire, earlier closed rows are deleted, duplicate and superseded rows are deleted, memories unused for 60 days are deleted, similar rules are flagged for judgment.
+- **One file per repo:** every worktree writes the primary checkout's database, and it is committed only on the default branch (`shapa ledger pre-commit` refuses it elsewhere), so branches never fight over a binary file.
+- **Why SQLite:** relations (joins, foreign keys, recursive queries, transactions), one writer plus many readers across short-lived hook processes, and standard-library only. Vectors stay in the derived index.
+- **Files that remain:** `arch/` (an index of boxes and edges, one file per box), `research/` (one file per topic), and gitignored `temp/<feature>/` scrap.
+
 ## Captured memory (format 3)
 
 The Stop/SubagentStop hook (`shapa capture`) never writes a note per session. It reads the session's final assistant message and the operator's later requests, and extracts a few atomic memories: an outcome, a fact with its file paths, each open decision, and stated preferences. The first prompt and tool output are never stored. Secrets are redacted (`shapa/redact.py`) before anything is hashed, embedded or written.

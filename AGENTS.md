@@ -1,24 +1,25 @@
 # shapa-llm
 
-Source of the `shapa` tool: an operational-memory engine for LLM agents (markdown notes plus an append-only memory log, ranked recall, self-healing maintenance). This file is for agents working on the tool itself. The note schema a wiki follows is `shapa/assets/AGENTS.md`, which `shapa init` installs into every wiki; this repo's own wiki is `.shapa/`.
+Source of the `shapa` tool: an operational-memory engine for LLM agents (one SQLite database per wiki holding the work ledger and memory/rule/issue rows, ranked recall, self-healing maintenance). This file is for agents working on the tool itself. The note schema a wiki follows is `shapa/assets/AGENTS.md`, which `shapa init` installs into every wiki; this repo's own wiki is `.shapa/`.
 
 ## Navigation
 
 - `shapa/` is the engine package; `cli.py` is the `shapa` command (`python3 -m shapa` from a clone).
   - Wiki resolution and discovery: `config.py`, `registry.py` (`~/.shapa/wikis.json`).
   - Read path: `bootstrap.py` (SessionStart), `fetch.py`, `rank.py`, `bm25.py`, `embed.py`, `get.py`.
-  - Write path: `capture.py` (Stop hook), `redact.py`, `memlog.py` (format-3 log and its derived index), `save.py`.
+  - Database (format 4): `db.py` (schema, work ledger, rows, sweep, worktree resolution), `ledger.py` (`shapa ledger`/`row`/`correction` and the git and harness triggers), `migrate4.py` (format 3 to 4).
+  - Write path: `capture.py` (Stop hook), `redact.py`, `memlog.py` (format-3 log, and the derived index that also mirrors database rows), `save.py`.
   - Index and daemon: `store.py`, `serve.py`. MCP server: `mcp.py`.
   - Maintenance: `maintain.py`, `heartbeat.py`, `score.py`. Format: `frontmatter.py`, `nodes.py`, `validate.py`, `upgrade.py`, `status.py`. Opt-in importer: `memri_import.py`.
-- `shapa/assets/` ships into user wikis: `AGENTS.md` (schema and wiki marker), `placement.md`, `agenda.md`, `arch/` templates, and `skills/shapa-upgrade` (installed into harnesses, never into a wiki).
+- `shapa/assets/` ships into user wikis: `AGENTS.md` (schema and wiki marker), `placement.md`, the `arch/index.md` template, and `skills/shapa-upgrade` (installed into harnesses, never into a wiki).
 - `tests/` is the pytest suite, with fixtures under `tests/fixtures/`.
 - `install.sh` wires hooks, MCP and the skill from a clone. `bootstrap.sh` is the `curl | sh` installer.
-- `.shapa/` is this repo's wiki: `checklist.md` is the work queue, `agenda.md` names its top items, `arch/shapa-backend-spec.md` is the current spec.
+- `.shapa/` is this repo's wiki: `shapa.db` holds its work ledger and rows (`shapa ledger`, `shapa row list`), `arch/` the design docs.
 - `.github/workflows/test.yml` is CI.
 
 ## Owner
 
-Roukh (github.com/Roukh/shapa-llm), sole maintainer, MIT license. Commits use the Roukh noreply identity, and pushes need the `Roukh` gh account active (`gh auth status`). Work is tracked in `.shapa/checklist.md`.
+Roukh (github.com/Roukh/shapa-llm), sole maintainer, MIT license. Commits use the Roukh noreply identity, and pushes need the `Roukh` gh account active (`gh auth status`). Work is tracked in this repo's ledger (`shapa ledger`).
 
 ## Commands
 
@@ -32,9 +33,10 @@ Roukh (github.com/Roukh/shapa-llm), sole maintainer, MIT license. Commits use th
 
 - The repo is public. Everything tracked, `.shapa/` included, is published on push. Keep secrets, client names, other projects' details and private wiki content out of code, tests, fixtures, notes and commit messages.
 - The core engine stays pure standard library (`dependencies = []` in `pyproject.toml`). A new dependency goes behind an optional extra, and the core path must still work without it.
-- The engine has no database or hosted-service coupling. Integrations with other systems live outside this repo.
+- The engine has no hosted-database or hosted-service coupling; its one database is the local `shapa.db` file. Integrations with other systems live outside this repo.
 - Never run `shapa maintain --prune` or a non-dry-run heartbeat against a live wiki from an agent session; use `--dry-run`. Prune is operator-run only.
-- Destructive paths never trust frontmatter an agent wrote: `arch/` is protected by path, and superseded notes move to `archive/`, never deleted.
+- Destructive paths never trust frontmatter an agent wrote: `arch/` is protected by path, and superseded note files move to `archive/`. Database rows are different by design: the after-feature sweep deletes closed, expired, duplicate, superseded and stale rows, and the database file's git history is the record.
+- A wiki database is committed only on the default branch; `shapa ledger pre-commit` refuses it elsewhere. Worktrees write the primary checkout's file.
 - Only `shapa init --global` may write the global wiki pointer (`~/.shapa/config.json`).
 - `capture` and `maintain` run as hooks: they never block a session (always exit 0) and never write inside this repo or the installed package.
 - Tests run against temporary wikis. `tests/conftest.py` points `$SHAPA_REGISTRY` at a throwaway file; never aim the suite at a real wiki.
@@ -53,7 +55,7 @@ Roukh (github.com/Roukh/shapa-llm), sole maintainer, MIT license. Commits use th
 Current:
 - A wiki is a `.shapa/` or `shapa/` directory holding `AGENTS.md`, found by walking up from the cwd (`.shapa/` first). `config.memory_dir()` resolves `$SHAPA_MEMORY`, then the discovered wiki, then the pointer, then `~/.shapa/memory`.
 - Reads fan out over the global and repo wikis in scope; writes are scope-gated (`save --scope global|repo|external`).
-- Memory format 3 (0.8.0): `memory/YYYY-MM.jsonl` is the append-only source of truth and is committed. `.shapa-index.db` (FTS5, vectors, use counters) is derived and gitignored. `.shapa-format` marks a wiki's format, and `shapa upgrade` migrates older wikis.
+- Wiki format 4: `shapa.db` (tracked, committed whole) is the source of truth for the work ledger (features, jobs, tasks) and memory/rule/issue rows. `.shapa-index.db` (FTS5, vectors, use counters) is derived and gitignored and mirrors the rows for recall. `arch/` and `research/` stay files; `temp/<feature>/` is gitignored scrap. `.shapa-format` marks a wiki's format, and `shapa upgrade` migrates older wikis.
 - Recall mode is `fused` with `[semantic]` and `bm25` without it, and every surface reports which.
 
-Historical (do not resurrect): memory kept only outside the repo (v0.6), the `uses` frontmatter counter, `sentence-transformers` embeddings, the single repo-root wiki with no global/repo split (2026-07-10), one md note per captured session (before 0.8.0), and a `shapa search` command (0.8.0 has `fetch`). README passages saying this repo carries no `.shapa/` folder, or that a wiki always lives outside any git tree, predate the repo wiki. `.shapa/archive/` holds superseded specs.
+Historical (do not resurrect): the format-3 `memory/*.jsonl` log, `checklist.md`, `agenda.md` and `ideas.md` as wiki files (replaced by the database in format 4), memory kept only outside the repo (v0.6), the `uses` frontmatter counter, `sentence-transformers` embeddings, the single repo-root wiki with no global/repo split (2026-07-10), one md note per captured session (before 0.8.0), and a `shapa search` command (0.8.0 has `fetch`). README passages saying this repo carries no `.shapa/` folder, or that a wiki always lives outside any git tree, predate the repo wiki. Superseded specs live in git history.

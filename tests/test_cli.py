@@ -43,13 +43,13 @@ class TestInit(unittest.TestCase):
     def test_init_installs_rules_and_arch_templates(self):
         cli._init([str(self.wiki)])
         self.assertTrue((self.wiki / "AGENTS.md").is_file())
-        self.assertTrue((self.wiki / "arch" / "PRD.md").is_file())
+        self.assertTrue((self.wiki / "arch" / "index.md").is_file())
         # The bundled docs are the rules + generic project templates, NOT
         # shapa's own design docs (those live in the repo's docs/design/).
         self.assertFalse((self.wiki / "arch" / "MACRO.md").exists())
         # Every installed doc validates against the schema (loads as a node).
         nodes = load_nodes(self.wiki)
-        for nid in ("AGENTS", "PRD", "architecture", "system-design"):
+        for nid in ("AGENTS", "index"):
             self.assertIn(nid, nodes)
 
     def test_init_global_records_pointer_and_where_reads_it(self):
@@ -88,7 +88,7 @@ class TestInit(unittest.TestCase):
         with redirect_stdout(out):
             cli._init([str(self.wiki)])
 
-        for name in ("AGENTS.md", "placement.md", "arch/PRD.md", ".gitignore", ".obsidian/app.json"):
+        for name in ("AGENTS.md", "placement.md", "arch/index.md", ".gitignore", ".obsidian/app.json"):
             self.assertTrue((self.wiki / name).exists(), name)
         self.assertEqual(note.read_text(encoding="utf-8"), text)
         self.assertIn("my own fire", own_agenda.read_text(encoding="utf-8"))
@@ -182,7 +182,7 @@ class TestUpgradeDocs(unittest.TestCase):
 
     def test_upgrade_docs_never_touches_arch_or_notes(self):
         cli._init([str(self.wiki)])
-        prd = self.wiki / "arch" / "PRD.md"
+        prd = self.wiki / "arch" / "index.md"
         prd_before = prd.read_text(encoding="utf-8")
         prd.write_text(prd_before + "\nMY OWN NOTES ON THIS PROJECT", encoding="utf-8")
         a_note = self.wiki / "my-memory.md"

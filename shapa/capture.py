@@ -21,7 +21,9 @@ memories, in the standard job-report shape below.
   preference cue (never, always, from now on, prefer, instead of, must, ...)
   become ``preference`` records (or ``gotcha`` when a gotcha keyword fires).
 
-Every record is built with :func:`shapa.memlog.make_record` (redaction,
+On a format-4 wiki a memory goes to :func:`shapa.db.add_row`, which redacts
+every text it stores. On format 3, every record is built with
+:func:`shapa.memlog.make_record` (redaction,
 length clamping, content-derived id) and written with
 :func:`shapa.memlog.append` (exact/near-dup skip, supersede detection) - this
 module never writes a log line directly and never writes a ``.md`` note
@@ -70,7 +72,7 @@ import tempfile
 from pathlib import Path
 from datetime import datetime
 
-from shapa import config, memlog, redact, store
+from shapa import config, db, ledger, memlog, redact, store
 
 #: The scopes a manual capture invocation may target (mirrors `shapa save`).
 #: "external" is CLI-only convenience: it writes into a DIFFERENT repo's own
@@ -702,6 +704,7 @@ def _capture(transcript_path, session_id, root, now, scope, applies_to, cwd,
                       + _request_candidates(raw_msgs))[:CAPTURE_MAX_RECORDS]
 
     by_root: dict[Path, list[memlog.Record]] = {}
+    rows_by_root: dict[Path, list[tuple[dict, str]]] = {}
     preview: list[str] = []
     for cand in candidates:
         target = _route(cand, manual, base_root, base_scope, repo_name, has_git_no_wiki,
@@ -710,6 +713,17 @@ def _capture(transcript_path, session_id, root, now, scope, applies_to, cwd,
             continue
         troot, tscope, trepo = target
         source = f"{_source_for(cand, is_subagent)}#{sid}"
+        if db.exists(troot):
+            # Format 4: a memory is something the operator said, never the
+            # agent's own report, and a correction is an issue the
+            # UserPromptSubmit hook already logged.
+            text = f"{cand['summary']} {cand['body']}"
+            if source.startswith("capture:request") and not ledger.is_correction(text):
+                if dry_run:
+                    preview.append(f"M row -> {troot}: {cand['summary']}")
+                else:
+                    rows_by_root.setdefault(troot, []).append((cand, source))
+            continue
         rec = memlog.make_record(
             kind=cand["kind"], summary=cand["summary"], body=cand["body"],
             tags=cand.get("tags") or [], source=source, session=sid,
@@ -730,6 +744,22 @@ def _capture(transcript_path, session_id, root, now, scope, applies_to, cwd,
     for troot, recs in by_root.items():
         result = memlog.append(troot, recs, now=now)
         written.extend(result.written)
+    for troot, cands in rows_by_root.items():
+        conn = db.connect(troot)
+        if conn is None:
+            continue
+        try:
+            for cand, source in cands:
+                rid, created = db.add_row(conn, "M", cand["summary"], cand["body"],
+                                          tags=cand.get("tags") or [], source=source,
+                                          session=sid, now=now)
+                if created:
+                    written.append(memlog.Record(
+                        id=rid, created=memlog.now_iso(now), session=sid, repo=repo_name,
+                        scope="repo", kind="memory", summary=cand["summary"],
+                        body=cand["body"], tags=list(cand.get("tags") or []), source=source))
+        finally:
+            conn.close()
     _save_state(state_root, sid, active_path, new_offset, first_prompt_seen)
     return written
 

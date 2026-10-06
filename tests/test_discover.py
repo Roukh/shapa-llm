@@ -217,7 +217,7 @@ class TestInitPointerPolicy(unittest.TestCase):
         wiki.mkdir()
         (wiki / config.WIKI_MARKER).write_text("# rules\n", encoding="utf-8")
         self.cli._init([])  # must not raise
-        self.assertTrue((wiki / "arch" / "PRD.md").is_file())
+        self.assertTrue((wiki / "arch" / "index.md").is_file())
 
 
 if __name__ == "__main__":

@@ -33,6 +33,10 @@ class TestIsExcludedPath(unittest.TestCase):
     def test_obsidian_is_excluded(self):
         self.assertTrue(is_excluded_path((".obsidian", "app.json")))
 
+    def test_dependency_and_build_dirs_are_excluded(self):
+        for d in ("node_modules", ".venv", "__pycache__"):
+            self.assertTrue(is_excluded_path(("tools", "x", d, "pkg", "README.md")), d)
+
     def test_arch_is_not_excluded(self):
         self.assertFalse(is_excluded_path(("arch", "PRD.md")))
 

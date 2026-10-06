@@ -79,6 +79,14 @@ commands:
                  bring wikis to the current format: apply mechanical
                  migrations, report the judgment work list (exit 1 while
                  any wiki is behind; the shapa-upgrade skill finishes it)
+  ledger ...     the work ledger (format 4): features (branch + PR), jobs
+                 (one commit, subject `J<n>:`), tasks; claim, close, tree,
+                 issues; git triggers on-commit / on-merge / reconcile;
+                 after-feature sweep
+  row ...        memory (M), rule (R) and issue (I) rows: add --scope,
+                 edit, rm, link, tag, list
+  correction     UserPromptSubmit hook: an operator correction ("no",
+                 "wrong", "not like this") becomes an issue row
   serve [ROOT]   run the optional warm per-root daemon (latency only)
   mcp            run the MCP stdio server (search/get/save/placement tools;
                  vendor-neutral - Codex/OpenCode/etc.)
@@ -279,6 +287,13 @@ def main(argv: list[str] | None = None) -> None:
         return
     if cmd in _SUBMODULES:
         importlib.import_module(f"shapa.{cmd}").main(rest)
+        return
+    if cmd in ("ledger", "row", "correction"):
+        from shapa import ledger
+
+        entry = {"ledger": ledger.ledger_main, "row": ledger.row_main,
+                 "correction": ledger.correction_main}[cmd]
+        ledger.run(entry, rest)
         return
 
     print(f"shapa: unknown command '{cmd}'\n\n{USAGE}", file=sys.stderr)

@@ -41,7 +41,10 @@ from shapa import config
 #:   1 - pre-marker wikis (schema v1, counters in frontmatter)
 #:   2 - schema v2 + lean shape (spec §10 decisions 6/7)
 #:   3 - v3 memory records: memory/ JSONL log, session notes converted
-CURRENT_FORMAT = 3
+#:   4 - one database per wiki (shapa.db, tracked): the work ledger
+#:       (features/jobs/tasks) and memory/rule/issue rows; notes, checklist,
+#:       ideas, agenda and the memory log migrate into it
+CURRENT_FORMAT = 4
 LEGACY_FORMAT = 1
 FORMAT_FILENAME = ".shapa-format"
 

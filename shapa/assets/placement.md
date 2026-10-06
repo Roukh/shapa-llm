@@ -9,8 +9,8 @@ locus: output
 # placement.md — where a new note belongs
 
 > Installed by `shapa init` alongside `AGENTS.md`. Read this before writing
-> any new note, or before calling the MCP `save` tool - `scope` is a
-> required, agent-made decision. There is no default; a write with no
+> any new memory, rule or issue (`shapa row add ... --scope`, `shapa save`,
+> or the MCP `save` tool) - `scope` is a required, agent-made decision. There is no default; a write with no
 > `scope` is refused rather than guessed (shapa-backend-spec.md §4.1).
 
 ## The decision rule

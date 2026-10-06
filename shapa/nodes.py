@@ -33,7 +33,11 @@ PROTECTED_TYPES = frozenset({"reference"})
 #: package goes through `load_nodes` or `shapa.store.sync`'s identical
 #: filter) in `fetch`, `bootstrap`, `mcp` search/get, `capture`,
 #: `heartbeat`, and `maintain` either.
-EXCLUDED_DIRNAMES = frozenset({"archive", "attic", ".obsidian"})
+#: ``temp/`` (format 4) holds scrap notes per feature - never indexed,
+#: validated or pruned; they leave with their feature.
+EXCLUDED_DIRNAMES = frozenset({"archive", "attic", ".obsidian", "temp",
+                               # a tool kept inside a wiki brings its dependencies; never notes
+                               "node_modules", ".venv", "__pycache__"})
 
 #: Per-wiki convention files: every wiki carries its own copy by design - the
 #: schema docs shapa ships and refreshes (``AGENTS.md``, ``placement.md``)
@@ -47,7 +51,7 @@ CONVENTION_IDS = frozenset({"AGENTS", "placement", "agenda", "ideas", "checklist
 #: That recurrence is construction, not the cross-root ambiguity (F09) that
 #: two independently authored notes colliding on one id would be - so
 #: neither ``validate --all-roots`` nor ``fetch`` flags these ids.
-STRUCTURAL_IDS = CONVENTION_IDS | {"PRD", "architecture", "system-design"}
+STRUCTURAL_IDS = CONVENTION_IDS | {"PRD", "architecture", "system-design", "index"}
 
 
 def is_excluded_path(rel_parts: tuple) -> bool:

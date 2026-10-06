@@ -28,7 +28,7 @@ import os
 import sys
 from pathlib import Path
 
-from shapa import config, embed, memlog, registry, serve
+from shapa import config, embed, ledger, memlog, registry, serve
 from shapa.config import WikiRoot
 from shapa.nodes import Node, load_nodes
 from shapa.score import score_meta
@@ -127,9 +127,15 @@ def _load_memories(path: Path) -> dict[str, Node]:
     metas = {rid: {**memlog.value_meta(rec, counts.get(rid, (0, None))),
                    "summary": rec.summary, "_v3": True}
              for rid, rec in live.items()}
-    top = sorted(metas, key=lambda rid: (-score_meta(metas[rid])[0], rid))[:MEMORY_CAP_PER_ROOT]
+    # Rules and issues from a format-4 database are standing context, ranked
+    # with the notes under the budget; only memories are capped.
+    standing = [rid for rid in metas if live[rid].kind in ("rule", "issue")]
+    capped = [rid for rid in metas if live[rid].kind not in ("rule", "issue")]
+    top = standing + sorted(capped, key=lambda rid: (-score_meta(metas[rid])[0], rid)
+                            )[:MEMORY_CAP_PER_ROOT]
     _MEMORY_COUNTS[str(path)] = len(live)
-    return {rid: Node(id=rid, type="memory", path=memlog.log_dir(path), meta=metas[rid])
+    return {rid: Node(id=rid, type=live[rid].kind if live[rid].kind in memlog.ROW_KINDS
+                      else "memory", path=memlog.log_dir(path), meta=metas[rid])
             for rid in top}
 
 
@@ -250,11 +256,18 @@ def build_context(
         return ""
 
     per_root = {root: _load_root(root) for root in wiki_roots}
-    if not any(per_root.values()):
+    ledger_lines: list[str] = []
+    for wr in wiki_roots:
+        try:
+            ledger_lines.extend(ledger.overview(Path(wr.path), wr.repo or wr.kind,
+                                                work=wr.kind != "global"))
+        except Exception:
+            pass  # a broken database never blocks session start
+    if not any(per_root.values()) and not ledger_lines:
         return ""  # no notes anywhere - "empty memory", not an error
 
     selected = _select_from_loaded(per_root, wiki_roots, budget)
-    if not selected:
+    if not selected and not ledger_lines:
         return ""
 
     lines = [
@@ -269,8 +282,11 @@ def build_context(
         m = _MEMORY_COUNTS.get(str(Path(wr.path)), 0)
         tag = f" ({wr.repo})" if wr.repo else ""
         mems = f", {m} memor{'ies' if m != 1 else 'y'}" if m else ""
+        if ledger.db.exists(wr.path):
+            mems = ", database rows below"
         lines.append(f"wiki[{wr.kind}{tag}]: {wr.path} - {n} note{'s' if n != 1 else ''}{mems}")
     lines.append(recall_mode_line())
+    lines.extend(ledger_lines)
     lines.append("")
     for node, root in selected:
         lines.append(_render_line(node, root))
