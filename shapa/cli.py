@@ -95,6 +95,11 @@ memory dir: ${'{'}SHAPA_MEMORY{'}'} or ~/.shapa/memory  (currently: {config.memo
 """
 
 
+#: What `shapa init` installs into a new wiki - named, never globbed, so a
+#: stale build directory re-shipping a removed asset cannot leak it into wikis.
+INIT_DOCS = ("AGENTS.md", "placement.md", "arch/index.md")
+
+
 def _install_docs(target: Path) -> list[str]:
     """Install the bundled design docs into *target*, without clobbering edits.
 
@@ -105,10 +110,11 @@ def _install_docs(target: Path) -> list[str]:
     installed: list[str] = []
     if not ASSETS_DIR.is_dir():
         return installed
-    for src in sorted(ASSETS_DIR.rglob("*.md")):
-        rel = src.relative_to(ASSETS_DIR)
-        if rel.parts[0] in ("skills", "prompts"):
-            continue  # harness skills and agent prompts - not wiki docs
+    for name in INIT_DOCS:
+        src = ASSETS_DIR / name
+        if not src.is_file():
+            continue
+        rel = Path(name)
         dst = target / rel
         if dst.exists():
             continue
