@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 from dataclasses import asdict, dataclass, field
@@ -60,6 +61,7 @@ CACHE_IGNORES = (
     f"{db.DB_FILENAME}-wal",
     f"{db.DB_FILENAME}-shm",
     "temp/",
+    ".shapa-reconfigure-claim",
 )
 #: Format 4: git must never try to merge or diff the database as text.
 DB_GITATTRIBUTES_LINE = f"{db.DB_FILENAME} binary"
@@ -655,12 +657,39 @@ def main(argv: list[str] | None = None) -> None:
                              "persona rows) into PATH's memory log - PATH defaults to the "
                              "repo wiki in scope, else the global wiki. Never runs as part of "
                              "a plain upgrade.")
+    parser.add_argument("--reconfigure-prompt", action="store_true", dest="reconfigure_prompt",
+                        help="Print the format-4 restructure prompt for PATH (default: the repo "
+                             "wiki in scope) and claim the job for a few hours.")
+    parser.add_argument("--mark-reconfigured", action="store_true", dest="mark_reconfigured",
+                        help="Record that PATH's restructure is done; ends the session-start "
+                             "directive.")
     parser.add_argument("--dry-run", action="store_true", dest="dry_run",
                         help="With --import-memri: compute what would be imported; write nothing.")
     args = parser.parse_args(argv)
 
     if args.print_skill:
         sys.stdout.write(SKILL_ASSET.read_text(encoding="utf-8"))
+        sys.exit(0)
+
+    if args.reconfigure_prompt or args.mark_reconfigured:
+        from shapa import reconfigure
+
+        root = Path(args.path).expanduser() if args.path else (config.discover() or config.global_root())
+        if not registry.is_wiki(root):
+            print(f"shapa: {root} is not a wiki ({config.WIKI_MARKER} missing)", file=sys.stderr)
+            sys.exit(2)
+        if args.mark_reconfigured:
+            left = reconfigure.reasons(root)
+            left = [r for r in left if not r.startswith("migrated mechanically")]
+            if left:
+                print(f"shapa: {reconfigure.target(root)} is not done: {'; '.join(left)}",
+                      file=sys.stderr)
+                sys.exit(1)
+            reconfigure.mark_done(root)
+            print(f"shapa: {reconfigure.target(root)} marked restructured")
+            sys.exit(0)
+        reconfigure.claim(root, os.environ.get("CLAUDE_SESSION_ID", "")[:8])
+        sys.stdout.write(reconfigure.prompt(root))
         sys.exit(0)
 
     if args.import_memri:

@@ -174,6 +174,7 @@ def step_database(root: Path, dry_run: bool) -> list[str]:
         return []
     if dry_run:
         return [f"{db.DB_FILENAME} <- {', '.join(leftovers(root)) or 'new'}"]
+    content = bool(leftovers(root))
     removed: list[str] = []
     conn = db.connect(root, create=True)
     try:
@@ -187,4 +188,10 @@ def step_database(root: Path, dry_run: bool) -> list[str]:
         if (root / name).is_file():
             (root / name).unlink()
             removed.append(name)
+    if content:
+        # Mechanical work is done; the judgment pass (shapa.reconfigure) is not.
+        from shapa import reconfigure
+
+        if reconfigure._meta(root) != "done":
+            reconfigure.set_state(root, "pending")
     return [f"{db.DB_FILENAME} <- {', '.join(removed) or 'new'}"]

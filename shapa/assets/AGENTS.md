@@ -104,3 +104,7 @@ and the lean caps: at most 40 live root notes, 12 `arch/` files, 250 KB.
 (the note id kept as alias), checklist sections become features and their open
 items jobs, open ideas and operator-sourced memory-log records become
 memories, and `agenda.md`, `ideas.md`, `checklist.md` and `memory/` go away.
+Until a migrated or older wiki is restructured by hand (rows sorted, arch
+boxes written), every session's bootstrap opens with a directive to dispatch
+one dedicated agent with `shapa upgrade --reconfigure-prompt <wiki>`; that
+agent ends it with `shapa upgrade --mark-reconfigured <wiki>`.

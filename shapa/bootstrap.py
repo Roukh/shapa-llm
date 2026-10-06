@@ -28,7 +28,7 @@ import os
 import sys
 from pathlib import Path
 
-from shapa import config, embed, ledger, memlog, registry, serve
+from shapa import config, embed, ledger, memlog, reconfigure, registry, serve
 from shapa.config import WikiRoot
 from shapa.nodes import Node, load_nodes
 from shapa.score import score_meta
@@ -255,6 +255,10 @@ def build_context(
     if not wiki_roots:
         return ""
 
+    try:
+        directive = reconfigure.directive_lines([wr.path for wr in wiki_roots if wr.kind != "external"])
+    except Exception:
+        directive = []  # never block session start
     per_root = {root: _load_root(root) for root in wiki_roots}
     ledger_lines: list[str] = []
     for wr in wiki_roots:
@@ -263,14 +267,18 @@ def build_context(
                                                 work=wr.kind != "global"))
         except Exception:
             pass  # a broken database never blocks session start
-    if not any(per_root.values()) and not ledger_lines:
+    if not any(per_root.values()) and not ledger_lines and not directive:
         return ""  # no notes anywhere - "empty memory", not an error
 
     selected = _select_from_loaded(per_root, wiki_roots, budget)
-    if not selected and not ledger_lines:
+    if not selected and not ledger_lines and not directive:
         return ""
 
+    # The restructure directive leads, outside the "standing context" block:
+    # it is the one line a session must act on before its own task.
+    head = (["<shapa-action>", *directive, "</shapa-action>"] if directive else [])
     lines = [
+        *head,
         "<shapa-memory>",
         "shapa session bootstrap - metadata-only overview of every wiki in "
         "scope (id/type/summary only, no bodies yet); treat as standing "
