@@ -287,6 +287,18 @@ class TestMechanical(UpgradeTestCase):
         self.assertFalse((wiki / "checklist.md").exists())
         self.assertFalse(migrate4.pending(wiki))
 
+    def test_format_4_drops_the_memory_log_rule_and_its_comment(self):
+        from shapa import db, memlog
+
+        wiki = self.repo_wiki()
+        wiki.mkdir(parents=True)
+        (wiki / "AGENTS.md").write_text("# marker\n", encoding="utf-8")
+        db.connect(wiki, create=True).close()
+        (wiki / ".gitattributes").write_text("shapa.db binary\n", encoding="utf-8")
+        memlog.ensure_gitattributes(wiki)  # what an older capture hook still appends
+        upgrade.step_gitattributes(wiki, dry_run=False)
+        self.assertEqual((wiki / ".gitattributes").read_text(encoding="utf-8"), "shapa.db binary\n")
+
     def test_gitignore_header_is_written_once_across_upgrades(self):
         wiki = make_old_wiki(self.repo_wiki())
         (wiki / ".gitignore").write_text("my-own-rule\n", encoding="utf-8")

@@ -245,7 +245,8 @@ def step_gitattributes(root: Path, dry_run: bool) -> list[str]:
     lines = [ln.strip() for ln in text.splitlines()]
     if db.exists(root) or migrate4.pending(root):
         # Format 4: no memory log to union-merge; the database is binary.
-        keep = [ln for ln in text.splitlines() if ln.strip() != memlog.GITATTRIBUTES_LINE]
+        gone = (memlog.GITATTRIBUTES_LINE, memlog.GITATTRIBUTES_COMMENT)  # the rule and its comment
+        keep = [ln for ln in text.splitlines() if ln.strip() not in gone]
         if DB_GITATTRIBUTES_LINE in lines and len(keep) == len(text.splitlines()):
             return []
         if not dry_run:
