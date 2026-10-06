@@ -120,8 +120,12 @@ def default_branch(repo: Path) -> str:
 
 
 def slug(text: str, limit: int = 40) -> str:
+    """Kebab-case *text*, cut at a word boundary within *limit* chars."""
     s = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
-    return s[:limit].rstrip("-") or "work"
+    if len(s) > limit:
+        cut = s[:limit + 1]
+        s = cut[:cut.rfind("-")] if "-" in cut else s[:limit]
+    return s.strip("-") or "work"
 
 
 def branch_name(item: db.Item) -> str:
@@ -483,6 +487,7 @@ def ledger_main(argv: list[str]) -> int:
     t.add_argument("id")
     br = add("branch", help="name a feature's branch and record it")
     br.add_argument("id")
+    br.add_argument("--name", help="the branch name (default F<n>-<title slug>)")
     ed = add("edit")
     ed.add_argument("id")
     ed.add_argument("--title")
@@ -580,7 +585,9 @@ def ledger_main(argv: list[str]) -> int:
             item = db.get_item(conn, args.id)
             if item is None or item.kind != "F":
                 raise CommandError("only a feature gets a branch")
-            name = item.git_ref or branch_name(item)
+            name = args.name or item.git_ref or branch_name(item)
+            if db.feature_of_branch(name) != item.id:
+                raise CommandError(f"a feature's branch name starts with {item.id}-")
             db.update_item(conn, item.id, git_ref=name)
             print(name)
         elif cmd == "edit":

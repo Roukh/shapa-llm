@@ -55,6 +55,11 @@ class TestIds(LedgerCase):
                 self.conn.execute("INSERT INTO items(id, kind, parent, title, created, updated) "
                                   "VALUES ('J9', 'J', 'F404', 'x', 'now', 'now')")
 
+    def test_branch_slug_cuts_at_a_word(self):
+        f1 = db.add_item(self.conn, "F", "shapa format 4 in the harness: global wiki path, ledger hooks")
+        self.assertEqual(ledger.branch_name(db.get_item(self.conn, f1)),
+                         "F1-shapa-format-4-in-the-harness-global")
+
     def test_branch_and_commit_parsers(self):
         self.assertEqual(db.feature_of_branch("F12-sqlite-ledger"), "F12")
         self.assertEqual(db.feature_of_branch("origin/f3-x"), "F3")
