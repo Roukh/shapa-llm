@@ -445,6 +445,10 @@ def check_agenda(root, *, max_items: int = 3) -> list[Violation]:
 
     agenda_path = root / "agenda.md"
     if not agenda_path.is_file():
+        from shapa import db
+
+        if db.exists(root):
+            return []  # format 4: the agenda is the database's work ledger
         return [Violation("F11", 0, "agenda.md is missing (required: lists the top 3 fires)")]
 
     parsed = frontmatter.parse(agenda_path)

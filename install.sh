@@ -13,6 +13,9 @@
 #   Stop             -> shapa capture           (write: distil the session)
 #   Stop             -> shapa maintain --prune   (prune orphans/stale + merge dupes)
 #   SubagentStop     -> shapa capture
+#   UserPromptSubmit -> shapa correction        (write: an operator correction -> issue row)
+#   SessionStart     -> shapa ledger hook-start (close features whose branch merged)
+#   PostToolUse/Bash -> shapa ledger hook-posttool (after `gh pr merge`: close + sweep)
 #
 # MCP server registration (--mcp, gated per --harness; skipped for any
 # harness whose binary isn't on PATH - see the mcp_* functions below for the
@@ -107,8 +110,15 @@ FETCH_CMD="$INV fetch"
 CAPTURE_CMD="$INV capture"
 MAINTAIN_CMD="$INV maintain --prune"
 
-EVENTS=("SessionStart"    "UserPromptSubmit" "Stop"         "Stop"          "SubagentStop")
-CMDS=(  "$BOOTSTRAP_CMD"  "$FETCH_CMD"        "$CAPTURE_CMD" "$MAINTAIN_CMD" "$CAPTURE_CMD")
+CORRECTION_CMD="$INV correction"
+LEDGER_START_CMD="$INV ledger hook-start"
+LEDGER_POSTTOOL_CMD="$INV ledger hook-posttool"
+
+EVENTS=("SessionStart"    "UserPromptSubmit" "Stop"         "Stop"          "SubagentStop"
+        "UserPromptSubmit" "SessionStart"      "PostToolUse")
+CMDS=(  "$BOOTSTRAP_CMD"  "$FETCH_CMD"        "$CAPTURE_CMD" "$MAINTAIN_CMD" "$CAPTURE_CMD"
+        "$CORRECTION_CMD" "$LEDGER_START_CMD" "$LEDGER_POSTTOOL_CMD")
+MATCHERS=("" "" "" "" "" "" "" "Bash")
 
 # The argv a harness should run to speak to the shapa MCP server: the same
 # invocation as the hooks above plus a trailing "mcp" subcommand. $INV is
@@ -393,14 +403,14 @@ fi
 if harness_in_scope claude; then
   MERGED="$(cat "$SETTINGS")"
   for i in "${!EVENTS[@]}"; do
-    ev="${EVENTS[$i]}"; cmd="${CMDS[$i]}"
+    ev="${EVENTS[$i]}"; cmd="${CMDS[$i]}"; matcher="${MATCHERS[$i]}"
     present="$(printf '%s' "$MERGED" | jq --arg ev "$ev" --arg cmd "$cmd" \
       '[.hooks[$ev][]?.hooks[]? | select(.command == $cmd)] | length')"
     [ "$present" != "0" ] && continue
-    MERGED="$(printf '%s' "$MERGED" | jq --arg ev "$ev" --arg cmd "$cmd" '
+    MERGED="$(printf '%s' "$MERGED" | jq --arg ev "$ev" --arg cmd "$cmd" --arg m "$matcher" '
       .hooks = (.hooks // {})
       | .hooks[$ev] = ((.hooks[$ev] // []) + [
-          { "matcher": "", "hooks": [ { "type": "command", "command": $cmd, "timeout": 60 } ] } ])')"
+          { "matcher": $m, "hooks": [ { "type": "command", "command": $cmd, "timeout": 60 } ] } ])')"
   done
   write_settings "$MERGED"
   wire_obsidian
@@ -416,6 +426,10 @@ if harness_in_scope claude; then
   echo "  UserPromptSubmit -> $INV fetch"
   echo "  Stop             -> $INV capture ; $INV maintain --prune"
   echo "  SubagentStop     -> $INV capture"
+  echo "  UserPromptSubmit -> $INV correction ; SessionStart -> $INV ledger hook-start"
+  echo "  PostToolUse/Bash -> $INV ledger hook-posttool"
+  echo "Git (per repo or your core.hooksPath): post-commit -> $INV ledger on-commit,"
+  echo "  pre-commit -> $INV ledger pre-commit"
   echo "maintain --prune deletes orphan/stale notes and auto-merges duplicates."
   echo "Preview anytime:  SHAPA_MEMORY=$MEMORY $INV maintain --dry-run"
 else

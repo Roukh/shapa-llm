@@ -81,6 +81,26 @@ def infer_scope(start: str | Path | None, applies_to: str | None) -> str:
     return "repo" if config.discover(start) is not None else "global"
 
 
+def save_row(root, scope: str, note_type: str, summary: str, body: str, tags, alias=None) -> dict:
+    """Format 4: a memory/rule/issue is a row in the wiki's database, never a
+    note file. *alias* keeps a caller-supplied slug findable by ``get``."""
+    from shapa import db
+
+    kind = {"memory": "M", "rule": "R", "issue": "I"}[note_type]
+    conn = db.connect(root)
+    try:
+        rid, created = db.add_row(conn, kind, summary, body, tags=tags or [], alias=alias or None,
+                                  source="save")
+    except db.LedgerError as exc:
+        return {"error": str(exc)}
+    finally:
+        conn.close()
+    out = {"id": rid, "path": str(db.db_path(root)), "scope": scope}
+    if not created:
+        out["warnings"] = [f"identical text already stored as {rid}"]
+    return out
+
+
 def save_note(
     scope: str | None,
     summary: str,
@@ -160,6 +180,11 @@ def save_note(
         root = found
         stored_scope = "repo"
         collision_start = start
+
+    from shapa import db
+
+    if db.exists(root):
+        return save_row(root, stored_scope, note_type, summary, body, tags, alias=(id or "").strip())
 
     note_id = (id or "").strip() or _slugify(summary)
     if not _is_safe_note_id(note_id):

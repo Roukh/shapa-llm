@@ -29,6 +29,13 @@ def render(result: dict) -> str:
                 f"{', ' + rec['repo'] if rec.get('repo') else ''}) created {rec['created']}"
                 f" source: {rec['source'] or '-'}{tags}{sup}\n{rec['summary']}\n\n{rec['body']}")
     meta = result.get("meta") or {}
+    if result.get("source") in ("row", "item"):
+        facts = [f"{k}: {v}" for k, v in meta.items() if v not in (None, "", []) and k != "summary"]
+        links = [f"{s} {r} {d}" for s, d, r in result.get("links", [])]
+        head = f"{result['id']} ({result['type']}) {result['root']}"
+        text = "\n".join([head, meta.get("summary", ""), *facts,
+                          *(["links: " + "; ".join(links)] if links else [])])
+        return f"{text}\n\n{result['body']}".rstrip()
     summary = f"\n{meta['summary']}" if meta.get("summary") else ""
     return f"{result['id']} ({result['type']}) {result['root']}{summary}\n\n{result['body']}"
 

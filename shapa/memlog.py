@@ -59,14 +59,19 @@ try:
 except ImportError:  # pragma: no cover - non-POSIX: O_APPEND only
     fcntl = None
 
-from shapa import embed, redact, store
+from shapa import config, db, embed, redact, store
 from shapa.bm25 import bm25_scores, words
 
 MEMORY_DIRNAME = "memory"
 LOG_SUFFIX = ".jsonl"
 GITATTRIBUTES_LINE = f"{MEMORY_DIRNAME}/*{LOG_SUFFIX} merge=union"
 
-KINDS = ("decision", "fact", "gotcha", "outcome", "open_question", "preference")
+KINDS = ("decision", "fact", "gotcha", "outcome", "open_question", "preference",
+         "memory", "rule", "issue")
+#: Kinds of the rows a format-4 wiki keeps in its database (shapa.db).
+ROW_KINDS = ("memory", "rule", "issue")
+#: The ``memory_logs`` key that records the database's (mtime, size).
+DB_SOURCE = "shapa.db"
 SCOPES = ("global", "repo")
 SUMMARY_MAX = 160
 BODY_MAX = 600
@@ -89,8 +94,9 @@ MAX_APPEND = 24
 #: Value scoring inputs for a memory (shapa.score.score_meta) - captured
 #: memories rank below curated notes of the same age unless they get used.
 KIND_CONSEQUENCE = {"preference": 6, "gotcha": 6, "decision": 5, "open_question": 5,
-                    "fact": 4, "outcome": 4}
-KIND_LOCUS = {"preference": "output-meta", "gotcha": "output-meta"}
+                    "fact": 4, "outcome": 4, "issue": 8, "rule": 7, "memory": 5}
+KIND_LOCUS = {"preference": "output-meta", "gotcha": "output-meta", "rule": "output-meta",
+              "issue": "output-meta"}
 
 _WS_RE = re.compile(r"\s+")
 #: Python mirror of FTS5's ``unicode61`` tokenizer (alphanumeric runs,
@@ -307,7 +313,46 @@ def log_files(root) -> list[Path]:
 
 
 def has_log(root) -> bool:
-    return bool(log_files(root))
+    return bool(log_files(root)) or db.exists(root)
+
+
+def _db_signature(root) -> tuple[int, int] | None:
+    try:
+        st = db.db_path(root).stat()
+    except OSError:
+        return None
+    return st.st_mtime_ns, st.st_size
+
+
+def _sources(root) -> dict[str, tuple[int, int]]:
+    """Every source the index mirrors: each log file and the database, keyed
+    by path relative to *root* (the database as :data:`DB_SOURCE`)."""
+    root = Path(root)
+    out = {}
+    for p in log_files(root):
+        try:
+            st = p.stat()
+        except OSError:
+            continue
+        out[p.relative_to(root).as_posix()] = (st.st_mtime_ns, st.st_size)
+    sig = _db_signature(root)
+    if sig is not None:
+        out[DB_SOURCE] = sig
+    return out
+
+
+def _db_records(root) -> list[Record]:
+    """The database's memory/rule/issue rows as records (read-only)."""
+    root = Path(root)
+    try:
+        scope = "global" if root.resolve() == config.global_root().resolve() else "repo"
+    except OSError:
+        scope = "repo"
+    return [Record(id=r.id, created=r.created, session=r.session, repo=None, scope=scope,
+                   kind=db.KIND_NAMES[r.kind], summary=r.summary, body=r.body,
+                   tags=list(r.tags)[:MAX_TAGS], source=r.source or DB_SOURCE,
+                   supersedes=None, hash=r.hash)
+            for r in db.read_rows(root)]
 
 
 def current_log(root, now: datetime | None = None) -> Path:
@@ -740,23 +785,22 @@ def sync(root, conn: sqlite3.Connection, *, embed_vectors: bool = False) -> Sync
     root = Path(root)
     stats = SyncStats()
     has_fts = _has_fts(conn)
-    files = log_files(root)
-    stats.files = len(files)
     known = {row[0]: row[1:] for row in conn.execute(
         "SELECT path, mtime_ns, size, consumed, prefix_sha1 FROM memory_logs")}
-    on_disk = {}
-    for p in files:
-        try:
-            st = p.stat()
-        except OSError:
-            continue
-        on_disk[p.relative_to(root).as_posix()] = (st.st_mtime_ns, st.st_size)
+    on_disk = _sources(root)
+    stats.files = len(on_disk)
 
-    rebuild = bool(set(known) - set(on_disk))
+    # The database is small and rewritten in place: any change to it
+    # rebuilds the record tables (a full reload of a few hundred rows).
+    db_prev = known.get(DB_SOURCE)
+    rebuild = bool(set(known) - set(on_disk)) or (
+        DB_SOURCE in on_disk and (db_prev is None or tuple(db_prev[:2]) != on_disk[DB_SOURCE]))
     tails: list[tuple[str, bytes, int]] = []  # (path, new bytes, new consumed)
     updates: dict[str, tuple[int, int, int, str]] = {}
     if not rebuild:
         for path, (mtime, size) in on_disk.items():
+            if path == DB_SOURCE:
+                continue
             prev = known.get(path)
             if prev is not None and prev[0] == mtime and prev[1] == size:
                 continue
@@ -783,6 +827,12 @@ def sync(root, conn: sqlite3.Connection, *, embed_vectors: bool = False) -> Sync
         if has_fts:
             conn.execute("INSERT INTO memories_fts(memories_fts) VALUES ('delete-all')")
         for path, (mtime, size) in on_disk.items():
+            if path == DB_SOURCE:
+                added, _bad = _insert_items(conn, _db_records(root), has_fts)
+                stats.appended += added
+                conn.execute("INSERT OR REPLACE INTO memory_logs VALUES (?,?,?,?,?)",
+                             (path, mtime, size, 0, ""))
+                continue
             try:
                 data = (root / path).read_bytes()
             except OSError:
@@ -863,14 +913,7 @@ def _fresh(conn: sqlite3.Connection, root: Path) -> bool:
         return False
     known = {row[0]: (row[1], row[2]) for row in conn.execute(
         "SELECT path, mtime_ns, size FROM memory_logs")}
-    disk = {}
-    for p in log_files(root):
-        try:
-            st = p.stat()
-        except OSError:
-            continue
-        disk[p.relative_to(root).as_posix()] = (st.st_mtime_ns, st.st_size)
-    return known == disk
+    return known == _sources(root)
 
 
 def open_index(root, *, read_only: bool = False, embed_vectors: bool = False

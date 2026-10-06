@@ -36,8 +36,8 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from shapa import (__version__, config, embed, frontmatter, maintain, memlog,
-                   memri_import, registry, store, validate)
+from shapa import (__version__, config, db, embed, frontmatter, maintain, memlog,
+                   memri_import, migrate4, registry, store, validate)
 from shapa.nodes import is_excluded_path
 from shapa.score import _parse_ts
 
@@ -56,7 +56,13 @@ CACHE_IGNORES = (
     f"{store.INDEX_FILENAME}-shm",
     store.CORRUPT_FILENAME,
     embed.CACHE_FILENAME,
+    f"{db.DB_FILENAME}-journal",
+    f"{db.DB_FILENAME}-wal",
+    f"{db.DB_FILENAME}-shm",
+    "temp/",
 )
+#: Format 4: git must never try to merge or diff the database as text.
+DB_GITATTRIBUTES_LINE = f"{db.DB_FILENAME} binary"
 CACHE_GITIGNORE = (
     "# shapa: read-path caches (shapa.store/shapa.embed) - rebuilt\n"
     "# automatically on the next read, never authoritative, never tracked.\n"
@@ -233,7 +239,18 @@ def step_gitattributes(root: Path, dry_run: bool) -> list[str]:
         text = path.read_text(encoding="utf-8") if path.exists() else ""
     except OSError:
         return []
-    if any(line.strip() == memlog.GITATTRIBUTES_LINE for line in text.splitlines()):
+    lines = [ln.strip() for ln in text.splitlines()]
+    if db.exists(root) or migrate4.pending(root):
+        # Format 4: no memory log to union-merge; the database is binary.
+        keep = [ln for ln in text.splitlines() if ln.strip() != memlog.GITATTRIBUTES_LINE]
+        if DB_GITATTRIBUTES_LINE in lines and len(keep) == len(text.splitlines()):
+            return []
+        if not dry_run:
+            if DB_GITATTRIBUTES_LINE not in lines:
+                keep.append(DB_GITATTRIBUTES_LINE)
+            path.write_text("\n".join(keep).strip("\n") + "\n", encoding="utf-8")
+        return [".gitattributes"]
+    if memlog.GITATTRIBUTES_LINE in lines:
         return []
     if not dry_run:
         memlog.ensure_gitattributes(root)
@@ -391,9 +408,10 @@ def step_frontmatter(root: Path, dry_run: bool) -> list[str]:
 
 MECHANICAL_STEPS = (
     ("docs", step_docs),
+    ("memory", step_memory),
+    ("database", migrate4.step_database),
     ("gitignore", step_gitignore),
     ("gitattributes", step_gitattributes),
-    ("memory", step_memory),
     ("counters", step_counters),
     ("frontmatter", step_frontmatter),
 )
@@ -485,7 +503,7 @@ def work_items(root: Path) -> list[WorkItem]:
     for p in _live_md(root):
         rel = _rel(root, p)
         parts = p.relative_to(root).parts
-        if len(parts) > 1 and parts[0] != "arch":
+        if len(parts) > 1 and parts[0] not in ("arch", "research"):
             outside.append(rel)
         if _is_managed(root, p):
             continue

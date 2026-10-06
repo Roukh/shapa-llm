@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
-from shapa import bootstrap, cli, config, fetch, memlog, registry, store, upgrade
+from shapa import db, bootstrap, cli, config, fetch, memlog, registry, store, upgrade
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -153,7 +153,8 @@ class TestEndToEnd(UpgradeTestCase):
         self.assertEqual(report["wikis"][0]["status"], "behind")
         self.assertEqual(report["wikis"][0]["format"], 1)
         self.assertEqual(set(report["wikis"][0]["mechanical"]),
-                         {"docs", "gitignore", "gitattributes", "counters", "frontmatter", "format"})
+                         {"docs", "database", "gitignore", "gitattributes", "counters",
+                          "frontmatter", "format"})
         self.assertEqual(report["wikis"][0]["work"], [])
         self.assertEqual(_snapshot(wiki), before, "--check must change nothing")
 
@@ -167,14 +168,23 @@ class TestEndToEnd(UpgradeTestCase):
         self.assertTrue((wiki / "placement.md").is_file())
         for p in wiki.rglob("*.md"):
             self.assertNotRegex(p.read_text(encoding="utf-8"), r"(?m)^(uses|last_used):", p.name)
-        self.assertIn("scope: repo", (wiki / "git-flow.md").read_text(encoding="utf-8"))
         self.assertIn("scope: repo", (wiki / "arch" / "design.md").read_text(encoding="utf-8"))
         ignored = (wiki / ".gitignore").read_text(encoding="utf-8").splitlines()
         for name in upgrade.CACHE_IGNORES:
             self.assertIn(name, ignored)
-        # The counters moved into the index store, not dropped.
-        self.assertEqual(store.get_use(wiki, "git-flow"), (4, "2026-09-20T10:00:00Z"))
-        self.assertEqual(store.get_use(wiki, "agenda")[0], 3)
+        # Format 4: memory/rule notes became database rows (old id kept as
+        # alias), agenda.md is retired, the database is marked binary.
+        for gone in ("git-flow.md", "deploy-rule.md", "agenda.md"):
+            self.assertFalse((wiki / gone).exists(), gone)
+        conn = db.connect(wiki)
+        try:
+            self.assertEqual(db.get_row(conn, "git-flow").kind, "M")
+            self.assertIn("Branch off main", db.get_row(conn, "git-flow").body)
+            self.assertEqual(db.get_row(conn, "deploy-rule").kind, "R")
+        finally:
+            conn.close()
+        self.assertIn(upgrade.DB_GITATTRIBUTES_LINE,
+                      (wiki / ".gitattributes").read_text(encoding="utf-8"))
 
         code, out = self.run_cli([str(wiki), "--check"])
         self.assertEqual(code, 0, out)
@@ -230,12 +240,13 @@ class TestMechanical(UpgradeTestCase):
     def test_scope_is_global_in_the_global_wiki(self):
         make_old_wiki(self.global_wiki)
         upgrade.upgrade_wiki(self.global_wiki)
-        self.assertIn("scope: global", (self.global_wiki / "git-flow.md").read_text(encoding="utf-8"))
+        self.assertIn("scope: global",
+                      (self.global_wiki / "arch" / "design.md").read_text(encoding="utf-8"))
 
     def test_missing_id_and_empty_scope_are_filled_in_place(self):
         wiki = make_old_wiki(self.repo_wiki())
         p = wiki / "no-id.md"
-        p.write_text("---\ntype: memory\ncreated: \"2026-09-01T00:00:00Z\"\nconsequence: 5\n"
+        p.write_text("---\ntype: reference\ncreated: \"2026-09-01T00:00:00Z\"\nconsequence: 5\n"
                      "locus: output\nsummary: \"x\"\nscope:\n---\nA note with no id at all.\n",
                      encoding="utf-8")
         upgrade.upgrade_wiki(wiki)
@@ -290,24 +301,29 @@ class TestMechanical(UpgradeTestCase):
 class TestJudgment(UpgradeTestCase):
     def test_work_left_keeps_the_marker_down_until_resolved(self):
         wiki = make_old_wiki(self.repo_wiki())
-        _agenda(wiki, items=4)
+        broken = wiki / "arch" / "broken.md"
+        broken.write_text("---\nid: [unclosed\n---\nbody\n", encoding="utf-8")
         report = upgrade.upgrade_wiki(wiki)
         self.assertEqual(report.status, "behind")
-        self.assertIn("F11", [w.code for w in report.work])
+        self.assertIn("F02", [w.code for w in report.work])
         self.assertEqual(registry.read_format(wiki), registry.LEGACY_FORMAT)
         self.assertNotIn("format", report.mechanical)
 
-        _agenda(wiki, items=3)
+        broken.unlink()
         report = upgrade.upgrade_wiki(wiki)
         self.assertEqual(report.status, "current")
         self.assertEqual(registry.read_format(wiki), registry.CURRENT_FORMAT)
 
-    def test_missing_agenda_is_judgment_not_a_placeholder(self):
+    def test_format_4_retires_the_agenda_file(self):
+        wiki = make_old_wiki(self.repo_wiki())
+        upgrade.upgrade_wiki(wiki)
+        self.assertNotIn("F11", self.codes(wiki))
+        self.assertFalse((wiki / "agenda.md").exists())
+
+    def test_missing_agenda_is_still_f11_before_the_database_exists(self):
         wiki = make_old_wiki(self.repo_wiki())
         (wiki / "agenda.md").unlink()
-        upgrade.upgrade_wiki(wiki)
         self.assertIn("F11", self.codes(wiki))
-        self.assertFalse((wiki / "agenda.md").exists())
 
     def test_over_cap_root_notes(self):
         wiki = make_old_wiki(self.repo_wiki())
@@ -487,7 +503,8 @@ class TestInitIntegration(UpgradeTestCase):
         self.assertIn(str(wiki.resolve()), registry.load())
         self.assertFalse((wiki / "skills").exists(), "harness skills are never copied into a wiki")
         # Not the global wiki (init DIR leaves the pointer alone) -> repo scope.
-        self.assertIn("scope: repo", (wiki / "agenda.md").read_text(encoding="utf-8"))
+        self.assertIn("scope: repo", (wiki / "arch" / "index.md").read_text(encoding="utf-8"))
+        self.assertTrue(db.exists(wiki))
         self.assertEqual(config.global_root(), self.global_wiki)
 
     def test_fresh_init_global_is_current_with_global_scope(self):
@@ -496,7 +513,7 @@ class TestInitIntegration(UpgradeTestCase):
             cli._init(["--global", str(wiki)])
         self.assertEqual(config.global_root(), wiki.resolve())
         self.assertEqual(upgrade.upgrade_wiki(wiki, check=True).status, "current")
-        self.assertIn("scope: global", (wiki / "agenda.md").read_text(encoding="utf-8"))
+        self.assertIn("scope: global", (wiki / "arch" / "index.md").read_text(encoding="utf-8"))
 
     def test_reinit_never_migrates_an_existing_wiki(self):
         wiki = make_old_wiki(self.tmp / "legacy")
@@ -604,40 +621,31 @@ class TestMemoryConversion(UpgradeTestCase):
         self.assertTrue((wiki / "archive" / "memory-session-abc12345.md").exists())
         self.assertTrue((wiki / "archive" / "memory-session-def67890.md").exists())
 
-        # One v3 record per note, in the note's created month's log file.
-        self.assertTrue((wiki / "memory" / "2026-09.jsonl").is_file())
-        view = memlog.read_log(wiki)
-        self.assertEqual(len(view.records), 2)
-        by_source = {r.source: r for r in view.records.values()}
+        # Each session note (the operator's requests) became a memory row on
+        # the way through the format-3 log, which format 4 then retires.
+        self.assertFalse((wiki / "memory").exists())
+        conn = db.connect(wiki)
+        try:
+            by_source = {r.source: r for r in db.rows(conn, "M")}
+        finally:
+            conn.close()
         rec1 = by_source["upgrade:memory-session-abc12345.md"]
         rec2 = by_source["upgrade:memory-session-def67890.md"]
-
-        self.assertEqual(rec1.kind, "decision")
         self.assertEqual(rec1.session, "abc12345")
-        self.assertEqual(rec1.scope, "repo")
         self.assertIn("git-flow", rec1.tags)
         self.assertNotIn("Captured at the end of session", rec1.summary)
         self.assertIn("Wire the new memlog store", rec1.summary)
 
-        # The planted secret never reaches the log.
+        # The planted secret never reaches the database.
         self.assertNotIn("sk-ant", rec2.summary)
         self.assertNotIn("sk-ant", rec2.body)
-        raw = (wiki / "memory" / "2026-09.jsonl").read_text(encoding="utf-8")
-        self.assertNotIn("sk-ant", raw)
+        self.assertNotIn(b"sk-ant", db.db_path(wiki).read_bytes())
 
-        # The note's legacy `uses: 3` carried into memory_uses for the new id.
-        conn = memlog.open_index(wiki)
-        try:
-            row = conn.execute(
-                "SELECT uses FROM memory_uses WHERE id = ?", (rec1.id,)).fetchone()
-        finally:
-            conn.close()
-        self.assertEqual(row[0], 3)
-
-        # .gitattributes marks the log merge=union; format marker is 3.
-        self.assertIn(memlog.GITATTRIBUTES_LINE,
-                      (wiki / ".gitattributes").read_text(encoding="utf-8"))
-        self.assertEqual(registry.read_format(wiki), 3)
+        # .gitattributes marks the database binary, not a union-merged log.
+        attrs = (wiki / ".gitattributes").read_text(encoding="utf-8")
+        self.assertIn(upgrade.DB_GITATTRIBUTES_LINE, attrs)
+        self.assertNotIn(memlog.GITATTRIBUTES_LINE, attrs)
+        self.assertEqual(registry.read_format(wiki), registry.CURRENT_FORMAT)
 
     def test_second_upgrade_is_a_noop_and_check_then_passes(self):
         wiki = self._wiki_with_sessions()
@@ -664,7 +672,11 @@ class TestMemoryConversion(UpgradeTestCase):
         self.assertIn("memory-session-weird001.md", report.mechanical.get("memory", []))
         self.assertFalse(p.exists())
         self.assertTrue((wiki / "archive" / "memory-session-weird001.md").exists())
-        self.assertEqual(len(memlog.read_log(wiki).records), 0)
+        conn = db.connect(wiki)
+        try:
+            self.assertFalse(any("weird001" in r.source for r in db.rows(conn)))
+        finally:
+            conn.close()
 
 
 class TestMemlogJudgment(UpgradeTestCase):

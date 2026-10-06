@@ -24,6 +24,14 @@ frontmatter lines the upgrade deletes) and `work` (judgment items: `code`,
 that need hand repair). `steps` says what each mechanical migration changes.
 Nothing behind means you are done.
 
+Format 4 adds the `database` step: memory/rule/issue notes become rows in
+`shapa.db` (the note id kept as the row's alias), `checklist.md` sections become
+features with their open items as jobs, open `ideas.md` entries and
+operator-sourced memory-log records become memories, and `agenda.md`,
+`ideas.md`, `checklist.md` and `memory/` are removed. Reference notes, `arch/`
+and `research/` stay files. After it, `shapa row list` and `shapa ledger` show
+what moved; commit `shapa.db` on the default branch with the upgrade.
+
 ## 2. Dispatch one agent per behind wiki
 
 Run them in parallel, one per wiki path. Use a subagent when this session may
@@ -48,8 +56,9 @@ Brief for each agent:
      content. Never invent facts.
    - **F07 length**: split into linked notes of 150-300 words each (references
      at most 2,000 words).
-   - **F11 agenda**: keep the top 3 fires only. Move the rest to `ideas.md`,
-     an append-only dated log.
+   - **F11 agenda** (format 3 only): keep the top 3 fires only. Move the rest
+     to `ideas.md`, an append-only dated log. A format-4 wiki has no agenda
+     file: its open features are the agenda.
    - **F05/F06 scope, LAYOUT**: project memories live only in that project's own
      wiki. The global wiki holds cross-project rules and facts. Move misplaced
      notes to the right wiki (`git mv` within a repo); never copy them into

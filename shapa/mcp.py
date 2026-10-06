@@ -128,6 +128,37 @@ def tool_search(args: dict[str, Any], cwd: str | None) -> dict[str, Any]:
     return out
 
 
+def _db_lookup(root_path: Path, key: str) -> dict[str, Any] | None:
+    """A format-4 row or ledger item by id or alias, with its tags and links."""
+    from shapa import db
+
+    if not db.exists(root_path):
+        return None
+    conn = db.connect(root_path)
+    if conn is None:
+        return None
+    try:
+        row = db.get_row(conn, key)
+        if row is not None:
+            return {"id": row.id, "type": db.KIND_NAMES[row.kind], "source": "row",
+                    "meta": {"summary": row.summary, "alias": row.alias, "tags": row.tags,
+                             "created": row.created, "origin": row.source},
+                    "links": db.links_of(conn, row.id), "body": row.body}
+        item = db.get_item(conn, key)
+        if item is not None:
+            lines = []
+            for depth, child in db.tree(conn, item.id)[1:]:
+                lines.append("  " * depth + f"{child.id} [{child.status}] {child.title}")
+            body = item.body + (("\n\n" if item.body else "") + "\n".join(lines) if lines else "")
+            return {"id": item.id, "type": db.KIND_NAMES[item.kind], "source": "item",
+                    "meta": {"summary": item.title, "status": item.status, "parent": item.parent,
+                             "verify": item.verify, "git_ref": item.git_ref, "alias": item.alias},
+                    "links": db.links_of(conn, item.id), "body": body}
+    finally:
+        conn.close()
+    return None
+
+
 def tool_get(args: dict[str, Any], cwd: str | None) -> dict[str, Any]:
     note_id = str(args.get("id", "")).strip()
     if not note_id:
@@ -138,6 +169,10 @@ def tool_get(args: dict[str, Any], cwd: str | None) -> dict[str, Any]:
     for wr in config.wiki_roots(start):
         root_path = Path(wr.path)
         if not root_path.is_dir():
+            continue
+        hit = _db_lookup(root_path, note_id)
+        if hit is not None:
+            matches.append({**hit, "root_kind": wr.kind, "root": str(wr.path)})
             continue
         if note_id.startswith(memlog.ID_PREFIX):
             hit = memlog.get(root_path, note_id)
@@ -166,6 +201,10 @@ def tool_get(args: dict[str, Any], cwd: str | None) -> dict[str, Any]:
         return {"error": f"no note '{note_id}' found in any wiki in scope"}
     if len(matches) > 1 and all(m.get("source") == "memory" for m in matches):
         return matches[0]  # content-derived id: the same memory in two roots
+    if len(matches) > 1 and all(m.get("source") in ("row", "item") for m in matches):
+        # Database ids are per wiki (R1 here, R1 in the global wiki): the most
+        # specific wiki wins, the others are named so the caller can ask.
+        return {**matches[0], "also_in": [m["root"] for m in matches[1:]]}
     if len(matches) > 1:
         # The F09 cross-root-collision contract (§4.1): never silently pick
         # one - surface every match and let the caller decide.
@@ -215,6 +254,12 @@ def tool_save(args: dict[str, Any], cwd: str | None) -> dict[str, Any]:
                          "creates one implicitly (shapa-backend-spec.md §10 decision 4)",
             }
         root = found
+
+    from shapa import db, save as save_mod
+
+    if db.exists(root):
+        return save_mod.save_row(root, scope, note_type, summary, body, tags,
+                                 alias=str(args.get("id") or "").strip())
 
     note_id = str(args.get("id") or "").strip() or _slugify(summary)
     if not _is_safe_note_id(note_id):
