@@ -35,7 +35,9 @@ PROTECTED_TYPES = frozenset({"reference"})
 #: `heartbeat`, and `maintain` either.
 #: ``temp/`` (format 4) holds scrap notes per feature - never indexed,
 #: validated or pruned; they leave with their feature.
-EXCLUDED_DIRNAMES = frozenset({"archive", "attic", ".obsidian", "temp"})
+EXCLUDED_DIRNAMES = frozenset({"archive", "attic", ".obsidian", "temp",
+                               # a tool kept inside a wiki brings its dependencies; never notes
+                               "node_modules", ".venv", "__pycache__"})
 
 #: Per-wiki convention files: every wiki carries its own copy by design - the
 #: schema docs shapa ships and refreshes (``AGENTS.md``, ``placement.md``)
