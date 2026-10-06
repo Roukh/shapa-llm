@@ -54,11 +54,23 @@ def _root_notes(root: Path) -> list[Path]:
     return out
 
 
+def leftovers(root: Path) -> list[str]:
+    """Format-3 artifacts still on disk: memory/rule/issue notes, the
+    checklist, ideas and agenda, and the memory log (an older shapa's capture
+    hook may still write it after the migration)."""
+    out = [p.name for p in _root_notes(root)
+           if str(frontmatter.parse(p).meta.get("type", "")).strip().lower() in ROW_KIND]
+    out += [n for n in ("checklist.md", "ideas.md", "agenda.md") if (root / n).is_file()]
+    if memlog.log_files(root):
+        out.append(f"{memlog.MEMORY_DIRNAME}/")
+    return out
+
+
 def pending(root: Path) -> bool:
     """Whether :func:`step_database` has anything to do: no database yet, or
-    a format-3 memory log written after the migration (an older shapa's
-    capture hook still running against this wiki)."""
-    return not db.exists(root) or bool(memlog.log_files(root))
+    any format-3 artifact left - so a migration interrupted after the
+    database was created resumes instead of stranding the rest."""
+    return not db.exists(root) or bool(leftovers(root))
 
 
 def _migrate_notes(conn, root: Path, removed: list[str]) -> None:
@@ -109,8 +121,14 @@ def _migrate_checklist(conn, root: Path, removed: list[str]) -> None:
         verify = _VERIFY.search(rest)
         cmd = verify["cmd"] if verify and verify["cmd"] else None
         text = _plain(rest[:verify.start()] if verify else rest)
+        if item["id"] and conn.execute("SELECT 1 FROM items WHERE alias = ?",
+                                       (item["id"],)).fetchone():
+            continue  # migrated by an interrupted earlier run
         if feature is None:
-            feature = db.add_item(conn, "F", section or "checklist")
+            title = section or "checklist"
+            again = conn.execute("SELECT id FROM items WHERE kind = 'F' AND title = ? "
+                                 "AND status != 'closed'", (title,)).fetchone()
+            feature = again[0] if again else db.add_item(conn, "F", title)
         jid = db.add_item(conn, "J", text, parent=feature, verify=cmd, alias=item["id"])
         if verify and verify["manual"]:
             db.update_item(conn, jid, body="verify: manual (an operator decision)")
@@ -154,24 +172,8 @@ def _migrate_memlog(conn, root: Path, removed: list[str]) -> None:
 def step_database(root: Path, dry_run: bool) -> list[str]:
     if not pending(root):
         return []
-    if db.exists(root):
-        # Already format 4: only a stray memory log to fold in.
-        if dry_run:
-            return [f"{db.DB_FILENAME} <- {memlog.MEMORY_DIRNAME}/"]
-        removed: list[str] = []
-        conn = db.connect(root)
-        try:
-            _migrate_memlog(conn, root, removed)
-        finally:
-            conn.close()
-        return [f"{db.DB_FILENAME} <- {', '.join(removed)}"]
     if dry_run:
-        out = [p.name for p in _root_notes(root)
-               if str(frontmatter.parse(p).meta.get("type", "")).lower() in ROW_KIND]
-        out += [n for n in ("checklist.md", "ideas.md", "agenda.md") if (root / n).is_file()]
-        if memlog.log_files(root):
-            out.append(f"{memlog.MEMORY_DIRNAME}/")
-        return [f"{db.DB_FILENAME} <- {', '.join(out) or 'new'}"]
+        return [f"{db.DB_FILENAME} <- {', '.join(leftovers(root)) or 'new'}"]
     removed: list[str] = []
     conn = db.connect(root, create=True)
     try:

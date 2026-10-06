@@ -21,7 +21,9 @@ memories, in the standard job-report shape below.
   preference cue (never, always, from now on, prefer, instead of, must, ...)
   become ``preference`` records (or ``gotcha`` when a gotcha keyword fires).
 
-Every record is built with :func:`shapa.memlog.make_record` (redaction,
+On a format-4 wiki a memory goes to :func:`shapa.db.add_row`, which redacts
+every text it stores. On format 3, every record is built with
+:func:`shapa.memlog.make_record` (redaction,
 length clamping, content-derived id) and written with
 :func:`shapa.memlog.append` (exact/near-dup skip, supersede detection) - this
 module never writes a log line directly and never writes a ``.md`` note

@@ -113,6 +113,45 @@ class TestPreCommit(GitCase):
         self.assertIn(".shapa/shapa.db", problems[0])
 
 
+class TestGitHooks(GitCase):
+    def setUp(self):
+        super().setUp()
+        # Never the machine's global hooks path: a fixture repo only.
+        env = mock.patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def test_installs_both_hooks_and_never_overwrites_a_foreign_one(self):
+        hooks = self.repo / ".git" / "hooks"
+        hooks.mkdir(exist_ok=True)
+        (hooks / "post-commit").write_text("#!/bin/sh\necho mine\n", encoding="utf-8")
+        out = ledger.install_git_hooks(self.repo)
+        pre = hooks / "pre-commit"
+        self.assertIn(ledger.GIT_HOOK_MARK, pre.read_text(encoding="utf-8"))
+        self.assertTrue(os.access(pre, os.X_OK))
+        self.assertEqual((hooks / "post-commit").read_text(encoding="utf-8"), "#!/bin/sh\necho mine\n")
+        self.assertTrue(any("is not shapa's" in line for line in out))
+        again = ledger.install_git_hooks(self.repo)
+        self.assertEqual(pre.read_text(encoding="utf-8"), ledger.GIT_HOOKS["pre-commit"])
+        self.assertEqual(len(again), 2)
+
+    def test_the_installed_pre_commit_refuses_the_database_on_a_branch(self):
+        ledger.install_git_hooks(self.repo)
+        stub = self.tmp / "bin"
+        stub.mkdir()
+        (stub / "shapa").write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+        (stub / "shapa").chmod(0o755)
+        self.git("checkout", "-q", "-b", "F1-x")
+        conn = self.conn()
+        db.add_item(conn, "F", "x")
+        conn.close()
+        self.git("add", ".shapa/shapa.db")
+        env = {**os.environ, "PATH": f"{stub}:{os.environ['PATH']}"}
+        r = subprocess.run(["git", "commit", "-q", "-m", "db on a branch"], cwd=str(self.repo),
+                           capture_output=True, text=True, env=env, timeout=30)
+        self.assertNotEqual(r.returncode, 0)
+
+
 class TestMerge(GitCase):
     def _feature_with_branch(self):
         conn = self.conn()

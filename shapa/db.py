@@ -36,6 +36,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from shapa.redact import redact
+
 DB_FILENAME = "shapa.db"
 SCHEMA_VERSION = 1
 BUSY_TIMEOUT_MS = 10_000
@@ -304,9 +306,11 @@ def add_item(conn: sqlite3.Connection, kind: str, title: str, *, parent: str | N
     kind = kind.upper()
     if kind not in ITEM_KINDS:
         raise LedgerError(f"item kind must be one of {ITEM_KINDS}, got {kind!r}")
-    title = one_line(title, 200)
+    # The file is committed whole: no secret may enter it (redact.py).
+    title = one_line(redact(title), 200)
     if not title:
         raise LedgerError("title is required")
+    body, verify = redact(body or ""), redact(verify) if verify else verify
     with write(conn):
         if parent:
             p = _require_item(conn, parent)
@@ -331,6 +335,8 @@ def update_item(conn: sqlite3.Connection, item_id: str, **fields) -> Item:
     bad = set(fields) - allowed
     if bad:
         raise LedgerError(f"cannot set {sorted(bad)}")
+    fields = {k: redact(v) if isinstance(v, str) and k in ("title", "body", "verify") else v
+              for k, v in fields.items()}
     with write(conn):
         item = _require_item(conn, item_id)
         if fields:
@@ -493,10 +499,12 @@ def add_row(conn: sqlite3.Connection, kind: str, summary: str, body: str = "", *
     kind = kind.upper()
     if kind not in MRI_KINDS:
         raise LedgerError(f"row kind must be one of {MRI_KINDS}, got {kind!r}")
-    summary = one_line(summary)
+    # The file is committed whole: no secret may enter it, whoever writes the
+    # row (capture, correction, save, migration).
+    summary = one_line(redact(summary))
     if not summary:
         raise LedgerError("summary is required")
-    body = str(body or "").strip()
+    body = redact(str(body or "").strip())
     digest = content_hash(summary, body)
     ts = now_iso(now)
     with write(conn):
@@ -529,8 +537,8 @@ def update_row(conn: sqlite3.Connection, row_id: str, *, summary: str | None = N
                            (row_id, row_id)).fetchone()
         if row is None:
             raise LedgerError(f"no row {row_id!r}")
-        s = one_line(summary) if summary is not None else row["summary"]
-        b = str(body).strip() if body is not None else row["body"]
+        s = one_line(redact(summary)) if summary is not None else row["summary"]
+        b = redact(str(body).strip()) if body is not None else row["body"]
         conn.execute("UPDATE mri SET summary=?, body=?, hash=?, alias=COALESCE(?, alias), "
                      "updated=? WHERE id=?",
                      (s, b, content_hash(s, b), alias, now_iso(), row["id"]))
@@ -664,10 +672,12 @@ def sweep(conn: sqlite3.Connection, *, vectors: dict[str, list[float]] | None = 
     """Clean the database after a feature merges.
 
     1. Live items created more than :data:`EXPIRY_DAYS` ago close as
-       ``expired``.
+       ``expired`` - except an item claimed and updated within that window,
+       and every ancestor of one (work in progress keeps its feature).
     2. Closed items are deleted, except those closed at or after
        *keep_closed_since* (the merge that triggered this sweep keeps its
-       rows until the next one).
+       rows until the next one; without it, the sweep's own start, so a sweep
+       never deletes what it just closed).
     3. Rows another row supersedes are deleted.
     4. Duplicates (identical text, or cosine >= :data:`DUP_COSINE` - Jaccard
        >= 0.9 without *vectors*) within one kind: the newer row is deleted,
@@ -682,18 +692,26 @@ def sweep(conn: sqlite3.Connection, *, vectors: dict[str, list[float]] | None = 
     cutoff = now_iso(now_dt - timedelta(days=EXPIRY_DAYS))
     report = SweepReport([], [], [], [], [], [], 0)
 
+    keep_closed_since = keep_closed_since or now_iso(now_dt)
+    parents = dict(conn.execute("SELECT id, parent FROM items").fetchall())
+    active: set[str] = set()
+    for (iid,) in conn.execute("SELECT id FROM items WHERE status = 'claimed' AND updated >= ?",
+                               (cutoff,)):
+        while iid and iid not in active:
+            active.add(iid)
+            iid = parents.get(iid)
     live = conn.execute("SELECT id FROM items WHERE status != 'closed' AND created < ? "
                         "ORDER BY kind, CAST(SUBSTR(id, 2) AS INTEGER)", (cutoff,)).fetchall()
     for (iid,) in live:
-        report.expired.extend(close(conn, iid, "expired", now=now_dt))
+        if iid in active or iid in report.expired:
+            continue
+        report.expired.extend(c for c in close(conn, iid, "expired", now=now_dt)
+                              if c not in report.expired)
 
     with write(conn):
-        sql = "SELECT id FROM items WHERE status = 'closed'"
-        args: tuple = ()
-        if keep_closed_since:
-            sql += " AND (closed IS NULL OR closed < ?)"
-            args = (keep_closed_since,)
-        report.deleted_items = [r[0] for r in conn.execute(sql, args)]
+        report.deleted_items = [r[0] for r in conn.execute(
+            "SELECT id FROM items WHERE status = 'closed' AND (closed IS NULL OR closed < ?)",
+            (keep_closed_since,))]
     delete(conn, report.deleted_items)
 
     with write(conn):

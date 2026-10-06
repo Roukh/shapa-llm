@@ -128,8 +128,9 @@ class TestSweep(LedgerCase):
         self.assertIsNone(db.get_item(self.conn, done_before))
         self.assertEqual(db.get_item(self.conn, merged).status, "closed")
         self.assertEqual(db.get_item(self.conn, fresh).status, "open")
-        # The next sweep removes what this one kept.
-        report = db.sweep(self.conn)
+        # The next sweep (a later merge; timestamps are whole seconds) removes
+        # what this one kept.
+        report = db.sweep(self.conn, now=datetime.now(timezone.utc) + timedelta(seconds=2))
         self.assertIn(merged, report.deleted_items)
 
     def test_duplicates_superseded_and_stale_memories(self):
@@ -171,6 +172,33 @@ class TestSweep(LedgerCase):
         report = db.sweep(self.conn)
         self.assertEqual(report.duplicates, [(r2, r1)])
         self.assertIsNotNone(db.get_row(self.conn, r3))
+
+
+class TestSweepSafety(LedgerCase):
+    def test_claimed_work_in_progress_and_its_feature_never_expire(self):
+        old = datetime.now(timezone.utc) - timedelta(days=35)
+        f1 = db.add_item(self.conn, "F", "long feature", now=old)
+        j1 = db.add_item(self.conn, "J", "still being worked", parent=f1, now=old)
+        db.claim(self.conn, j1, "sess")
+        db.update_item(self.conn, j1, body="touched today")
+        report = db.sweep(self.conn)
+        self.assertEqual(report.expired, [])
+        self.assertEqual(db.get_item(self.conn, j1).status, "claimed")
+
+    def test_a_claim_left_for_30_days_expires(self):
+        old = datetime.now(timezone.utc) - timedelta(days=35)
+        j1 = db.add_item(self.conn, "J", "abandoned claim", now=old)
+        db.claim(self.conn, j1, "sess")
+        self.conn.execute("UPDATE items SET updated = ? WHERE id = ?", (db.now_iso(old), j1))
+        self.assertEqual(db.sweep(self.conn).expired, [j1])
+
+    def test_one_sweep_never_deletes_what_it_just_closed(self):
+        old = datetime.now(timezone.utc) - timedelta(days=45)
+        j1 = db.add_item(self.conn, "J", "abandoned", now=old)
+        report = db.sweep(self.conn)
+        self.assertEqual(report.expired, [j1])
+        self.assertNotIn(j1, report.deleted_items)
+        self.assertEqual(db.get_item(self.conn, j1).closed_reason, "expired")
 
 
 class TestScrub(LedgerCase):

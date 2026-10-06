@@ -428,8 +428,8 @@ if harness_in_scope claude; then
   echo "  SubagentStop     -> $INV capture"
   echo "  UserPromptSubmit -> $INV correction ; SessionStart -> $INV ledger hook-start"
   echo "  PostToolUse/Bash -> $INV ledger hook-posttool"
-  echo "Git (per repo or your core.hooksPath): post-commit -> $INV ledger on-commit,"
-  echo "  pre-commit -> $INV ledger pre-commit"
+  echo "Git hooks: run '$INV ledger git-hooks' in each repo with a wiki (pre-commit keeps"
+  echo "  shapa.db on the default branch; post-commit closes the job a J<n>: subject names)"
   echo "maintain --prune deletes orphan/stale notes and auto-merges duplicates."
   echo "Preview anytime:  SHAPA_MEMORY=$MEMORY $INV maintain --dry-run"
 else

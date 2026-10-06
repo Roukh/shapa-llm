@@ -267,6 +267,26 @@ class TestMechanical(UpgradeTestCase):
             self.assertIn(name, lines)
         self.assertEqual(upgrade.step_gitignore(wiki, dry_run=True), [])
 
+    def test_an_interrupted_migration_resumes_instead_of_stranding_content(self):
+        from shapa import db, migrate4
+
+        wiki = make_old_wiki(self.repo_wiki())
+        (wiki / "checklist.md").write_text(
+            "## Ship it\n- [ ] **A1** first open item\n- [ ] **A2** second open item\n",
+            encoding="utf-8")
+        db.connect(wiki, create=True).close()  # the crash point: database made, nothing moved
+        self.assertTrue(migrate4.pending(wiki))
+        migrate4.step_database(wiki, dry_run=False)
+        migrate4.step_database(wiki, dry_run=False)
+        conn = db.connect(wiki)
+        try:
+            jobs = [i.alias for i in db.items(conn, kind="J")]
+        finally:
+            conn.close()
+        self.assertEqual(sorted(jobs), ["A1", "A2"])
+        self.assertFalse((wiki / "checklist.md").exists())
+        self.assertFalse(migrate4.pending(wiki))
+
     def test_gitignore_header_is_written_once_across_upgrades(self):
         wiki = make_old_wiki(self.repo_wiki())
         (wiki / ".gitignore").write_text("my-own-rule\n", encoding="utf-8")

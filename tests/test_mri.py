@@ -60,6 +60,10 @@ class TestCorrections(WikiCase):
         "you didn't run the tests",
         "why did you push to main?",
         "stop",
+        "stop!",
+        "stop doing that",
+        "undo that",
+        "wait, no",
     ]
     NOT_CORRECTIONS = [
         "add a ledger row for the trials",
@@ -67,6 +71,10 @@ class TestCorrections(WikiCase):
         "nothing else to add, ship it",
         "notes go in research",
         "known issue: the socket tests need a real shell",
+        "Stop the running container before deploying",
+        "Wait, let's check the logs before merging",
+        "Undo the migration on staging please",
+        "revert the config change in staging",
     ]
 
     def test_cue_words(self):
@@ -126,6 +134,28 @@ class TestRelatedIssues(WikiCase):
             self.assertEqual(ranked, [linked, tagged])
         finally:
             conn.close()
+
+
+class TestRedaction(WikiCase):
+    SECRET = "sk-ant-api03-Q7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7x"
+
+    def test_a_captured_secret_never_reaches_the_tracked_file(self):
+        t = self.tmp / "t.jsonl"
+        t.write_text(msg("user", f"From now on always use the key {self.SECRET} for staging.") + "\n")
+        capture.capture_session(str(t), "sessSECRET1", root=self.wiki)
+        data = db.db_path(self.wiki).read_bytes()
+        self.assertNotIn(self.SECRET.encode(), data)
+
+    def test_every_write_path_redacts(self):
+        conn = self.conn()
+        try:
+            rid, _ = db.add_row(conn, "I", f"leaked {self.SECRET}", f"body {self.SECRET}")
+            db.update_row(conn, rid, body=f"edited {self.SECRET}")
+            f1 = db.add_item(conn, "F", f"feature {self.SECRET}", body=self.SECRET)
+            db.update_item(conn, f1, title=f"renamed {self.SECRET}")
+        finally:
+            conn.close()
+        self.assertNotIn(self.SECRET.encode(), db.db_path(self.wiki).read_bytes())
 
 
 class TestCaptureRouting(WikiCase):

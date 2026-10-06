@@ -38,9 +38,14 @@ LIVE_FEATURES_SHOWN = 8
 TEMP_DIRNAME = "temp"
 
 #: An operator message that corrects the agent. Anchored cues at the start
-#: of the message ("no", "wrong", "stop", ...) or strong phrases anywhere.
+#: of the message ("no", "wrong", ...) or strong phrases anywhere. "stop",
+#: "wait", "undo" and "revert" are also ordinary instructions ("stop the
+#: container"), so they count only alone or aimed at what the agent did.
 CORRECTION_RE = re.compile(
-    r"^\s*(?:no+|nope|nah|wrong|stop|wait|wtf|ugh|undo|revert|incorrect)\b"
+    r"^\s*(?:no+|nope|nah|wrong|wtf|ugh|incorrect)\b"
+    r"|^\s*(?:stop|wait|undo|revert)\s*(?:[!.?]|$)"
+    r"|^\s*(?:stop|undo|revert)\s+(?:that|this|it|doing|what you)\b"
+    r"|^\s*(?:stop|wait)\s*,\s*(?:no|that|this|you|what)\b"
     r"|\b(?:wrong|what the (?:fuck|hell|heck)|wtf|not like this|not like that|not quite"
     r"|not (?:what|how) i (?:asked|said|meant|wanted)|that'?s not (?:it|right|what|how)"
     r"|i (?:said|told you|asked you|already said)|you (?:didn'?t|did not|forgot|missed|ignored|broke)"
@@ -313,6 +318,44 @@ def pre_commit(cwd=None) -> list[str]:
             f"{base} (unstage it: git restore --staged {p})" for p in dbs]
 
 
+GIT_HOOK_MARK = "# shapa ledger hook"
+GIT_HOOKS = {
+    "pre-commit": (f"#!/bin/sh\n{GIT_HOOK_MARK}: a wiki database commits only on the default "
+                   "branch.\n# exit 1 is shapa's refusal; a missing or older shapa lets the "
+                   "commit through.\nif command -v shapa >/dev/null 2>&1; then\n"
+                   "\tshapa ledger pre-commit\n\t[ $? -eq 1 ] && exit 1\nfi\nexit 0\n"),
+    "post-commit": (f"#!/bin/sh\n{GIT_HOOK_MARK}: a \"J<n>:\" commit subject closes that "
+                    "job.\ncommand -v shapa >/dev/null 2>&1 && shapa ledger on-commit "
+                    "2>/dev/null\nexit 0\n"),
+}
+
+
+def install_git_hooks(cwd=None) -> list[str]:
+    """Write the ledger's git hooks into this repo's hooks directory (its
+    ``core.hooksPath`` when set). A hook file that exists and is not shapa's
+    is never touched: the lines to add to it are printed instead."""
+    repo = Path(cwd or Path.cwd())
+    r = _git(repo, "rev-parse", "--git-path", "hooks")
+    if r.returncode != 0:
+        raise CommandError(f"{repo} is not a git checkout")
+    hooks = Path(r.stdout.strip())
+    if not hooks.is_absolute():
+        hooks = (repo / hooks).resolve()
+    hooks.mkdir(parents=True, exist_ok=True)
+    out = []
+    for name, script in GIT_HOOKS.items():
+        path = hooks / name
+        if path.exists() and GIT_HOOK_MARK not in path.read_text(encoding="utf-8", errors="replace"):
+            body = script.split("\n", 1)[1]
+            out.append(f"{name}: {path} exists and is not shapa's - add before its final exit:\n"
+                       + "".join(f"    {ln}\n" for ln in body.splitlines()))
+            continue
+        path.write_text(script, encoding="utf-8")
+        path.chmod(0o755)
+        out.append(f"{name}: {path}")
+    return out
+
+
 def _vectors_and_uses(root: Path):
     """Row vectors and use counts from the derived index (both optional)."""
     from shapa import embed, memlog
@@ -496,6 +539,8 @@ def ledger_main(argv: list[str]) -> int:
     iss = add("issues", help="past issues most related to an item")
     iss.add_argument("id")
     iss.add_argument("-k", type=int, default=5)
+    add("git-hooks", help="install the git pre-commit and post-commit hooks in this repo "
+                          "(never overwrites a hook that is not shapa's)")
     add("on-commit", help="git post-commit hook")
     add("pre-commit", help="git pre-commit hook: the database commits only on the "
                    "default branch (exit 1 otherwise)")
@@ -512,6 +557,14 @@ def ledger_main(argv: list[str]) -> int:
     args = p.parse_args(argv)
     cmd = args.cmd or "list"
 
+    if cmd == "git-hooks":
+        try:
+            lines = install_git_hooks(args.cwd)
+        except CommandError as e:
+            print(f"shapa: {e}", file=sys.stderr)
+            return 1
+        print("\n".join(lines))
+        return 0
     if cmd == "on-commit":
         try:
             closed = on_commit(args.cwd)
