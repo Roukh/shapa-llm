@@ -105,11 +105,12 @@ class TestScore(unittest.TestCase):
     def test_every_shipped_doc_validates(self):
         # Every bundled design doc (arch/ + AGENTS.md) installed by `shapa init`
         # carries the uniform frontmatter schema. assets/skills/ holds harness
-        # skills (SKILL.md frontmatter), installed by install.sh, never by init.
+        # skills (SKILL.md frontmatter), installed by install.sh, never by init;
+        # assets/prompts/ holds agent prompts, printed by the CLI, never installed.
         assets = Path(__file__).parent.parent / "shapa" / "assets"
         checked = 0
         for f in assets.rglob("*.md"):
-            if f.relative_to(assets).parts[0] == "skills":
+            if f.relative_to(assets).parts[0] in ("skills", "prompts"):
                 continue
             result = validate_node(f)
             self.assertEqual(result.errors, [], f"{f}: {result.errors}")

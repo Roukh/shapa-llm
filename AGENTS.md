@@ -10,7 +10,7 @@ Source of the `shapa` tool: an operational-memory engine for LLM agents (one SQL
   - Database (format 4): `db.py` (schema, work ledger, rows, sweep, worktree resolution), `ledger.py` (`shapa ledger`/`row`/`correction` and the git and harness triggers), `migrate4.py` (format 3 to 4).
   - Write path: `capture.py` (Stop hook), `redact.py`, `memlog.py` (format-3 log, and the derived index that also mirrors database rows), `save.py`.
   - Index and daemon: `store.py`, `serve.py`. MCP server: `mcp.py`.
-  - Maintenance: `maintain.py`, `heartbeat.py`, `score.py`. Format: `frontmatter.py`, `nodes.py`, `validate.py`, `upgrade.py`, `status.py`. Opt-in importer: `memri_import.py`.
+  - Maintenance: `maintain.py`, `heartbeat.py`, `score.py`. Format: `frontmatter.py`, `nodes.py`, `validate.py`, `upgrade.py`, `status.py`, `reconfigure.py` (the session-start restructure directive; its prompt is `assets/prompts/reconfigure.md`). Opt-in importer: `memri_import.py`.
 - `shapa/assets/` ships into user wikis: `AGENTS.md` (schema and wiki marker), `placement.md`, the `arch/index.md` template, and `skills/shapa-upgrade` (installed into harnesses, never into a wiki).
 - `tests/` is the pytest suite, with fixtures under `tests/fixtures/`.
 - `install.sh` wires hooks, MCP and the skill from a clone. `bootstrap.sh` is the `curl | sh` installer.

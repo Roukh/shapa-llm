@@ -65,6 +65,7 @@ from shapa.bm25 import bm25_scores, words
 MEMORY_DIRNAME = "memory"
 LOG_SUFFIX = ".jsonl"
 GITATTRIBUTES_LINE = f"{MEMORY_DIRNAME}/*{LOG_SUFFIX} merge=union"
+GITATTRIBUTES_COMMENT = "# shapa: memory log lines merge as a union (append-only)"
 
 KINDS = ("decision", "fact", "gotcha", "outcome", "open_question", "preference",
          "memory", "rule", "issue")
@@ -427,8 +428,8 @@ def ensure_gitattributes(root) -> bool:
     if any(line.strip() == GITATTRIBUTES_LINE for line in text.splitlines()):
         return False
     sep = "" if not text or text.endswith("\n") else "\n"
-    path.write_text(text + sep + "# shapa: memory log lines merge as a union (append-only)\n"
-                    + GITATTRIBUTES_LINE + "\n", encoding="utf-8")
+    path.write_text(text + sep + GITATTRIBUTES_COMMENT + "\n" + GITATTRIBUTES_LINE + "\n",
+                    encoding="utf-8")
     return True
 
 

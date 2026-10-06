@@ -107,8 +107,8 @@ def _install_docs(target: Path) -> list[str]:
         return installed
     for src in sorted(ASSETS_DIR.rglob("*.md")):
         rel = src.relative_to(ASSETS_DIR)
-        if rel.parts[0] == "skills":
-            continue  # harness skills, installed by install.sh - not wiki docs
+        if rel.parts[0] in ("skills", "prompts"):
+            continue  # harness skills and agent prompts - not wiki docs
         dst = target / rel
         if dst.exists():
             continue

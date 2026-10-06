@@ -76,6 +76,7 @@ The Stop/SubagentStop hook (`shapa capture`) never writes a note per session. It
 - **No-answer floor:** a prompt that names something memory has never seen (an acronym, a camelCase word, a capitalized name), or that has no content word memory knows ("ok"), gets `(no query-relevant memory)` instead of a padded guess, unless the semantic match is strong anyway.
 - **Modes:** `fused` with the `[semantic]` extra, `bm25` without it. The mode is printed by `shapa status`, `shapa doctor`, the session header, the MCP search reply and the degraded hook header, never silently.
 - **Promotion:** `shapa maintain --memories` lists hot records (high use counts). `--promote ID` turns one into a curated note and archives the record. Nothing is ever deleted.
+- **Restructure directive:** a wiki below format 4, or migrated but not yet restructured, opens every session's bootstrap with a directive to dispatch one dedicated agent (`$SHAPA_RECONFIGURE_MODEL`, default `opus`) on the prompt `shapa upgrade --reconfigure-prompt PATH` prints. Printing it claims the job for 6 hours; the agent finishes with `shapa upgrade --mark-reconfigured PATH`.
 - **Import:** `shapa upgrade [PATH] --import-memri FILE [--dry-run]` is an opt-in importer for memri JSON exports.
 
 ### Measured

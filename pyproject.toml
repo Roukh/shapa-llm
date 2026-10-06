@@ -46,4 +46,4 @@ packages = ["shapa"]
 [tool.setuptools.package-data]
 # Design docs (arch/ + AGENTS.md) shipped with the tool and installed into a
 # wiki by `shapa init`.
-shapa = ["assets/*.md", "assets/arch/*.md", "assets/skills/*/SKILL.md"]
+shapa = ["assets/*.md", "assets/arch/*.md", "assets/skills/*/SKILL.md", "assets/prompts/*.md"]

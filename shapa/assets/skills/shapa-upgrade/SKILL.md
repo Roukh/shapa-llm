@@ -24,6 +24,11 @@ frontmatter lines the upgrade deletes) and `work` (judgment items: `code`,
 that need hand repair). `steps` says what each mechanical migration changes.
 Nothing behind means you are done.
 
+Format 4 adds a restructure pass per wiki. When session context opens with
+`<shapa-action>`, dispatch one dedicated agent per named wiki whose whole
+prompt is the output of `shapa upgrade --reconfigure-prompt <wiki>`; it does
+the mechanical upgrade itself and ends with `--mark-reconfigured`.
+
 Format 4 adds the `database` step: memory/rule/issue notes become rows in
 `shapa.db` (the note id kept as the row's alias), `checklist.md` sections become
 features with their open items as jobs, open `ideas.md` entries and
