@@ -1,2 +1,2 @@
 # shapa: memory log lines merge as a union (append-only)
-memory/*.jsonl merge=union
+shapa.db binary

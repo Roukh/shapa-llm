@@ -1,14 +1,14 @@
 ---
-id: shapa-memory-v3-results
+id: memory-v3-results
 type: reference
 created: "2026-10-02T17:00:00Z"
-consequence: 8
+consequence: 6
 locus: output-meta
 scope: repo
-summary: Memory v3 measured - the storage lab's variant grid, the no-answer floor's calibration, and shapa 0.8.0 against 0.7.1 on the held-out set.
+summary: Historical lab measurements for the fused BM25+vector recall and no-answer floor, from the design that preceded format 4's database-backed recall.
 ---
 
-What the memory lab measured before v3 was built, how the no-answer floor was calibrated, and what the shipped code scores on the held-out set against the pre-v3 baseline. The design these numbers back is [[shapa-memory-v3]]. Part of [[shapa-backend-spec]].
+Historical record. What a storage lab measured before the memory-v3 JSONL-log design was built and shipped, how its no-answer floor was calibrated, and how that shipped code scored against the pre-v3 baseline. The JSONL log itself was superseded by format 4's database (see `arch/database.md`); these numbers are kept because the fusion method and floor calibration still inform how the current read path ranks rows.
 
 ## Method
 
