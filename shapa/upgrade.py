@@ -174,8 +174,9 @@ def step_gitignore(root: Path, dry_run: bool) -> list[str]:
         return []
     if not dry_run:
         sep = "" if text.endswith("\n") or not text else "\n"
-        path.write_text(text + sep + CACHE_GITIGNORE.split("\n", 2)[0] + "\n"
-                        + "".join(f"{n}\n" for n in missing), encoding="utf-8")
+        header = CACHE_GITIGNORE.split("\n", 1)[0]
+        lead = "" if header in have else header + "\n"  # once, not per upgrade
+        path.write_text(text + sep + lead + "".join(f"{n}\n" for n in missing), encoding="utf-8")
     return [".gitignore"]
 
 

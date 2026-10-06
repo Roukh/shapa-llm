@@ -267,6 +267,18 @@ class TestMechanical(UpgradeTestCase):
             self.assertIn(name, lines)
         self.assertEqual(upgrade.step_gitignore(wiki, dry_run=True), [])
 
+    def test_gitignore_header_is_written_once_across_upgrades(self):
+        wiki = make_old_wiki(self.repo_wiki())
+        (wiki / ".gitignore").write_text("my-own-rule\n", encoding="utf-8")
+        upgrade.step_gitignore(wiki, dry_run=False)
+        text = (wiki / ".gitignore").read_text(encoding="utf-8")
+        (wiki / ".gitignore").write_text(text.replace("temp/\n", ""), encoding="utf-8")
+        upgrade.step_gitignore(wiki, dry_run=False)
+        lines = (wiki / ".gitignore").read_text(encoding="utf-8").splitlines()
+        header = upgrade.CACHE_GITIGNORE.split("\n", 1)[0]
+        self.assertEqual(lines.count(header), 1)
+        self.assertIn("temp/", lines)
+
     def test_docs_refresh_never_touches_arch_or_notes(self):
         wiki = make_old_wiki(self.repo_wiki())
         design_before = (wiki / "arch" / "design.md").read_text(encoding="utf-8")
