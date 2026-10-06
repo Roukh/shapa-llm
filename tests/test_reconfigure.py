@@ -146,6 +146,18 @@ class TestLifecycle(ReconfigureCase):
         self.assertFalse(any(p.startswith("prompts") for p in installed))
         self.assertFalse((target / "prompts").exists())
 
+    def test_init_installs_only_the_named_docs_even_from_a_stale_build(self):
+        stale = self.tmp / "assets"
+        shutil.copytree(cli.ASSETS_DIR, stale)
+        (stale / "agenda.md").write_text("removed long ago\n", encoding="utf-8")
+        (stale / "arch" / "PRD.md").write_text("removed long ago\n", encoding="utf-8")
+        target = self.tmp / "fresh2"
+        target.mkdir()
+        with mock.patch.object(cli, "ASSETS_DIR", stale):
+            installed = cli._install_docs(target)
+        self.assertEqual(sorted(installed), sorted(cli.INIT_DOCS))
+        self.assertFalse((target / "agenda.md").exists())
+
     def test_the_claim_file_is_gitignored(self):
         self.assertIn(reconfigure.CLAIM_FILENAME, upgrade.CACHE_IGNORES)
 
