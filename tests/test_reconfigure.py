@@ -123,6 +123,21 @@ class TestLifecycle(ReconfigureCase):
         stamp = old.stat().st_mtime - (reconfigure.CLAIM_TTL_HOURS + 1) * 3600
         os.utime(old, (stamp, stamp))
         self.assertIn("ACTION FIRST", self.context())
+        self.assertIsNone(reconfigure.claim(self.wiki, "s2"))  # an expired claim is replaced
+
+    def test_only_one_session_wins_the_claim(self):
+        self.old_wiki()
+        self.assertIsNone(reconfigure.claim(self.wiki, "s1"))
+        self.assertIn("s1", reconfigure.claim(self.wiki, "s2"))
+        code, _ = run_upgrade("--reconfigure-prompt", str(self.wiki))
+        self.assertEqual(code, 3)
+
+    def test_claiming_gitignores_the_claim_in_an_old_wiki(self):
+        self.old_wiki()
+        (self.wiki / ".gitignore").write_text(".shapa-index.db\n", encoding="utf-8")
+        run_upgrade("--reconfigure-prompt", str(self.wiki))
+        lines = (self.wiki / ".gitignore").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(lines, [".shapa-index.db", reconfigure.CLAIM_FILENAME])
 
     def test_init_never_installs_the_prompt_into_a_wiki(self):
         target = self.tmp / "fresh"

@@ -3,7 +3,7 @@ You are restructuring one shapa wiki to format 4. That is your only job. The wik
 Format 4: the wiki's tracked `shapa.db` holds the work ledger and the memory, rule and issue rows. Markdown remains only in `arch/` (one file per box of a diagram of the system, written for agents) and `research/` (one file per topic). `AGENTS.md` in the wiki is the schema; read it first. Read `placement.md` too.
 
 Ground rules:
-- Work only inside the wiki directory, from the repo's primary checkout on its default branch. The database commits only there. If the wiki has uncommitted changes you did not make, stop and report them.
+- Work only inside the wiki directory, from the repo's primary checkout on its default branch. The database commits only there. If the wiki has uncommitted changes you did not make, stop and report them. `.shapa-reconfigure-claim` is yours: it marks this job as taken, it is gitignored, and finishing removes it.
 - Never run `shapa maintain --prune`.
 - Never print secret values.
 - If the repo is public, nothing private may land in it: no secrets, no client names, no other projects' details.

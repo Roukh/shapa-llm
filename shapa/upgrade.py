@@ -689,7 +689,11 @@ def main(argv: list[str] | None = None) -> None:
             reconfigure.mark_done(root)
             print(f"shapa: {reconfigure.target(root)} marked restructured")
             sys.exit(0)
-        reconfigure.claim(root, os.environ.get("CLAUDE_SESSION_ID", "")[:8])
+        holder = reconfigure.claim(root, os.environ.get("CLAUDE_SESSION_ID", "")[:8])
+        if holder:
+            print(f"shapa: {reconfigure.target(root)} is already being restructured ({holder}); "
+                  "do not dispatch another agent", file=sys.stderr)
+            sys.exit(3)
         sys.stdout.write(reconfigure.prompt(root))
         sys.exit(0)
 

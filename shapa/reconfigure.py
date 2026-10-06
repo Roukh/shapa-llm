@@ -16,6 +16,7 @@ after a format-3 migration, ``done`` once restructured; a wiki born in format
 from __future__ import annotations
 
 import os
+import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -36,12 +37,20 @@ def target(root) -> Path:
 
 
 def _meta(root) -> str | None:
-    if not db.exists(root):
+    """The ``reconfigure`` meta value, read-only (no pragmas, no schema work:
+    this runs for every wiki at every session start)."""
+    path = db.db_path(root)
+    if not path.is_file():
         return None
-    conn = db.connect(root)
+    try:
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=2)
+    except sqlite3.Error:
+        return None
     try:
         row = conn.execute("SELECT value FROM meta WHERE key = ?", (META_KEY,)).fetchone()
         return row[0] if row else None
+    except sqlite3.Error:
+        return None
     finally:
         conn.close()
 
@@ -86,9 +95,44 @@ def claimed(root, now: datetime | None = None) -> str | None:
     return text or stamp.isoformat(timespec="minutes")
 
 
-def claim(root, who: str = "") -> None:
+def _ignore_claim(wiki: Path) -> None:
+    """The claim is bookkeeping, never content: keep it out of git even in a
+    wiki whose ``.gitignore`` predates it."""
+    path = wiki / ".gitignore"
+    try:
+        text = path.read_text(encoding="utf-8") if path.exists() else ""
+        if CLAIM_FILENAME not in {ln.strip() for ln in text.splitlines()}:
+            sep = "" if not text or text.endswith("\n") else "\n"
+            path.write_text(text + sep + CLAIM_FILENAME + "\n", encoding="utf-8")
+    except OSError:
+        pass
+
+
+def claim(root, who: str = "") -> str | None:
+    """Claim *root*'s restructure. Returns ``None`` when this call won it, or
+    the live claim another session holds. The create is exclusive, so two
+    sessions racing for one wiki cannot both win; an expired claim is
+    replaced."""
+    wiki = target(root)
+    _ignore_claim(wiki)
+    path = wiki / CLAIM_FILENAME
     stamp = datetime.now(timezone.utc).isoformat(timespec="minutes")
-    (target(root) / CLAIM_FILENAME).write_text(f"{who or 'a session'} at {stamp}\n", encoding="utf-8")
+    for _ in range(2):
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        except FileExistsError:
+            holder = claimed(wiki)
+            if holder:
+                return holder
+            try:
+                path.unlink()  # expired: free it, then race for it once more
+            except OSError:
+                pass
+            continue
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(f"{who or 'a session'} at {stamp}\n")
+        return None
+    return claimed(wiki) or "another session"
 
 
 def mark_done(root) -> None:
@@ -134,7 +178,7 @@ def directive_lines(wiki_paths) -> list[str]:
             f"ACTION FIRST, before the user's task: the wiki {wiki} needs the format-4 "
             f"restructure ({'; '.join(why)}). Dispatch one dedicated background agent on "
             f"model \"{model()}\" whose whole prompt is the output of "
-            f"`shapa upgrade --reconfigure-prompt {wiki}` (running that command claims the job "
-            "so parallel sessions don't duplicate it). Then carry on with the user's task; "
-            "don't do the restructure yourself.")
+            f"`shapa upgrade --reconfigure-prompt {wiki}` (running that command claims the job; "
+            "if it exits non-zero another session already has it, so dispatch nothing). Then "
+            "carry on with the user's task; don't do the restructure yourself.")
     return lines
