@@ -55,8 +55,10 @@ def _root_notes(root: Path) -> list[Path]:
 
 
 def pending(root: Path) -> bool:
-    """Whether :func:`step_database` has anything to do."""
-    return not db.exists(root)
+    """Whether :func:`step_database` has anything to do: no database yet, or
+    a format-3 memory log written after the migration (an older shapa's
+    capture hook still running against this wiki)."""
+    return not db.exists(root) or bool(memlog.log_files(root))
 
 
 def _migrate_notes(conn, root: Path, removed: list[str]) -> None:
@@ -152,6 +154,17 @@ def _migrate_memlog(conn, root: Path, removed: list[str]) -> None:
 def step_database(root: Path, dry_run: bool) -> list[str]:
     if not pending(root):
         return []
+    if db.exists(root):
+        # Already format 4: only a stray memory log to fold in.
+        if dry_run:
+            return [f"{db.DB_FILENAME} <- {memlog.MEMORY_DIRNAME}/"]
+        removed: list[str] = []
+        conn = db.connect(root)
+        try:
+            _migrate_memlog(conn, root, removed)
+        finally:
+            conn.close()
+        return [f"{db.DB_FILENAME} <- {', '.join(removed)}"]
     if dry_run:
         out = [p.name for p in _root_notes(root)
                if str(frontmatter.parse(p).meta.get("type", "")).lower() in ROW_KIND]

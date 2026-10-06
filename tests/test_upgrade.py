@@ -679,6 +679,28 @@ class TestMemoryConversion(UpgradeTestCase):
             conn.close()
 
 
+class TestStrayLogAfterFormat4(UpgradeTestCase):
+    def test_a_log_written_by_an_older_capture_is_folded_into_rows(self):
+        wiki = make_old_wiki(self.repo_wiki())
+        upgrade.upgrade_wiki(wiki)
+        keep = memlog.make_record(kind="preference", summary="Always pin the model in trials.",
+                                  scope="repo", source="capture:request#abc")
+        drop = memlog.make_record(kind="outcome", summary="Shipped the hook.", scope="repo",
+                                  source="capture:report#abc")
+        memlog.append(wiki, [keep, drop])
+        self.assertEqual(upgrade.upgrade_wiki(wiki, check=True).status, "behind")
+        upgrade.upgrade_wiki(wiki)
+        self.assertFalse((wiki / "memory").exists())
+        conn = db.connect(wiki)
+        try:
+            summaries = [r.summary for r in db.rows(conn, "M")]
+        finally:
+            conn.close()
+        self.assertIn("Always pin the model in trials.", summaries)
+        self.assertNotIn("Shipped the hook.", summaries)
+        self.assertEqual(upgrade.upgrade_wiki(wiki, check=True).status, "current")
+
+
 class TestMemlogJudgment(UpgradeTestCase):
     def test_malformed_memory_log_line_is_a_work_item(self):
         wiki = make_old_wiki(self.repo_wiki())
