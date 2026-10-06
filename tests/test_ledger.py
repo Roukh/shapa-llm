@@ -39,6 +39,15 @@ class TestIds(LedgerCase):
         db.delete(self.conn, [f1])
         self.assertEqual(db.add_item(self.conn, "F", "two"), "F2")
 
+    def test_deleted_and_edited_text_leaves_no_trace_in_the_file(self):
+        rid, _ = db.add_row(self.conn, "M", "zqxdeletedzqx event", "zqxdeletedzqx body")
+        kept, _ = db.add_row(self.conn, "R", "zqxeditedzqx rule", "body")
+        db.delete(self.conn, [rid])
+        db.update_row(self.conn, kept, summary="plain rule")
+        data = db.db_path(self.wiki).read_bytes()
+        self.assertNotIn(b"zqxdeletedzqx", data)
+        self.assertNotIn(b"zqxeditedzqx", data)
+
     def test_parent_kind_is_enforced_and_standalone_is_allowed(self):
         f1 = db.add_item(self.conn, "F", "feature")
         j1 = db.add_item(self.conn, "J", "job", parent=f1)

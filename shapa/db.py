@@ -194,6 +194,9 @@ def connect(root, *, create: bool = False) -> sqlite3.Connection | None:
     conn.row_factory = sqlite3.Row
     conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
     conn.execute("PRAGMA foreign_keys = ON")
+    # The file is committed to git whole: zero deleted and overwritten content
+    # so a pruned or scrubbed row's old text never lingers in a free page.
+    conn.execute("PRAGMA secure_delete = ON")
     mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
     if str(mode).lower() != "delete":
         conn.execute("PRAGMA journal_mode = DELETE")
