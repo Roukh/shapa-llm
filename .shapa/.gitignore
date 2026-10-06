@@ -11,3 +11,4 @@ shapa.db-journal
 shapa.db-wal
 shapa.db-shm
 temp/
+.shapa-reconfigure-claim

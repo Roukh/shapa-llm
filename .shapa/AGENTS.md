@@ -47,7 +47,8 @@ of a new row: [[placement]].
   [--verify CMD]`; `claim`/`release`; `close ID` (runs the item's verify
   command first, refuses on failure); `tree ID`; `branch F<n>` names and
   records a feature's branch; `issues ID` shows past issues for an item.
-- Triggers: a git `post-commit` hook runs `shapa ledger on-commit` (closes the
+- Triggers (git hooks installed per repo by `shapa ledger git-hooks`): a git
+  `post-commit` hook runs `shapa ledger on-commit` (closes the
   `J<n>` the subject names); after `gh pr merge` a PostToolUse hook runs
   `shapa ledger hook-posttool`; SessionStart runs `shapa ledger hook-start`
   (closes features whose branch merged elsewhere). Hooks never run a verify
@@ -103,3 +104,7 @@ and the lean caps: at most 40 live root notes, 12 `arch/` files, 250 KB.
 (the note id kept as alias), checklist sections become features and their open
 items jobs, open ideas and operator-sourced memory-log records become
 memories, and `agenda.md`, `ideas.md`, `checklist.md` and `memory/` go away.
+Until a migrated or older wiki is restructured by hand (rows sorted, arch
+boxes written), every session's bootstrap opens with a directive to dispatch
+one dedicated agent with `shapa upgrade --reconfigure-prompt <wiki>`; that
+agent ends it with `shapa upgrade --mark-reconfigured <wiki>`.
