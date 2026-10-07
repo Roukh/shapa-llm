@@ -313,6 +313,13 @@ HARNESS_TEXT_PREFIXES = (
 )
 
 
+def _is_operator_text(text: str) -> bool:
+    """Text the operator typed, not text the harness wrote into a user turn: a
+    hook or system injection (it starts with '<': another agent's hand-back, a
+    task notice, command output) or one of HARNESS_TEXT_PREFIXES."""
+    return bool(text) and not text.startswith("<") and not text.startswith(HARNESS_TEXT_PREFIXES)
+
+
 def _operator_messages(entries: list[dict]) -> list[str]:
     """Qualifying operator-request texts, in order: user-role, not a tool
     result, not isMeta/isSidechain, not a hook/system injection (starts with
@@ -328,7 +335,7 @@ def _operator_messages(entries: list[dict]) -> list[str]:
         if _is_tool_result_entry(obj, blocks):
             continue
         text = _clean_user_text(_text_blocks(blocks))
-        if not text or text.startswith("<") or text.startswith(HARNESS_TEXT_PREFIXES):
+        if not _is_operator_text(text):
             continue
         out.append(text)
     return out

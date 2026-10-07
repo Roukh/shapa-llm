@@ -108,6 +108,19 @@ class TestCorrections(WikiCase):
         finally:
             conn.close()
 
+    def test_harness_text_in_a_user_turn_never_becomes_an_issue(self):
+        # Each reads as a correction; none is the operator's own words.
+        for prompt in (
+            '<agent-message from="a1b2c3">\n[Subagent hand-back] You missed the wrong path.\n</agent-message>',
+            "<task-notification>\n<summary>Agent finished: that's wrong, try again</summary>\n</task-notification>",
+            "<bash-input>git push</bash-input><bash-stdout>error: wrong account</bash-stdout>",
+            "Another Claude session sent a message:\n<agent-message>No, wrong wiki.</agent-message>",
+            "[SYSTEM NOTIFICATION - NOT USER INPUT] wrong state, try again",
+        ):
+            self.assertTrue(ledger.is_correction(prompt), prompt)
+            self.assertIsNone(ledger.record_correction(prompt, cwd=self.repo, session="s1"), prompt)
+        self.assertIsNotNone(ledger.record_correction("No, wrong wiki.", cwd=self.repo, session="s1"))
+
     def test_hook_entry_is_silent_and_never_fails(self):
         buf = io.StringIO()
         stdin = io.StringIO(json.dumps({"prompt": "add the hook", "cwd": str(self.repo)}))
