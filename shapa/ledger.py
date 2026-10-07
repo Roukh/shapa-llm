@@ -793,11 +793,13 @@ def record_correction(prompt: str, *, cwd=None, session: str = "",
                       transcript_path: str | None = None, now: datetime | None = None
                       ) -> tuple[Path, str] | None:
     """Write an issue row for an operator correction. ``None`` when *prompt*
-    is not a correction or no wiki in scope has a database."""
+    is not a correction, is text the harness wrote (an agent's hand-back, a
+    task notice, command output: capture skips the same turns), or no wiki in
+    scope has a database."""
     from shapa import capture
 
     text = capture._clean_user_text(prompt or "")
-    if not text or not is_correction(text):
+    if not capture._is_operator_text(text) or not is_correction(text):
         return None
     root = default_root_for_hook(cwd)
     if root is None:
