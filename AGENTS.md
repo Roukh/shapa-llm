@@ -54,6 +54,7 @@ Roukh (github.com/Roukh/shapa-llm), sole maintainer, MIT license. Commits use th
 
 Current:
 - A wiki is a `.shapa/` or `shapa/` directory holding `AGENTS.md`, found by walking up from the cwd (`.shapa/` first). `config.memory_dir()` resolves `$SHAPA_MEMORY`, then the discovered wiki, then the pointer, then `~/.shapa/memory`.
+- A bare `shapa init` resolves the git top level (the PRIMARY checkout's, from a linked worktree) and creates `.shapa/` there - or respects a legacy `shapa/` already there - then links this repo's git hooks (`shapa/githooks.py`: never into a shared or hook-manager-owned dir it doesn't own). Only `--global` records the global pointer; `--obsidian` opts into the Obsidian vault.
 - Reads fan out over the global and repo wikis in scope; writes are scope-gated (`save --scope global|repo|external`).
 - Wiki format 4: `shapa.db` (tracked, committed whole) is the source of truth for the work ledger (features, jobs, tasks) and memory/rule/issue rows. `.shapa-index.db` (FTS5, vectors, use counters) is derived and gitignored and mirrors the rows for recall. `arch/` and `research/` stay files; `temp/<feature>/` is gitignored scrap. `.shapa-format` marks a wiki's format, and `shapa upgrade` migrates older wikis.
 - Recall mode is `fused` with `[semantic]` and `bm25` without it, and every surface reports which.

@@ -88,8 +88,10 @@ class TestInit(unittest.TestCase):
         with redirect_stdout(out):
             cli._init([str(self.wiki)])
 
-        for name in ("AGENTS.md", "placement.md", "arch/index.md", ".gitignore", ".obsidian/app.json"):
+        for name in ("AGENTS.md", "placement.md", "arch/index.md", ".gitignore"):
             self.assertTrue((self.wiki / name).exists(), name)
+        # .obsidian/ is opt-in now (--obsidian), not scaffolded by default.
+        self.assertFalse((self.wiki / ".obsidian").exists())
         self.assertEqual(note.read_text(encoding="utf-8"), text)
         self.assertIn("my own fire", own_agenda.read_text(encoding="utf-8"))
         # Adoption never migrates: no format marker, and it says how to.
@@ -99,16 +101,24 @@ class TestInit(unittest.TestCase):
         self.assertFalse(self.cfg.exists())
         self.assertIn(str(self.wiki.resolve()), registry.load())
 
-    def test_bare_init_still_refuses_a_non_wiki_shapa_folder(self):
-        # The implicit ./shapa default can collide with a Python package
-        # named shapa/; only a named DIR is adopted.
-        pkg = self.tmp / config.WIKI_DIRNAME
+    def test_bare_init_still_refuses_a_non_wiki_dot_shapa_folder(self):
+        # The implicit ./.shapa default can collide with some other tool's
+        # own hidden folder; only a named DIR is adopted. self.tmp is not a
+        # git checkout, so --no-git stands in for "resolved the git top
+        # level" here (see tests/test_init.py for that resolution itself).
+        pkg = self.tmp / ".shapa"
         pkg.mkdir()
-        (pkg / "__init__.py").write_text("", encoding="utf-8")
+        (pkg / "unrelated.json").write_text("{}", encoding="utf-8")
+        with self.assertRaises(SystemExit) as ctx, redirect_stderr(io.StringIO()):
+            cli._init(["--no-git"])
+        self.assertEqual(ctx.exception.code, 2)
+        self.assertFalse((pkg / "AGENTS.md").exists())
+
+    def test_bare_init_outside_a_git_work_tree_without_no_git_exits_2(self):
         with self.assertRaises(SystemExit) as ctx, redirect_stderr(io.StringIO()):
             cli._init([])
         self.assertEqual(ctx.exception.code, 2)
-        self.assertFalse((pkg / "AGENTS.md").exists())
+        self.assertFalse((self.tmp / ".shapa").exists())
 
     def test_env_overrides_pointer(self):
         cli._init(["--global", str(self.wiki)])

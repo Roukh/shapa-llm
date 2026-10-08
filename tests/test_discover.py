@@ -184,8 +184,10 @@ class TestInitPointerPolicy(unittest.TestCase):
         shutil.rmtree(self.tmp)
 
     def test_bare_init_does_not_write_pointer(self):
-        self.cli._init([])  # scaffolds <cwd>/shapa
-        self.assertTrue((self.tmp / config.WIKI_DIRNAME / config.WIKI_MARKER).is_file())
+        # self.tmp is not a git checkout, so bare init needs --no-git here
+        # (see tests/test_init.py for the git-top-level-resolution cases).
+        self.cli._init(["--no-git"])  # scaffolds <cwd>/.shapa
+        self.assertTrue((self.tmp / ".shapa" / config.WIKI_MARKER).is_file())
         self.assertFalse(self.cfg.exists())  # default pointer untouched
 
     def test_named_init_does_not_write_pointer(self):
@@ -199,13 +201,13 @@ class TestInitPointerPolicy(unittest.TestCase):
         self.assertEqual(config._pointer(), wiki.resolve())
 
     def test_init_refuses_non_wiki_nonempty_target(self):
-        # A pre-existing ./shapa holding unrelated files (e.g. a package dir)
-        # must NOT be merged into - refuse rather than pollute it.
-        pkg = self.tmp / config.WIKI_DIRNAME
+        # A pre-existing .shapa holding unrelated files must NOT be merged
+        # into - refuse rather than pollute it.
+        pkg = self.tmp / ".shapa"
         pkg.mkdir()
         (pkg / "__init__.py").write_text("x = 1\n", encoding="utf-8")
         with self.assertRaises(SystemExit) as cm:
-            self.cli._init([])  # bare init targets <cwd>/shapa
+            self.cli._init(["--no-git"])  # bare init targets <cwd>/.shapa
         self.assertNotEqual(cm.exception.code, 0)
         # Nothing was written into the unrelated directory.
         self.assertFalse((pkg / "AGENTS.md").exists())
@@ -213,10 +215,10 @@ class TestInitPointerPolicy(unittest.TestCase):
 
     def test_reinit_existing_wiki_is_allowed(self):
         # Re-running init on a real wiki (has the AGENTS.md marker) is idempotent.
-        wiki = self.tmp / config.WIKI_DIRNAME
+        wiki = self.tmp / ".shapa"
         wiki.mkdir()
         (wiki / config.WIKI_MARKER).write_text("# rules\n", encoding="utf-8")
-        self.cli._init([])  # must not raise
+        self.cli._init(["--no-git"])  # must not raise
         self.assertTrue((wiki / "arch" / "index.md").is_file())
 
 

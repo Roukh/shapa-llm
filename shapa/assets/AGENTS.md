@@ -47,7 +47,8 @@ of a new row: [[placement]].
   [--verify CMD]`; `claim`/`release`; `close ID` (runs the item's verify
   command first, refuses on failure); `tree ID`; `branch F<n>` names and
   records a feature's branch; `issues ID` shows past issues for an item.
-- Triggers (git hooks installed per repo by `shapa ledger git-hooks`): a git
+- Triggers (git hooks linked by `shapa init`, or re-linked by hand with
+  `shapa ledger git-hooks`): a git
   `post-commit` hook runs `shapa ledger on-commit` (closes the
   `J<n>` the subject names); after `gh pr merge` a PostToolUse hook runs
   `shapa ledger hook-posttool`; SessionStart runs `shapa ledger hook-start`
