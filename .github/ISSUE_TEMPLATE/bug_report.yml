@@ -1,0 +1,72 @@
+name: Bug report
+description: Something in shapa does not work as documented.
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you ran, what you expected, and what happened instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: The exact commands, in order, starting from a clean wiki if possible.
+      placeholder: |
+        1. shapa init
+        2. shapa ...
+    validations:
+      required: true
+
+  - type: input
+    id: shapa-version
+    attributes:
+      label: shapa version
+      description: Output of `shapa status` or `pip show shapa`.
+    validations:
+      required: true
+
+  - type: input
+    id: python-version
+    attributes:
+      label: Python version
+      description: Output of `python3 --version`.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install-method
+    attributes:
+      label: Install method
+      options:
+        - PyPI (uv tool install / pipx)
+        - bootstrap.sh
+        - editable clone (pip install -e)
+        - other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: harness
+    attributes:
+      label: Harness, if relevant
+      options:
+        - Claude Code
+        - Codex
+        - OpenCode
+        - none / CLI only
+        - other
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant output
+      description: Output of the failing command, and of `shapa doctor` if it points at the same wiki. Redact anything private first.
+      render: shell
+    validations:
+      required: false
