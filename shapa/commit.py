@@ -42,6 +42,10 @@ from pathlib import Path
 from shapa import config, db, ledger
 
 GIT_TIMEOUT = 10
+#: The commit runs the repo's own pre-commit hooks (linters, formatters), so
+#: it gets longer than a plumbing call; killing git mid-commit would leave an
+#: index.lock behind. Still under the 60 s the installer gives the hook.
+COMMIT_TIMEOUT = 45
 
 
 def _git(cwd, *args, timeout: int = GIT_TIMEOUT) -> subprocess.CompletedProcess:
@@ -161,7 +165,7 @@ def _commit_target(checkout: Path, wiki_dir: Path, label: str, *, dry_run: bool,
         return {**result, "status": "nothing", "reason": "nothing to commit"}
 
     message = f"chore(shapa): wiki ({label})"
-    commit = _git(checkout, "commit", "-q", "-m", message, "--", rel)
+    commit = _git(checkout, "commit", "-q", "-m", message, "--", rel, timeout=COMMIT_TIMEOUT)
     if commit.returncode != 0:
         new_paths = after - before
         if new_paths:

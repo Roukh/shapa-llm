@@ -158,6 +158,16 @@ class TestScrub(CommitCase):
         self.assertNotIn(self.TERM.encode(), content)
         self.assertIn(b"[workspace]", content)
 
+    def test_scrub_that_finds_nothing_leaves_nothing_to_commit(self):
+        conn = db.connect(self.wiki)
+        db.add_row(conn, "M", "a note with no private term in it")
+        conn.close()
+        self.assertEqual(commit.run_commit(self.repo, label="test")[0]["status"], "committed")
+        before = self.head_sha()
+        results = commit.run_commit(self.repo, label="test", scrub_terms=[self.TERM])
+        self.assertEqual(results[0]["status"], "nothing", results[0])
+        self.assertEqual(self.head_sha(), before)
+
     def test_scrub_terms_from_config_json_are_applied_too(self):
         self.cfg.write_text(json.dumps({"scrub_terms": [self.TERM]}), encoding="utf-8")
         conn = db.connect(self.wiki)

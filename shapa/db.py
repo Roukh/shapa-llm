@@ -821,7 +821,10 @@ def scrub(conn: sqlite3.Connection, terms) -> int:
                 conn.execute("DELETE FROM tags WHERE id = ? AND tag = ?", (row_id, tag_text))
                 conn.execute("INSERT OR IGNORE INTO tags(id, tag) VALUES (?, ?)", (row_id, new_tag))
                 changed += 1
+        # Only a hash that changed is rewritten: a scrub that finds nothing must
+        # leave the file byte-identical, or `shapa commit` commits it every session.
         for row in conn.execute("SELECT id, summary, body FROM mri").fetchall():
-            conn.execute("UPDATE mri SET hash = ? WHERE id = ?",
-                         (content_hash(row["summary"], row["body"]), row["id"]))
+            digest = content_hash(row["summary"], row["body"])
+            conn.execute("UPDATE mri SET hash = ? WHERE id = ? AND hash IS NOT ?",
+                         (digest, row["id"], digest))
     return changed
