@@ -81,8 +81,11 @@ of a new row: [[placement]].
 - Every worktree of a repo uses the primary checkout's `shapa.db` (resolved
   through git's common directory), so there is one ID counter per repo and a
   feature branch never changes its own copy.
-- It is committed only on the default branch. A git `pre-commit` hook running
-  `shapa ledger pre-commit` refuses it on any other branch: a branch that
+- It is committed only on the default branch. `shapa commit` does this
+  itself, as a SessionEnd hook (with SessionStart as a catch-up for a
+  session that crashed before SessionEnd fired), scrubbing any configured
+  terms first. A git `pre-commit` hook running `shapa ledger pre-commit`
+  still refuses a manual commit of it on any other branch: a branch that
   commits its own copy would make every checkout swap the database.
 - `.gitattributes` marks it `binary`; the rollback journal keeps the file
   complete between writes.

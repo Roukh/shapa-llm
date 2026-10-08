@@ -7,7 +7,7 @@ Source of the `shapa` tool: an operational-memory engine for LLM agents (one SQL
 - `shapa/` is the engine package; `cli.py` is the `shapa` command (`python3 -m shapa` from a clone).
   - Wiki resolution and discovery: `config.py`, `registry.py` (`~/.shapa/wikis.json`).
   - Read path: `bootstrap.py` (SessionStart), `fetch.py`, `rank.py`, `bm25.py`, `embed.py`, `get.py`.
-  - Database (format 4): `db.py` (schema, work ledger, rows, sweep, worktree resolution), `ledger.py` (`shapa ledger`/`row`/`correction` and the git and harness triggers), `migrate4.py` (format 3 to 4).
+  - Database (format 4): `db.py` (schema, work ledger, rows, sweep, worktree resolution), `ledger.py` (`shapa ledger`/`row`/`correction` and the git and harness triggers), `migrate4.py` (format 3 to 4), `commit.py` (`shapa commit`: the wiki commits itself on the default branch, as a SessionEnd/SessionStart hook).
   - Write path: `capture.py` (Stop hook), `redact.py`, `memlog.py` (format-3 log, and the derived index that also mirrors database rows), `save.py`.
   - Index and daemon: `store.py`, `serve.py`. MCP server: `mcp.py`.
   - Maintenance: `maintain.py`, `heartbeat.py`, `score.py`. Format: `frontmatter.py`, `nodes.py`, `validate.py`, `upgrade.py`, `status.py`, `reconfigure.py` (the session-start restructure directive; its prompt is `assets/prompts/reconfigure.md`). Opt-in importer: `memri_import.py`.
@@ -36,7 +36,7 @@ Roukh (github.com/Roukh/shapa-llm), sole maintainer, MIT license. Commits use th
 - The engine has no hosted-database or hosted-service coupling; its one database is the local `shapa.db` file. Integrations with other systems live outside this repo.
 - Never run `shapa maintain --prune` or a non-dry-run heartbeat against a live wiki from an agent session; use `--dry-run`. Prune is operator-run only.
 - Destructive paths never trust frontmatter an agent wrote: `arch/` is protected by path, and superseded note files move to `archive/`. Database rows are different by design: the after-feature sweep deletes closed, expired, duplicate, superseded and stale rows, and the database file's git history is the record.
-- A wiki database is committed only on the default branch; `shapa ledger pre-commit` refuses it elsewhere. Worktrees write the primary checkout's file.
+- A wiki database is committed only on the default branch - `shapa commit` does this itself at session end (SessionEnd hook, with SessionStart as a catch-up for a crashed session), scrubbing any configured terms first; `shapa ledger pre-commit` still refuses a manual commit of it elsewhere. Worktrees write and commit through the primary checkout's file.
 - Only `shapa init --global` may write the global wiki pointer (`~/.shapa/config.json`).
 - `capture` and `maintain` run as hooks: they never block a session (always exit 0) and never write inside this repo or the installed package.
 - Tests run against temporary wikis. `tests/conftest.py` points `$SHAPA_REGISTRY` at a throwaway file; never aim the suite at a real wiki.

@@ -16,6 +16,9 @@
 #   UserPromptSubmit -> shapa correction        (write: an operator correction -> issue row)
 #   SessionStart     -> shapa ledger hook-start (close features whose branch merged)
 #   PostToolUse/Bash -> shapa ledger hook-posttool (after `gh pr merge`: close + sweep)
+#   SessionEnd       -> shapa commit --hook     (write: commit the wiki, default branch only)
+#   SessionStart     -> shapa commit --hook     (catch-up: a session that crashed before
+#                                                 SessionEnd fired; --no-auto-commit skips both)
 #
 # MCP server registration (--mcp, gated per --harness; skipped for any
 # harness whose binary isn't on PATH - see the mcp_* functions below for the
@@ -37,26 +40,28 @@
 #                                 # (unspecified: prompts on a TTY, else skips
 #                                 # and prints the exact command; --dry-run
 #                                 # always previews the plan as if --mcp)
-#   ./install.sh --dry-run | --settings PATH | --no-obsidian | --no-embeddings | --uninstall
+#   ./install.sh --dry-run | --settings PATH | --no-obsidian | --no-embeddings
+#                 | --no-auto-commit | --uninstall
 
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-SETTINGS=""; DRY_RUN=0; UNINSTALL=0; NO_OBSIDIAN=0; NO_EMBEDDINGS=0; MEMORY=""
+SETTINGS=""; DRY_RUN=0; UNINSTALL=0; NO_OBSIDIAN=0; NO_EMBEDDINGS=0; NO_AUTO_COMMIT=0; MEMORY=""
 HARNESS="claude"; MCP=""   # MCP: "" = auto (TTY prompt / no-TTY skip), "1"/"0" = pinned
 while [ $# -gt 0 ]; do
   case "$1" in
-    --dry-run)       DRY_RUN=1 ;;
-    --uninstall)     UNINSTALL=1 ;;
-    --no-obsidian)   NO_OBSIDIAN=1 ;;
-    --no-embeddings) NO_EMBEDDINGS=1 ;;
-    --memory)        MEMORY="$2"; shift ;;
-    --settings)      SETTINGS="$2"; shift ;;
-    --harness)       HARNESS="$2"; shift ;;
-    --mcp)           MCP=1 ;;
-    --no-mcp)        MCP=0 ;;
-    -h|--help)       sed -n '2,35p' "$0"; exit 0 ;;
+    --dry-run)        DRY_RUN=1 ;;
+    --uninstall)      UNINSTALL=1 ;;
+    --no-obsidian)    NO_OBSIDIAN=1 ;;
+    --no-embeddings)  NO_EMBEDDINGS=1 ;;
+    --no-auto-commit) NO_AUTO_COMMIT=1 ;;
+    --memory)         MEMORY="$2"; shift ;;
+    --settings)       SETTINGS="$2"; shift ;;
+    --harness)        HARNESS="$2"; shift ;;
+    --mcp)            MCP=1 ;;
+    --no-mcp)         MCP=0 ;;
+    -h|--help)        sed -n '2,38p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
   shift
@@ -113,12 +118,22 @@ MAINTAIN_CMD="$INV maintain --prune"
 CORRECTION_CMD="$INV correction"
 LEDGER_START_CMD="$INV ledger hook-start"
 LEDGER_POSTTOOL_CMD="$INV ledger hook-posttool"
+COMMIT_CMD="$INV commit --hook"
 
 EVENTS=("SessionStart"    "UserPromptSubmit" "Stop"         "Stop"          "SubagentStop"
         "UserPromptSubmit" "SessionStart"      "PostToolUse")
 CMDS=(  "$BOOTSTRAP_CMD"  "$FETCH_CMD"        "$CAPTURE_CMD" "$MAINTAIN_CMD" "$CAPTURE_CMD"
         "$CORRECTION_CMD" "$LEDGER_START_CMD" "$LEDGER_POSTTOOL_CMD")
 MATCHERS=("" "" "" "" "" "" "" "Bash")
+
+# SessionEnd commits the wiki (write: `shapa commit`, default branch only);
+# SessionStart re-runs it as a catch-up for a session that crashed before
+# SessionEnd fired. --no-auto-commit skips wiring both.
+if [ "$NO_AUTO_COMMIT" -eq 0 ]; then
+  EVENTS+=("SessionEnd" "SessionStart")
+  CMDS+=("$COMMIT_CMD" "$COMMIT_CMD")
+  MATCHERS+=("" "")
+fi
 
 # The argv a harness should run to speak to the shapa MCP server: the same
 # invocation as the hooks above plus a trailing "mcp" subcommand. $INV is
@@ -428,6 +443,9 @@ if harness_in_scope claude; then
   echo "  SubagentStop     -> $INV capture"
   echo "  UserPromptSubmit -> $INV correction ; SessionStart -> $INV ledger hook-start"
   echo "  PostToolUse/Bash -> $INV ledger hook-posttool"
+  if [ "$NO_AUTO_COMMIT" -eq 0 ]; then
+    echo "  SessionEnd       -> $INV commit --hook ; SessionStart -> $INV commit --hook (catch-up)"
+  fi
   echo "Git hooks: run '$INV ledger git-hooks' in each repo with a wiki (pre-commit keeps"
   echo "  shapa.db on the default branch; post-commit closes the job a J<n>: subject names)"
   echo "maintain --prune deletes orphan/stale notes and auto-merges duplicates."

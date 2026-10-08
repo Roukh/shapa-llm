@@ -22,7 +22,7 @@ from shapa import __version__, config, registry
 
 _SUBMODULES = (
     "bootstrap", "fetch", "capture", "save", "maintain", "heartbeat", "score",
-    "validate", "serve", "mcp", "upgrade", "get", "status",
+    "validate", "serve", "mcp", "upgrade", "get", "status", "commit",
 )
 
 #: Docs shipped with the tool and installed into a wiki by ``shapa init``:
@@ -83,6 +83,13 @@ commands:
                  (one commit, subject `J<n>:`), tasks; claim, close, tree,
                  issues; git triggers on-commit / on-merge / reconcile;
                  after-feature sweep
+  commit [--cwd DIR] [--hook] [--dry-run] [--json] [--scrub TERM ...]
+                 commit a wiki's database on the default branch only (a
+                 feature branch never commits its own copy); --hook reads
+                 cwd/session_id from stdin and never blocks a session
+                 (SessionEnd, plus SessionStart as a crash catch-up);
+                 --scrub TERM (or config.json's scrub_terms) redacts text
+                 before staging
   row ...        memory (M), rule (R) and issue (I) rows: add --scope,
                  edit, rm, link, tag, list
   correction     UserPromptSubmit hook: an operator correction ("no",

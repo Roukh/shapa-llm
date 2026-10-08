@@ -83,6 +83,18 @@ def _pointer() -> Path | None:
     return Path(memory).expanduser() if isinstance(memory, str) and memory else None
 
 
+def scrub_terms() -> list[str]:
+    """Terms ``shapa commit`` replaces in every text column before staging
+    a wiki database, read from the pointer file's optional ``scrub_terms``
+    list (additive with that command's own ``--scrub`` flag)."""
+    try:
+        data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    terms = data.get("scrub_terms") if isinstance(data, dict) else None
+    return [t for t in terms if isinstance(t, str) and t] if isinstance(terms, list) else []
+
+
 def memory_dir() -> Path:
     """Return the configured memory directory (not necessarily existing)."""
     env = os.environ.get(ENV_VAR)

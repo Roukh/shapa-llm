@@ -115,12 +115,23 @@ def _repo_dir(root: Path) -> Path:
 
 
 def default_branch(repo: Path) -> str:
+    """The repo's default branch: the remote's HEAD when there is an
+    ``origin``, else a local fallback chain for a repo that has none -
+    ``init.defaultBranch``, then ``main``/``master``, then the only local
+    branch there is, before giving up and calling it ``main``."""
     r = _git(repo, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD")
     if r.returncode == 0 and r.stdout.strip():
         return r.stdout.strip().split("/", 1)[-1]
+    cfg = _git(repo, "config", "--get", "init.defaultBranch")
+    if cfg.returncode == 0 and cfg.stdout.strip():
+        return cfg.stdout.strip()
     for name in ("main", "master"):
         if _git(repo, "rev-parse", "--verify", "--quiet", f"refs/heads/{name}").returncode == 0:
             return name
+    branches = _git(repo, "for-each-ref", "--format=%(refname:short)", "refs/heads/")
+    names = [b for b in branches.stdout.splitlines() if b.strip()]
+    if len(names) == 1:
+        return names[0]
     return "main"
 
 
