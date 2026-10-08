@@ -29,4 +29,4 @@ __all__ = [
     "fetch", "memlog", "redact", "capture", "get", "status", "maintain",
     "registry", "upgrade", "cli",
 ]
-__version__ = "0.8.0"
+__version__ = "0.9.0"
