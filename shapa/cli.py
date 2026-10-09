@@ -227,6 +227,12 @@ def _install_hooks_quietly(repo: Path) -> list[str]:
     ``shapa ledger git-hooks`` uses) - never a reason to fail init: DIR may
     be outside any git checkout (a global wiki, most often), and a hook
     problem is reported, not fatal."""
+    # Only a wiki sitting directly at a checkout's top level links hooks: a
+    # global wiki under a home directory that is itself a git repo must not
+    # wire shapa into that repo.
+    top = _git_top_level(repo)
+    if top is None or top.resolve() != Path(repo).resolve():
+        return []
     try:
         from shapa import ledger
 

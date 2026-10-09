@@ -127,6 +127,23 @@ class TestBareInitTopLevel(GitRepoCase):
         for ln in lines:
             self.assertTrue(ln[3:].startswith(".shapa/"), ln)
 
+    def test_bare_init_links_the_repos_own_hooks(self):
+        with self.cwd(self.repo):
+            cli._init([])
+        for name in ("pre-commit", "post-commit"):
+            hook = self.repo / ".git" / "hooks" / name
+            self.assertIn("shapa ledger", hook.read_text(encoding="utf-8"))
+
+    def test_wiki_below_the_top_level_links_no_hooks(self):
+        # A global wiki under a home directory that is itself a git repo:
+        # the wiki is not at a checkout's top level, so that repo is left alone.
+        nested = self.repo / "home" / ".shapa-global"
+        with self.cwd(self.repo):
+            cli._init(["--global", str(nested)])
+        self.assertTrue((nested / "AGENTS.md").is_file())
+        for name in ("pre-commit", "post-commit"):
+            self.assertFalse((self.repo / ".git" / "hooks" / name).exists())
+
     def test_output_mentions_next_steps_not_shapa_connect(self):
         out = io.StringIO()
         with self.cwd(self.repo), redirect_stdout(out):
