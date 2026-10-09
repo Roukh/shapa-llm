@@ -29,7 +29,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from shapa import config, db
+from shapa import config, db, githooks
 
 VERIFY_TIMEOUT = 300
 GIT_TIMEOUT = 10
@@ -115,12 +115,27 @@ def _repo_dir(root: Path) -> Path:
 
 
 def default_branch(repo: Path) -> str:
+    """The repo's default branch: the remote's HEAD when there is an
+    ``origin``, else a local fallback chain for a repo that has none -
+    ``init.defaultBranch``, then ``main``/``master`` (each only if that
+    branch exists here: a machine-wide ``init.defaultBranch`` says nothing
+    about a repo created before it was set), then the only local branch
+    there is, before giving up and calling it ``main``."""
     r = _git(repo, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD")
     if r.returncode == 0 and r.stdout.strip():
         return r.stdout.strip().split("/", 1)[-1]
-    for name in ("main", "master"):
+    cfg = _git(repo, "config", "--get", "init.defaultBranch").stdout.strip()
+    for name in dict.fromkeys(n for n in (cfg, "main", "master") if n):
         if _git(repo, "rev-parse", "--verify", "--quiet", f"refs/heads/{name}").returncode == 0:
             return name
+    branches = _git(repo, "for-each-ref", "--format=%(refname:short)", "refs/heads/")
+    names = [b for b in branches.stdout.splitlines() if b.strip()]
+    if len(names) == 1:
+        return names[0]
+    if not names:  # no commit yet: the unborn branch HEAD names is the default
+        unborn = _git(repo, "symbolic-ref", "--quiet", "--short", "HEAD").stdout.strip()
+        if unborn:
+            return unborn
     return "main"
 
 
@@ -318,42 +333,21 @@ def pre_commit(cwd=None) -> list[str]:
             f"{base} (unstage it: git restore --staged {p})" for p in dbs]
 
 
-GIT_HOOK_MARK = "# shapa ledger hook"
-GIT_HOOKS = {
-    "pre-commit": (f"#!/bin/sh\n{GIT_HOOK_MARK}: a wiki database commits only on the default "
-                   "branch.\n# exit 1 is shapa's refusal; a missing or older shapa lets the "
-                   "commit through.\nif command -v shapa >/dev/null 2>&1; then\n"
-                   "\tshapa ledger pre-commit\n\t[ $? -eq 1 ] && exit 1\nfi\nexit 0\n"),
-    "post-commit": (f"#!/bin/sh\n{GIT_HOOK_MARK}: a \"J<n>:\" commit subject closes that "
-                    "job.\ncommand -v shapa >/dev/null 2>&1 && shapa ledger on-commit "
-                    "2>/dev/null\nexit 0\n"),
-}
+#: Re-exported for backward compatibility - the hook text and the installer
+#: itself now live in :mod:`shapa.githooks` (hook-manager and shared-dir
+#: aware; ``shapa init`` calls it too).
+GIT_HOOK_MARK = githooks.GIT_HOOK_MARK
+GIT_HOOKS = githooks.GIT_HOOKS
 
 
 def install_git_hooks(cwd=None) -> list[str]:
-    """Write the ledger's git hooks into this repo's hooks directory (its
-    ``core.hooksPath`` when set). A hook file that exists and is not shapa's
-    is never touched: the lines to add to it are printed instead."""
-    repo = Path(cwd or Path.cwd())
-    r = _git(repo, "rev-parse", "--git-path", "hooks")
-    if r.returncode != 0:
-        raise CommandError(f"{repo} is not a git checkout")
-    hooks = Path(r.stdout.strip())
-    if not hooks.is_absolute():
-        hooks = (repo / hooks).resolve()
-    hooks.mkdir(parents=True, exist_ok=True)
-    out = []
-    for name, script in GIT_HOOKS.items():
-        path = hooks / name
-        if path.exists() and GIT_HOOK_MARK not in path.read_text(encoding="utf-8", errors="replace"):
-            body = script.split("\n", 1)[1]
-            out.append(f"{name}: {path} exists and is not shapa's - add before its final exit:\n"
-                       + "".join(f"    {ln}\n" for ln in body.splitlines()))
-            continue
-        path.write_text(script, encoding="utf-8")
-        path.chmod(0o755)
-        out.append(f"{name}: {path}")
-    return out
+    """Write the ledger's git hooks into this repo (see
+    :func:`shapa.githooks.install` for the shared-dir/manager/foreign-hook
+    rules). Kept here under its original name for existing callers."""
+    try:
+        return githooks.install(Path(cwd) if cwd else Path.cwd())
+    except githooks.CommandError as e:
+        raise CommandError(str(e)) from e
 
 
 def _vectors_and_uses(root: Path):
