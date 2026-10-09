@@ -3,8 +3,9 @@
 ``<wiki>/shapa.db`` holds two ledgers, both tracked in git as the file itself:
 
 - **items** - the work ledger. ``F`` features hold ``J`` jobs, which hold
-  ``T`` tasks. A feature is a branch and a PR and closes on merge; a job is
-  one commit (message starts ``J<n>:``) and closes on that commit; a task
+  ``T`` tasks. A feature is a new capability, a branch and a PR, and closes
+  on merge; a job (a fix, docs or release work stand alone) is one commit
+  (message starts ``J<n>:``) and closes on that commit; a task
   has no git artifact and closes when an agent says so. IDs are a kind
   letter plus a per-wiki counter, never reused; the hierarchy lives in
   ``parent``.

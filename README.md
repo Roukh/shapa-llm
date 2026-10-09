@@ -60,9 +60,11 @@ there instead.
   prompt, ranked by relevance.
 - Turns an operator's correction ("no", "wrong", "not like this") into an
   attributed issue row, not a buried chat line.
-- Tracks work as a three-level ledger: a feature (`F`, one branch and PR)
-  holds jobs (`J`, one commit each), and a job holds tasks (`T`). A commit
-  whose subject starts `J<n>:` closes that job automatically.
+- Tracks work as a three-level ledger: a feature (`F`, a new capability
+  with its own branch and PR) holds jobs (`J`, one commit each), and a job
+  holds tasks (`T`). Fixes, docs and release work are standalone jobs that
+  share one batch branch and PR per session. A commit whose subject starts
+  `J<n>:` closes that job automatically.
 - Sweeps the database after every merged feature: closed, expired,
   duplicate, superseded and stale rows are deleted, and the database's git
   history keeps the record.

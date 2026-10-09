@@ -498,7 +498,8 @@ def _subcommand_adder(sub):
 
 def ledger_main(argv: list[str]) -> int:
     p = argparse.ArgumentParser(prog="shapa ledger", description="The work ledger: features "
-                                "(branch + PR), jobs (one commit), tasks (no git artifact).")
+                                "(a new capability: branch + PR), jobs (one commit; fixes, docs "
+                                "and release work stand alone), tasks (no git artifact).")
     p.add_argument("--cwd", default=None)
     sub = p.add_subparsers(dest="cmd")
     add = _subcommand_adder(sub)

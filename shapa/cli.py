@@ -97,10 +97,11 @@ commands:
                  bring wikis to the current format: apply mechanical
                  migrations, report the judgment work list (exit 1 while
                  any wiki is behind; the shapa-upgrade skill finishes it)
-  ledger ...     the work ledger (format 4): features (branch + PR), jobs
-                 (one commit, subject `J<n>:`), tasks; claim, close, tree,
-                 issues; git triggers on-commit / on-merge / reconcile;
-                 after-feature sweep
+  ledger ...     the work ledger (format 4): features (a new capability:
+                 branch + PR), jobs (one commit, subject `J<n>:`; fixes
+                 stand alone on a batch branch), tasks; claim, close,
+                 tree, edit --parent, issues; git triggers on-commit /
+                 on-merge / reconcile; after-feature sweep
   commit [--cwd DIR] [--hook] [--dry-run] [--json] [--scrub TERM ...]
                  commit a wiki's database on the default branch only (a
                  feature branch never commits its own copy); --hook reads
