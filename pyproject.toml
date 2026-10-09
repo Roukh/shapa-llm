@@ -4,17 +4,34 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "shapa"
-version = "0.8.0"
-description = "Operational memory for an LLM agent - a self-healing markdown-graph memory."
+version = "0.9.0"
+description = "Memory and a work ledger for coding agents, in one SQLite file per wiki, with harness hooks for Claude Code, Codex and OpenCode."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "Roukh" }]
-keywords = ["llm", "agent", "memory", "obsidian", "markdown", "knowledge-graph"]
+keywords = [
+    "llm",
+    "agent",
+    "memory",
+    "coding-agent",
+    "work-ledger",
+    "sqlite",
+    "claude-code",
+    "codex",
+    "mcp",
+]
 classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
+    "Topic :: Software Development",
 ]
 dependencies = []  # core engine is pure standard library
 
@@ -39,6 +56,8 @@ shapa = "shapa.cli:main"
 [project.urls]
 Homepage = "https://github.com/Roukh/shapa-llm"
 Repository = "https://github.com/Roukh/shapa-llm"
+Issues = "https://github.com/Roukh/shapa-llm/issues"
+Changelog = "https://github.com/Roukh/shapa-llm/blob/main/CHANGELOG.md"
 
 [tool.setuptools]
 packages = ["shapa"]

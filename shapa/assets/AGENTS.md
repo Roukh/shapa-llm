@@ -40,14 +40,25 @@ of a new row: [[placement]].
 | `J` job | tasks | one commit whose subject starts `J<n>:` | that commit |
 | `T` task | - | none | `shapa ledger close T<n>` |
 
+- A feature is a new capability: something the project could not do before
+  (a new command, integration, file format or workflow), built over several
+  jobs that are reviewed together. Everything else is a job: a fix, a
+  correction to existing behavior, docs, release or repo work, even when it
+  spans several files. When unsure, it is a job.
+- A job under a feature commits on the feature's branch. A standalone job
+  commits on the session's batch branch `jobs-<YYYY-MM-DD>` (a `-2` suffix
+  when that name is taken): every standalone job of a session shares that one
+  branch and one PR.
 - An ID is the kind letter plus a per-wiki counter, never reused. The
   hierarchy is the `parent` column, not the ID. Standalone jobs and tasks are
   fine.
 - `shapa ledger` lists live work; `shapa ledger add F|J|T TITLE [--parent ID]
   [--verify CMD]`; `claim`/`release`; `close ID` (runs the item's verify
-  command first, refuses on failure); `tree ID`; `branch F<n>` names and
+  command first, refuses on failure); `tree ID`; `edit ID --parent ID|none`
+  moves a job or task, or makes it standalone; `branch F<n>` names and
   records a feature's branch; `issues ID` shows past issues for an item.
-- Triggers (git hooks installed per repo by `shapa ledger git-hooks`): a git
+- Triggers (git hooks linked by `shapa init`, or re-linked by hand with
+  `shapa ledger git-hooks`): a git
   `post-commit` hook runs `shapa ledger on-commit` (closes the
   `J<n>` the subject names); after `gh pr merge` a PostToolUse hook runs
   `shapa ledger hook-posttool`; SessionStart runs `shapa ledger hook-start`
@@ -81,8 +92,11 @@ of a new row: [[placement]].
 - Every worktree of a repo uses the primary checkout's `shapa.db` (resolved
   through git's common directory), so there is one ID counter per repo and a
   feature branch never changes its own copy.
-- It is committed only on the default branch. A git `pre-commit` hook running
-  `shapa ledger pre-commit` refuses it on any other branch: a branch that
+- It is committed only on the default branch. `shapa commit` does this
+  itself, as a SessionEnd hook (with SessionStart as a catch-up for a
+  session that crashed before SessionEnd fired), scrubbing any configured
+  terms first. A git `pre-commit` hook running `shapa ledger pre-commit`
+  still refuses a manual commit of it on any other branch: a branch that
   commits its own copy would make every checkout swap the database.
 - `.gitattributes` marks it `binary`; the rollback journal keeps the file
   complete between writes.

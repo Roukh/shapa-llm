@@ -1,0 +1,36 @@
+name: Feature request
+description: Propose a new command, hook, or capability.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What goes wrong, or what is missing, without this?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: What you would want shapa to do instead. A sketch of the command, flag, or hook behavior helps.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Anything you tried with the current commands, or another tool, and why it falls short.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: constraints
+    attributes:
+      label: Fit with the project's constraints
+      description: shapa's core stays pure standard library, and the wiki stays one local SQLite file with no hosted service. Check what you understand about how your request fits.
+      options:
+        - label: This does not require a new runtime dependency in the core engine (or it fits behind a new optional extra).
+        - label: This does not require a hosted service or an external account.

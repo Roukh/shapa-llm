@@ -3,8 +3,9 @@
 ``<wiki>/shapa.db`` holds two ledgers, both tracked in git as the file itself:
 
 - **items** - the work ledger. ``F`` features hold ``J`` jobs, which hold
-  ``T`` tasks. A feature is a branch and a PR and closes on merge; a job is
-  one commit (message starts ``J<n>:``) and closes on that commit; a task
+  ``T`` tasks. A feature is a new capability, a branch and a PR, and closes
+  on merge; a job (a fix, docs or release work stand alone) is one commit
+  (message starts ``J<n>:``) and closes on that commit; a task
   has no git artifact and closes when an agent says so. IDs are a kind
   letter plus a per-wiki counter, never reused; the hierarchy lives in
   ``parent``.
@@ -343,6 +344,30 @@ def update_item(conn: sqlite3.Connection, item_id: str, **fields) -> Item:
             sets = ", ".join(f"{k} = ?" for k in fields)
             conn.execute(f"UPDATE items SET {sets}, updated = ? WHERE id = ?",
                          (*fields.values(), now_iso(), item.id))
+    return _require_item(conn, item.id)
+
+
+def set_parent(conn: sqlite3.Connection, item_id: str, parent: str | None) -> Item:
+    """Move an open job or task under another open *parent* (a feature for
+    a job, a job for a task), or make it standalone with ``None``. Work
+    filed under the wrong feature moves out before that feature's merge
+    closes it along with everything still open beneath it."""
+    with write(conn):
+        item = _require_item(conn, item_id)
+        if item.status == "closed":
+            raise LedgerError(f"{item.id} is closed")
+        if item.kind not in PARENT_KIND:
+            raise LedgerError(f"a {KIND_NAMES[item.kind]} has no parent")
+        if parent:
+            p = _require_item(conn, parent)
+            if PARENT_KIND[item.kind] != p.kind:
+                raise LedgerError(f"a {KIND_NAMES[item.kind]}'s parent must be a "
+                                  f"{KIND_NAMES[PARENT_KIND[item.kind]]}, not {p.id}")
+            if p.status == "closed":
+                raise LedgerError(f"{p.id} is closed")
+            parent = p.id
+        conn.execute("UPDATE items SET parent = ?, updated = ? WHERE id = ?",
+                     (parent, now_iso(), item.id))
     return _require_item(conn, item.id)
 
 
@@ -821,7 +846,10 @@ def scrub(conn: sqlite3.Connection, terms) -> int:
                 conn.execute("DELETE FROM tags WHERE id = ? AND tag = ?", (row_id, tag_text))
                 conn.execute("INSERT OR IGNORE INTO tags(id, tag) VALUES (?, ?)", (row_id, new_tag))
                 changed += 1
+        # Only a hash that changed is rewritten: a scrub that finds nothing must
+        # leave the file byte-identical, or `shapa commit` commits it every session.
         for row in conn.execute("SELECT id, summary, body FROM mri").fetchall():
-            conn.execute("UPDATE mri SET hash = ? WHERE id = ?",
-                         (content_hash(row["summary"], row["body"]), row["id"]))
+            digest = content_hash(row["summary"], row["body"])
+            conn.execute("UPDATE mri SET hash = ? WHERE id = ? AND hash IS NOT ?",
+                         (digest, row["id"], digest))
     return changed

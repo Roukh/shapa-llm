@@ -1,0 +1,18 @@
+# What ships in the sdist, on top of the `shapa` package itself (see
+# [tool.setuptools.package-data] in pyproject.toml for what ships inside
+# the package). Without this file, setuptools' default sdist file list
+# picks up stray top-level `test*.py` files by name pattern - this repo's
+# `tests/` directory needs its `conftest.py` and `fixtures/` to run at all,
+# so a partial copy is worse than none; `prune` drops the whole directory.
+include LICENSE
+include README.md
+include CHANGELOG.md
+include AGENTS.md
+
+prune tests
+prune .shapa
+prune .worktrees
+prune .github
+
+global-exclude __pycache__
+global-exclude *.py[cod]

@@ -29,16 +29,17 @@ ENV_VAR = "SHAPA_MEMORY"
 DEFAULT_DIR = Path.home() / ".shapa" / "memory"
 #: Pointer file written by ``shapa init --global`` to remember the global wiki.
 CONFIG_FILE = Path.home() / ".shapa" / "config.json"
-#: Directory name a wiki lives in at a repo root, and the file that marks it.
-#: This remains the implicit default target for a bare ``shapa init`` (unchanged,
-#: so existing wikis/users are unaffected by the dot-folder addition below).
+#: The legacy visible dirname a wiki could live in at a repo root, and the
+#: file that marks it. A bare ``shapa init`` no longer targets this name -
+#: its default is the hidden ``.shapa`` in `WIKI_DIRNAMES` below - but a
+#: wiki already scaffolded under this name keeps resolving, and `discover()`
+#: still respects one if it finds it.
 WIKI_DIRNAME = "shapa"
 WIKI_MARKER = "AGENTS.md"
 #: Every dirname `discover()` recognizes as a wiki, checked in this order at
 #: each ancestor directory — the hidden dot-folder first (the current
-#: convention for new wikis), then the legacy visible name for backward
-#: compatibility with wikis created before this option existed. Additive only:
-#: `WIKI_DIRNAME` above is untouched, so `shapa init`'s own default is unchanged.
+#: convention, and `shapa init`'s own default), then the legacy visible name
+#: for backward compatibility with wikis created before this option existed.
 WIKI_DIRNAMES = (".shapa", WIKI_DIRNAME)
 
 
@@ -81,6 +82,18 @@ def _pointer() -> Path | None:
     # Only a non-empty string is a valid path; anything else (number, list, a
     # hand-edited mistake) falls through to the default rather than crashing.
     return Path(memory).expanduser() if isinstance(memory, str) and memory else None
+
+
+def scrub_terms() -> list[str]:
+    """Terms ``shapa commit`` replaces in every text column before staging
+    a wiki database, read from the pointer file's optional ``scrub_terms``
+    list (additive with that command's own ``--scrub`` flag)."""
+    try:
+        data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    terms = data.get("scrub_terms") if isinstance(data, dict) else None
+    return [t for t in terms if isinstance(t, str) and t] if isinstance(terms, list) else []
 
 
 def memory_dir() -> Path:
