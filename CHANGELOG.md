@@ -43,6 +43,19 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 - `pyproject.toml` metadata (description, keywords, classifiers, project
   URLs) now describes what shapa does today, not the pre-format-4 tool.
+- A bare `shapa init` no longer creates a visible `shapa/` in the current
+  directory; an existing `shapa/` wiki at the top level is still used.
+
+### Fixed
+
+- `shapa ledger git-hooks` wrote its hooks into whatever `core.hooksPath`
+  pointed at, including a machine-wide hooks directory shared by every
+  repo. It now writes only inside the repo's own git directory.
+- `shapa doctor` reported "problems: none" with no global wiki and no
+  harness connected.
+- The default branch is detected from branches that exist in the repo, so
+  a machine-wide `init.defaultBranch` naming another branch no longer
+  blocks the database on the real default branch.
 
 ## [0.8.0] - 2026-10-06
 
@@ -58,13 +71,11 @@ This project follows [Semantic Versioning](https://semver.org/).
 - Git hooks for the ledger: a `pre-commit` hook refuses to commit
   `shapa.db` outside the default branch, and a `post-commit` hook closes
   the job a commit's subject names.
-- A self-healing sweep after every merged feature: closed and duplicate
-  rows are deleted, superseded rows are archived, and stale memories are
-  pruned.
+- A sweep after every merged feature deletes closed, expired, duplicate,
+  superseded and stale rows; the database's git history keeps the record.
 - Correction capture now stores only the operator's own words as issue
   rows, never a harness's restatement of them.
 - A resumable `shapa upgrade` path from format 3 to format 4.
-- A short, accurate README (this version's own README replaces it).
 
 Related research and design notes live under `.shapa/arch/` and
 `.shapa/research/` in this repository's own wiki.
