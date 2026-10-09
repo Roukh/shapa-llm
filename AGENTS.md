@@ -26,7 +26,7 @@ Roukh (github.com/Roukh/shapa-llm), sole maintainer, MIT license. Commits use th
 - Tests: `.venv/bin/python -m pytest -q`. In a network-sandboxed shell, `tests/test_serve.py` (Unix sockets) and `tests/test_installer_upgrade.py` fail; run those outside the sandbox before calling the suite green.
 - CI runs `python -m pytest -q` on Python 3.11, 3.12 and 3.13, once on the bare core install and once with `[semantic,mcp]`.
 - Install the live CLI from this checkout: `uv tool install --force '.[semantic,mcp]'` from the repo root, then `shapa upgrade --all --check`.
-- Health: `shapa doctor` (exits 1 when a wiki needs a hand), `shapa status`, `shapa validate`.
+- Health: `shapa doctor` (exits 1 when the install needs a hand - a wiki behind format, this repo's git hooks not wired, no agent harness connected), `shapa status` (same report, never exits 1), `shapa validate`.
 - Before checking a wheel's contents, delete `build/`; a stale one re-ships files removed from `shapa/assets/`.
 
 ## Boundaries

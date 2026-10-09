@@ -74,9 +74,14 @@ commands:
   get ID         the full text behind an id fetch/bootstrap surfaced (a
                  note, or a memory record m-...)
   status         the live recall mode (fused vectors+BM25, or bm25-only
-                 without the [semantic] extra) and every wiki in scope
-  doctor         status, exiting 1 when a wiki needs a hand (format behind,
-                 malformed memory-log lines)
+                 without the [semantic] extra), every wiki in scope, this
+                 repo's git hooks, and which agent harness (Claude Code,
+                 Codex, OpenCode) is actually wired to shapa
+  doctor         status, exiting 1 when the install needs a hand: a wiki
+                 behind format, a malformed memory-log line, a missing or
+                 broken global wiki, this repo's git hooks not wired, or no
+                 agent harness connected (a missing repo wiki is only ever
+                 informational - `shapa init` creates one)
   capture        extract atomic memories from a finished session into the
                  wiki's memory log (Stop/SubagentStop hook, write path)
   save           write one note explicitly (--scope global|repo|external,
