@@ -61,7 +61,11 @@ class TestReadsNeverWriteNotes(unittest.TestCase):
 
         self.repo = self.tmp / "repo"
         self.repo.mkdir()
-        _git("init", "-q", cwd=self.repo)
+        # -b main: shapa init now also links this repo's git hooks, and the
+        # pre-commit one refuses shapa.db on any branch but the default -
+        # pin the name so this fixture doesn't depend on this machine's
+        # init.defaultBranch setting.
+        _git("init", "-q", "-b", "main", cwd=self.repo)
 
         # Scaffold the wiki the way a real operator would: `shapa init`
         # (exercises the .gitignore-for-the-index-cache fix too).

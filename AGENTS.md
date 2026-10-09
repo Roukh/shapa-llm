@@ -26,7 +26,7 @@ Roukh (github.com/Roukh/shapa-llm), sole maintainer, MIT license. Commits use th
 - Tests: `.venv/bin/python -m pytest -q`. In a network-sandboxed shell, `tests/test_serve.py` (Unix sockets) and `tests/test_installer_upgrade.py` fail; run those outside the sandbox before calling the suite green.
 - CI runs `python -m pytest -q` on Python 3.11, 3.12 and 3.13, once on the bare core install and once with `[semantic,mcp]`.
 - Install the live CLI from this checkout: `uv tool install --force '.[semantic,mcp]'` from the repo root, then `shapa upgrade --all --check`.
-- Health: `shapa doctor` (exits 1 when a wiki needs a hand), `shapa status`, `shapa validate`.
+- Health: `shapa doctor` (exits 1 when the install needs a hand - a wiki behind format, this repo's git hooks not wired, no agent harness connected), `shapa status` (same report, never exits 1), `shapa validate`.
 - Before checking a wheel's contents, delete `build/`; a stale one re-ships files removed from `shapa/assets/`.
 
 ## Boundaries
@@ -54,6 +54,7 @@ Roukh (github.com/Roukh/shapa-llm), sole maintainer, MIT license. Commits use th
 
 Current:
 - A wiki is a `.shapa/` or `shapa/` directory holding `AGENTS.md`, found by walking up from the cwd (`.shapa/` first). `config.memory_dir()` resolves `$SHAPA_MEMORY`, then the discovered wiki, then the pointer, then `~/.shapa/memory`.
+- A bare `shapa init` resolves the git top level (the PRIMARY checkout's, from a linked worktree) and creates `.shapa/` there - or respects a legacy `shapa/` already there - then links this repo's git hooks (`shapa/githooks.py`: never into a shared or hook-manager-owned dir it doesn't own). Only `--global` records the global pointer; `--obsidian` opts into the Obsidian vault.
 - Reads fan out over the global and repo wikis in scope; writes are scope-gated (`save --scope global|repo|external`).
 - Wiki format 4: `shapa.db` (tracked, committed whole) is the source of truth for the work ledger (features, jobs, tasks) and memory/rule/issue rows. `.shapa-index.db` (FTS5, vectors, use counters) is derived and gitignored and mirrors the rows for recall. `arch/` and `research/` stay files; `temp/<feature>/` is gitignored scrap. `.shapa-format` marks a wiki's format, and `shapa upgrade` migrates older wikis.
 - Recall mode is `fused` with `[semantic]` and `bm25` without it, and every surface reports which.
