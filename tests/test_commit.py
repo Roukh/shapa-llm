@@ -244,8 +244,21 @@ class TestDefaultBranchFallback(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_falls_back_to_init_default_branch_config(self):
-        _git("init", "-q", cwd=self.repo)
+        _git("init", "-q", "-b", "trunk", cwd=self.repo)
         _git("config", "init.defaultBranch", "trunk", cwd=self.repo)
+        _git("commit", "-q", "--allow-empty", "-m", "seed", cwd=self.repo)
+        _git("branch", "F1-work", cwd=self.repo)
+        self.assertEqual(ledger.default_branch(self.repo), "trunk")
+
+    def test_configured_default_that_does_not_exist_is_ignored(self):
+        _git("init", "-q", "-b", "main", cwd=self.repo)
+        _git("config", "init.defaultBranch", "master", cwd=self.repo)
+        _git("commit", "-q", "--allow-empty", "-m", "seed", cwd=self.repo)
+        _git("branch", "F1-work", cwd=self.repo)
+        self.assertEqual(ledger.default_branch(self.repo), "main")
+
+    def test_unborn_branch_is_the_default(self):
+        _git("init", "-q", "-b", "trunk", cwd=self.repo)
         self.assertEqual(ledger.default_branch(self.repo), "trunk")
 
     def test_falls_back_to_the_only_local_branch(self):
