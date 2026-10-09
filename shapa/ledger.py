@@ -530,6 +530,8 @@ def ledger_main(argv: list[str]) -> int:
     ed.add_argument("--title")
     ed.add_argument("--body")
     ed.add_argument("--verify")
+    ed.add_argument("--parent", help="move under this feature (job) or job (task); "
+                                     "'none' makes it standalone")
     iss = add("issues", help="past issues most related to an item")
     iss.add_argument("id")
     iss.add_argument("-k", type=int, default=5)
@@ -640,7 +642,11 @@ def ledger_main(argv: list[str]) -> int:
         elif cmd == "edit":
             fields = {k: v for k, v in (("title", args.title), ("body", args.body),
                                         ("verify", args.verify)) if v is not None}
-            print(_item_line(db.update_item(conn, args.id, **fields)))
+            item = db.update_item(conn, args.id, **fields)
+            if args.parent is not None:
+                parent = None if args.parent.lower() == "none" else args.parent
+                item = db.set_parent(conn, args.id, parent)
+            print(_item_line(item))
         elif cmd == "issues":
             vectors, _ = _vectors_and_uses(root)
             qv = None

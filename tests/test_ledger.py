@@ -92,6 +92,44 @@ class TestLifecycle(LedgerCase):
         self.assertEqual(db.get_item(self.conn, t1).closed_reason, "parent")
         self.assertEqual(db.close(self.conn, f1, "merge"), [])
 
+    def test_set_parent_moves_a_job_out_before_its_feature_closes(self):
+        f1 = db.add_item(self.conn, "F", "misfiled feature")
+        f2 = db.add_item(self.conn, "F", "real feature")
+        j1 = db.add_item(self.conn, "J", "unstarted job", parent=f1)
+        j2 = db.add_item(self.conn, "J", "another unstarted job", parent=f1)
+        db.set_parent(self.conn, j1, None)
+        db.set_parent(self.conn, j2, f2)
+        self.assertEqual(db.close(self.conn, f1, "merge"), [f1])
+        self.assertIsNone(db.get_item(self.conn, j1).parent)
+        self.assertEqual(db.get_item(self.conn, j1).status, "open")
+        self.assertEqual(db.get_item(self.conn, j2).parent, f2)
+
+    def test_set_parent_refuses_a_wrong_kind_or_closed_parent(self):
+        f1 = db.add_item(self.conn, "F", "feature")
+        j1 = db.add_item(self.conn, "J", "job", parent=f1)
+        j2 = db.add_item(self.conn, "J", "job two")
+        t1 = db.add_item(self.conn, "T", "task", parent=j1)
+        with self.assertRaises(db.LedgerError):
+            db.set_parent(self.conn, j2, j1)  # a job's parent is a feature
+        with self.assertRaises(db.LedgerError):
+            db.set_parent(self.conn, f1, None)  # a feature has no parent
+        db.set_parent(self.conn, t1, j2)
+        self.assertEqual(db.get_item(self.conn, t1).parent, j2)
+        db.close(self.conn, f1, "merge")
+        with self.assertRaises(db.LedgerError):
+            db.set_parent(self.conn, j2, f1)
+
+    def test_edit_parent_none_on_the_cli_makes_a_job_standalone(self):
+        f1 = db.add_item(self.conn, "F", "feature")
+        j1 = db.add_item(self.conn, "J", "job", parent=f1)
+        self.conn.close()
+        (self.wiki / "AGENTS.md").write_text("# marker\n", encoding="utf-8")
+        with redirect_stdout(io.StringIO()), self.assertRaises(SystemExit) as ctx:
+            ledger.run(ledger.ledger_main, ["--cwd", str(self.tmp), "edit", j1, "--parent", "none"])
+        self.assertEqual(ctx.exception.code, 0)
+        self.conn = db.connect(self.wiki)
+        self.assertIsNone(db.get_item(self.conn, j1).parent)
+
     def test_alias_finds_a_migrated_item(self):
         f1 = db.add_item(self.conn, "F", "plan")
         db.add_item(self.conn, "J", "old item", parent=f1, alias="LH10b")

@@ -346,6 +346,30 @@ def update_item(conn: sqlite3.Connection, item_id: str, **fields) -> Item:
     return _require_item(conn, item.id)
 
 
+def set_parent(conn: sqlite3.Connection, item_id: str, parent: str | None) -> Item:
+    """Move an open job or task under another open *parent* (a feature for
+    a job, a job for a task), or make it standalone with ``None``. Work
+    filed under the wrong feature moves out before that feature's merge
+    closes it along with everything still open beneath it."""
+    with write(conn):
+        item = _require_item(conn, item_id)
+        if item.status == "closed":
+            raise LedgerError(f"{item.id} is closed")
+        if item.kind not in PARENT_KIND:
+            raise LedgerError(f"a {KIND_NAMES[item.kind]} has no parent")
+        if parent:
+            p = _require_item(conn, parent)
+            if PARENT_KIND[item.kind] != p.kind:
+                raise LedgerError(f"a {KIND_NAMES[item.kind]}'s parent must be a "
+                                  f"{KIND_NAMES[PARENT_KIND[item.kind]]}, not {p.id}")
+            if p.status == "closed":
+                raise LedgerError(f"{p.id} is closed")
+            parent = p.id
+        conn.execute("UPDATE items SET parent = ?, updated = ? WHERE id = ?",
+                     (parent, now_iso(), item.id))
+    return _require_item(conn, item.id)
+
+
 def claim(conn: sqlite3.Connection, item_id: str, session: str) -> Item:
     with write(conn):
         item = _require_item(conn, item_id)
