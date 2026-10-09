@@ -90,7 +90,8 @@ class DoctorCase(unittest.TestCase):
         return wiki
 
     def fake_shapa(self) -> Path:
-        fake = self.tmp / "fake-shapa"
+        fake = self.tmp / "bin" / "shapa"
+        fake.parent.mkdir(exist_ok=True)
         fake.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
         fake.chmod(0o755)
         return fake
@@ -149,6 +150,19 @@ class TestBrokenHarness(DoctorCase):
         self.assertEqual(code, 1)
         self.assertIn("does not resolve", out)
         self.assertIn("re-run the installer", out)
+
+
+    def test_guarded_hook_command_checks_the_shapa_segment(self):
+        self.create_global_wiki()
+        self.create_repo_wiki()
+        fake = self.fake_shapa()
+        self.wire_claude_hook(f"command -v {fake} >/dev/null 2>&1 && {fake} bootstrap || true")
+        code, out = self.run_doctor()
+        self.assertEqual(code, 0, out)
+        self.wire_claude_hook("command -v shapa >/dev/null 2>&1 && /nonexistent/shapa bootstrap")
+        code, out = self.run_doctor()
+        self.assertEqual(code, 1)
+        self.assertIn("does not resolve", out)
 
 
 class TestJsonShape(DoctorCase):

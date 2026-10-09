@@ -176,10 +176,17 @@ def _resolves(cmd: str) -> bool:
     """Whether the program a hook/MCP *cmd* string invokes would actually
     run: an absolute path must exist and be executable, a bare name must be
     on PATH, and the documented ``python3 -m shapa`` fallback resolves if
-    ``python3`` does. Leading ``VAR=value`` env assignments are skipped."""
-    parts = cmd.split()
-    while parts and "=" in parts[0] and not parts[0].startswith(("/", "-")):
-        parts = parts[1:]
+    ``python3`` does. Leading ``VAR=value`` env assignments are skipped, and
+    in a guarded command (``command -v shapa >/dev/null && shapa bootstrap``)
+    the segment that actually runs shapa is the one checked."""
+    segments = [seg.split() for seg in re.split(r"&&|\|\||;", cmd)]
+    for i, parts in enumerate(segments):
+        while parts and "=" in parts[0] and not parts[0].startswith(("/", "-")):
+            parts = parts[1:]
+        segments[i] = parts
+    runs_shapa = [p for p in segments if p and p[0] != "command"
+                  and (Path(p[0]).name == "shapa" or p[1:3] == ["-m", "shapa"])]
+    parts = runs_shapa[0] if runs_shapa else next((p for p in segments if p), [])
     if not parts:
         return False
     prog = parts[0]
