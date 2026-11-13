@@ -43,19 +43,21 @@ Opt-in: the engine works unchanged with no remote configured.
 
 | Kind | `data` |
 |---|---|
-| F J T | `title, body, parent, verify, status (open/claimed/closed), closed_reason, git_ref, alias, claimed_by, closed` |
+| F J T | `title, body, parent, status (open/claimed/closed), closed_reason, git_ref, alias, claimed_by, closed` |
 | M R I | `summary` (one line, <=160), `body, alias, source, session` |
 | D | `title` (one line, <=200), `body, alias, mime` (default `text/markdown`), `source` |
 | N | `body` (the whole file). Server derives `alias` (frontmatter `id`, else stem) and `summary` |
 
 - Type names: feature, job, task, memory, rule, issue, document, note. `idea` = a memory tagged `idea` (no kind of its own).
-- Note ids match `^(arch/|research/)?[A-Za-z0-9][A-Za-z0-9._-]{0,99}\.md$`; root `AGENTS.md` and `placement.md` never sync. Both sides enforce this before any file write.
+- `verify` never leaves a machine: it is a shell command, so it is not sent, stored, served or applied. A remote `git_ref` is applied only when it is a commit hash or a branch named for that feature.
+- Note ids match `^(arch/|research/)?[A-Za-z0-9][A-Za-z0-9._-]{0,99}\.md$`; a file named `AGENTS.md`, `CLAUDE.md`, `GEMINI.md` or `placement.md` (any case, any folder) never syncs. Both sides enforce this before any file write.
+- `updated` or `deleted_at` more than 5 minutes ahead of the server clock is clamped to it.
 - Limits: one record <= 1 MB JSON; <= 200 ops and <= 8 MiB per sync request (the client cuts batches at 4 MB); <= 500 `want` ids; a `changes` page <= 500 records; any other body <= 1.1 MB. Over a limit: 413.
 - Text fields pass secret redaction on the server at write and on the client before a local write.
 
 ## Wikis
 
-Key `global` for the global wiki; a repo wiki's key is the lowercase slug (`^[a-z0-9][a-z0-9._-]{0,63}$`) of its primary checkout's directory name, overridable with `--key`. `PUT /v1/wikis/{key}` `{name, kind, origin}` is idempotent; `origin` is `host/owner/repo` (never credentials). Same key with a different non-empty origin: 409.
+Key `global` for the global wiki; a repo wiki's key is the lowercase slug (`^[a-z0-9][a-z0-9._-]{0,63}$`) of its primary checkout's directory name, overridable with `--key`. `PUT /v1/wikis/{key}` `{name, kind, origin}` is idempotent; `origin` is `host/owner/repo` (never credentials). Same key with a different origin: 409. A repo with no git origin has no automatic key: it syncs after one `--key KEY`, which the sync state keeps.
 
 ## Auth
 
@@ -65,7 +67,7 @@ Key `global` for the global wiki; a repo wiki's key is the lowercase slug (`^[a-
 | Device token | `shp_<device_id>_<secret>`; minted by `POST /admin/devices`, shown once, stored as SHA-256 |
 | OAuth 2.1 | chat clients: `/authorize` (consent: owner key, device name, scopes, optional wiki list), `/token`, `/register`. Each grant is one device; the token's resource is `<origin>/mcp` and it is also accepted on `/v1` |
 
-- Scopes: `read`, `write`, `delete`. A device may be limited to a list of wiki keys (default all).
+- Scopes: `read`, `write` (needs `read`), `delete` (needs both). A device may be limited to a list of wiki keys (default all).
 - Every request resolves to a device row in the store; a revoked device is 401 on its next request, token or OAuth.
 - Admin: `POST /admin/devices` `{name, scopes, wikis?}` -> `{id, token}`; `GET /admin/devices`; `DELETE /admin/devices/{id}`.
 - Unauthenticated: `GET /health`, `GET /openapi.json`.
@@ -81,7 +83,7 @@ Key `global` for the global wiki; a repo wiki's key is the lowercase slug (`^[a-
 | `GET /get?id=&wiki=` | read | by id or alias across wikis: `{matches: [record + wiki]}` |
 | `GET /wikis/{wiki}/records?kind=&status=&tag=&after=&limit=` | read | list |
 | `GET /wikis/{wiki}/records/{id}` | read | one record (id or alias, URL-encoded) |
-| `POST /wikis/{wiki}/records` | write | create from `{type, summary\|title, body, tags?, alias?, parent?, verify?, path?, mime?}`; server allocates id and uid; 201 with the record, 200 with the existing row when its text is identical |
+| `POST /wikis/{wiki}/records` | write | create from `{type, summary\|title, body, tags?, alias?, parent?, path?, mime?}`; server allocates id and uid; 201 with the record, 200 with the existing row when its text is identical |
 | `PATCH /wikis/{wiki}/records/{id}` | write | edit fields; optional `base_rev`, mismatch is 409 with `current` |
 | `POST /wikis/{wiki}/records/{id}/claim\|release\|close` | write | ledger moves; `close` takes `{reason: agent\|operator, git_ref?}` and closes open descendants as `parent` |
 | `DELETE /wikis/{wiki}/records/{id}` | delete | tombstone |
@@ -138,13 +140,13 @@ Server `instructions`: call `session_start` first. No delete tool.
 | `save` | `wiki, type (memory/idea/rule/issue/document/note), summary\|title, body, tags?, alias?, path?` | create |
 | `update` | `wiki, id, summary?, title?, body?, tags?, base_rev?` | edit |
 | `ledger_list` | `wiki?` | live features with jobs and tasks |
-| `ledger_add` | `wiki, kind, title, parent?, body?, verify?` | add |
+| `ledger_add` | `wiki, kind, title, parent?, body?` | add |
 | `ledger_set` | `wiki, id, action (claim/release/close/edit), fields?` | move or edit |
 | `wikis` | - | keys, names, counts |
 
 ## Session instructions
 
-Composed per request within `budget` characters (default 6000, 2000-40000): what shapa is; the global note `session-instructions` if present; the operator style (global note `response-style`); global rules (id + summary); live features per wiki; then the write-back format for the client kind: when to write each type and the exact `save` call (`mcp`) or `POST` body (`rest`).
+Composed per request within `budget` characters (default 6000, 2000-40000): what shapa is; the global note `session-instructions` if present; the operator style (global note `response-style`); the global wiki's rules only (id + summary; a named `wiki` adds its own); live features per wiki; then the write-back format for the client kind: when to write each type and the exact `save` call (`mcp`) or `POST` body (`rest`).
 
 ## Client commands
 
