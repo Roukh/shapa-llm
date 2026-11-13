@@ -93,6 +93,14 @@ function applyPut(
   if (target.id !== n.id) renames.set(n.id, target.id);
   // Same uid: the stored record keeps its id and uid; only its content can change.
   const incoming = resolveAlias(repo, wiki, { ...n, id: target.id });
+  if (n.kind === "N" && baseRev === null) {
+    // A note the client believes is new never overwrites a stored one (a file's mtime is not an
+    // edit time). Over a tombstone, or with nothing stored, it is simply accepted.
+    if (target.deleted) return result("accepted", repo.save(wiki, incoming, d.name, target).rev);
+    if (target.data["body"] === incoming.data["body"]) return result("noop", target.rev);
+    extras.add(target.id);
+    return result("rejected", target.rev);
+  }
   if (sameContent(target, incoming)) return result("noop", target.rev);
   if (baseRev === target.rev || n.updated > target.updated) return result("accepted", repo.save(wiki, incoming, d.name, target).rev);
   extras.add(target.id);
@@ -108,13 +116,15 @@ function applyDel(
     return { id: op.id, status: "rejected", rev: repo.get(wiki, op.id)?.rev ?? 0, error: "this device lacks the delete scope" };
   }
   if (!isTimestamp(op.deleted_at)) return { id: op.id, status: "rejected", rev: 0, error: "deleted_at must be YYYY-MM-DDTHH:MM:SSZ" };
-  const cur = repo.get(wiki, op.id);
-  if (!cur || cur.deleted || cur.uid !== op.uid) return { id: op.id, status: "noop", rev: cur?.rev ?? 0 };
+  // The record is found by its uid, under whatever id it has: a client whose last response was
+  // lost may delete a record it never learned the stored id of. A note (no uid) is found by path.
+  const cur = op.uid ? repo.byUid(wiki, op.uid) : repo.get(wiki, op.id);
+  if (!cur || cur.deleted || (!op.uid && cur.uid !== "")) return { id: op.id, status: "noop", rev: cur?.rev ?? 0 };
   if (op.base_rev === cur.rev || cur.updated <= op.deleted_at) {
     const tomb: Normalized = { id: cur.id, uid: cur.uid, kind: cur.kind, created: cur.created, updated: op.deleted_at, deleted: true, alias: "", data: {}, tags: [], links: [] };
     return { id: op.id, status: "accepted", rev: repo.save(wiki, tomb, d.name, cur).rev };
   }
-  extras.add(op.id);
+  extras.add(cur.id);
   return { id: op.id, status: "rejected", rev: cur.rev };
 }
 
@@ -126,6 +136,12 @@ export function sync(repo: Repo, d: Device, wiki: string, req: SyncIn): SyncResp
   // A cursor ahead of this server means the store was reset: start over (upserts are idempotent).
   const cursor = req.cursor > current ? 0 : req.cursor;
 
+  // The client's counters first: a label collision then takes an id past everything the client
+  // is about to push, instead of one of them, so one collision never shifts the labels after it.
+  for (const [kind, next] of Object.entries(req.counters)) {
+    if ((COUNTER_KINDS as readonly string[]).includes(kind) && next >= 1) repo.raiseCounter(wiki, kind, next);
+  }
+
   const renames = new Map<string, string>();
   const extras = new Set<string>();
   const results: SyncResultOut[] = [];
@@ -133,19 +149,24 @@ export function sync(repo: Repo, d: Device, wiki: string, req: SyncIn): SyncResp
     results.push(op.op === "put" ? applyPut(repo, d, wiki, op.record, op.base_rev, renames, extras) : applyDel(repo, d, wiki, op, extras));
   }
 
-  for (const [kind, next] of Object.entries(req.counters)) {
-    if ((COUNTER_KINDS as readonly string[]).includes(kind) && next >= 1) repo.raiseCounter(wiki, kind, next);
-  }
-
-  const page = repo.changes(wiki, cursor, LIMITS.changesPage + 1);
-  const more = page.length > LIMITS.changesPage;
-  const main = more ? page.slice(0, LIMITS.changesPage) : page;
-  const byId = new Map<string, Stored>(main.map((s) => [s.id, s]));
+  // A response holds about LIMITS.changesBytes of record JSON. The records the client asked for
+  // by name come first (current records of rejected ops, then `want`), each only while it fits;
+  // one that does not is left out and the client asks again (it keeps wanting what it lacks).
+  // The page of changes then takes what is left of the budget, and always at least one record,
+  // so a client can never be stuck: the response may pass the budget by one record (<= 1 MB).
+  const byId = new Map<string, Stored>();
+  let used = 0;
   for (const id of [...extras, ...req.want]) {
     if (byId.has(id)) continue;
+    const size = repo.recordSize(wiki, id);
+    if (size === null || (byId.size > 0 && used + size > LIMITS.changesBytes)) continue;
     const s = repo.get(wiki, id);
-    if (s) byId.set(id, s);
+    if (!s) continue;
+    byId.set(id, s);
+    used += size;
   }
+  const { rows: main, more } = repo.changesPage(wiki, cursor, LIMITS.changesPage, Math.max(0, LIMITS.changesBytes - used));
+  for (const s of main) byId.set(s.id, s);
   const changes = [...byId.values()].sort((a, b) => a.rev - b.rev).map(toWire);
   const nextCursor = more ? main[main.length - 1]!.rev : repo.rev();
   return { cursor: nextCursor, results, changes, counters: repo.counters(wiki), more };

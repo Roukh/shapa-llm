@@ -31,6 +31,9 @@ export interface WikiRow {
 
 type Row = Record<string, SqlStorageValue>;
 
+/** Bytes a stored row adds to a response: its JSON columns plus a flat allowance for the envelope. */
+const SIZE_SQL = `(length(CAST(data AS BLOB)) + length(CAST(tags AS BLOB)) + length(CAST(links AS BLOB)) + 512)`;
+
 function fromRow(r: Row): Stored {
   return {
     seq: r["seq"] as number,
@@ -204,10 +207,32 @@ export class Repo {
     );
   }
 
-  changes(wiki: string, cursor: number, limit: number): Stored[] {
-    return this.sql
-      .exec(`SELECT * FROM records WHERE wiki = ? AND rev > ? ORDER BY rev LIMIT ?`, wiki, cursor, limit)
+  /** Records after `cursor`, oldest first: at most `maxRecords` and about `maxBytes` of JSON, but always
+   *  at least one when any exists. Sizes are read first so only the chosen rows are ever loaded
+   *  (a Durable Object has 128 MB of memory and a record may be 1 MB). */
+  changesPage(wiki: string, cursor: number, maxRecords: number, maxBytes: number): { rows: Stored[]; more: boolean } {
+    const sizes = this.sql
+      .exec(`SELECT rev, ${SIZE_SQL} AS size FROM records WHERE wiki = ? AND rev > ? ORDER BY rev LIMIT ?`, wiki, cursor, maxRecords + 1)
+      .toArray();
+    let count = 0;
+    let bytes = 0;
+    for (const r of sizes) {
+      if (count >= maxRecords || (count > 0 && bytes + (r["size"] as number) > maxBytes)) break;
+      bytes += r["size"] as number;
+      count += 1;
+    }
+    if (count === 0) return { rows: [], more: false };
+    const last = sizes[count - 1]!["rev"] as number;
+    const rows = this.sql
+      .exec(`SELECT * FROM records WHERE wiki = ? AND rev > ? AND rev <= ? ORDER BY rev`, wiki, cursor, last)
       .toArray().map(fromRow);
+    return { rows, more: count < sizes.length };
+  }
+
+  /** The size a record adds to a sync response, or null when it does not exist. */
+  recordSize(wiki: string, id: string): number | null {
+    const r = this.sql.exec(`SELECT ${SIZE_SQL} AS size FROM records WHERE wiki = ? AND id = ?`, wiki, id).toArray()[0];
+    return r ? (r["size"] as number) : null;
   }
 
   list(wiki: string, f: { kind?: Kind; status?: string; tag?: string; after: number; limit: number }): Stored[] {

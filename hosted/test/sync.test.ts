@@ -439,3 +439,115 @@ describe("sync: record identity is the uid", () => {
     expect(uidOf("M1", TS)).toMatch(/^[A-Za-z0-9_-]{16,64}$/);
   });
 });
+
+describe("sync: unacknowledged deletes, counters, first-time notes, byte-capped pages", () => {
+  const UID_A = "device-a-uid-0001";
+  const UID_B = "device-b-uid-0002";
+  const byId = (records: { id: string }[]) => Object.fromEntries(records.map((x) => [x.id, x])) as Record<string, any>;
+
+  it("deletes by uid under any id, with no base_rev", async () => {
+    const { token, w } = await setup();
+    // the server stored it as M1; the client never saw that (its response was lost) and calls it M9
+    const first = await sync(token, w, { ops: [put(row("M1", "x", { uid: UID_A, updated: TS }))] });
+    const rev = first.body.results[0].rev;
+    const gone = await sync(token, w, { cursor: first.body.cursor, ops: [del("M9", TS, TS2, null, UID_A)] });
+    expect(gone.body.results[0]).toMatchObject({ id: "M9", status: "accepted" });
+    expect(gone.body.changes[0]).toMatchObject({ id: "M1", uid: UID_A, deleted: true });
+    expect((await get(rec(w, "/M1"), token)).status).toBe(404);
+    // no live record with that uid any more: noop
+    const again = await sync(token, w, { cursor: gone.body.cursor, ops: [del("M9", TS, TS3, null, UID_A), del("M1", TS, TS3, null, UID_B)] });
+    expect(statuses(again)).toEqual(["noop", "noop"]);
+
+    // a later edit beats the delete unless the client knew the rev
+    const edited = await sync(token, w, { ops: [put(row("M2", "y", { uid: UID_B, updated: TS3 }))] });
+    const stale = await sync(token, w, { cursor: edited.body.cursor, ops: [del("M7", TS, TS2, null, UID_B)] });
+    expect(stale.body.results[0].status).toBe("rejected");
+    expect(stale.body.changes.map((c: { id: string }) => c.id)).toEqual(["M2"]);
+    expect((await get(rec(w, "/M2"), token)).status).toBe(200);
+    const known = await sync(token, w, { ops: [del("M7", TS, TS2, edited.body.results[0].rev, UID_B)] });
+    expect(known.body.results[0].status).toBe("accepted");
+    expect(rev).toBeGreaterThan(0);
+  });
+
+  it("raises the counters before the ops, so one collision shifts no other label", async () => {
+    const a = await setup();
+    const b = await mintAll("device-b");
+    await sync(b.token, a.w, { ops: [put(job("J1", "device B job", null, { uid: UID_B }))] });
+    // device A built J1..J5 offline; its next free J number is 6
+    const ops = [1, 2, 3, 4, 5].map((n) => put(job(`J${n}`, `device A job ${n}`, null, { uid: `${UID_A}-${n}` })));
+    const r = await sync(a.token, a.w, { ops, counters: { J: 6 } });
+    expect(statuses(r)).toEqual(["renamed", "accepted", "accepted", "accepted", "accepted"]);
+    expect(r.body.results[0].new_id).toBe("J6");
+    expect(r.body.results.slice(1).map((x: { id: string }) => x.id)).toEqual(["J2", "J3", "J4", "J5"]);
+    const all = byId((await get(rec(a.w), a.token)).body.records);
+    expect(Object.keys(all).sort()).toEqual(["J1", "J2", "J3", "J4", "J5", "J6"]);
+    expect(all["J1"].uid).toBe(UID_B);
+    expect(all["J6"].uid).toBe(`${UID_A}-1`);
+    for (const n of [2, 3, 4, 5]) expect(all[`J${n}`].uid).toBe(`${UID_A}-${n}`);
+    expect(r.body.counters.J).toBe(7);
+  });
+
+  it("never lets a first-time note put overwrite a stored note", async () => {
+    const { token, w } = await setup();
+    const note = (body: string, over: Record<string, unknown> = {}) => ({
+      id: "research/n.md", uid: "", kind: "N", created: "", updated: TS2, deleted: false, data: { body }, tags: [], links: [], ...over,
+    });
+    // nothing stored: accepted
+    const first = await sync(token, w, { ops: [put(note("# first\none"))] });
+    expect(statuses(first)).toEqual(["accepted"]);
+    const rev = first.body.results[0].rev;
+    // another device, new to the server as far as it knows, with a newer mtime and other text
+    const other = await sync(token, w, { cursor: first.body.cursor, ops: [put(note("# first\ntwo", { updated: TS3 }))] });
+    expect(other.body.results[0]).toEqual({ id: "research/n.md", status: "rejected", rev });
+    expect(other.body.changes.map((c: { id: string; data: { body: string } }) => [c.id, c.data.body])).toEqual([["research/n.md", "# first\none"]]);
+    expect((await get(rec(w, "/research%2Fn.md"), token)).body.data.body).toBe("# first\none");
+    // the same text: noop
+    const same = await sync(token, w, { cursor: first.body.cursor, ops: [put(note("# first\none", { updated: TS3 }))] });
+    expect(same.body.results[0]).toEqual({ id: "research/n.md", status: "noop", rev });
+    // with a base_rev the old rules apply: the matching rev replaces
+    const edit = await sync(token, w, { cursor: first.body.cursor, ops: [put(note("# first\nthree", { updated: TS }), rev)] });
+    expect(edit.body.results[0].status).toBe("accepted");
+    // a tombstone does not hold the path: a first-time put is accepted
+    await sync(token, w, { ops: [del("research/n.md", "", TS3, null, "")] });
+    expect((await get(rec(w, "/research%2Fn.md"), token)).status).toBe(404);
+    const back = await sync(token, w, { ops: [put(note("# fresh", { updated: TS }))] });
+    expect(statuses(back)).toEqual(["accepted"]);
+    expect((await get(rec(w, "/research%2Fn.md"), token)).body.data.body).toBe("# fresh");
+  });
+
+  it("cuts change pages by bytes, so a wiki of big documents still syncs", async () => {
+    const { token, w } = await setup();
+    const text = "lorem ipsum ".repeat(70_000); // about 840 KB
+    const ids: string[] = [];
+    for (let i = 0; i < 40; i++) {
+      const r = await send("POST", rec(w), { token, body: { type: "document", title: `big ${i}`, body: text } });
+      expect(r.status).toBe(201);
+      ids.push(r.body.id);
+    }
+    const seen: string[] = [];
+    let cursor = 0;
+    let pages = 0;
+    for (;;) {
+      const r = await sync(token, w, { cursor });
+      expect(r.status).toBe(200);
+      expect(r.text.length).toBeLessThan(9.5 * 1024 * 1024);
+      expect(r.body.changes.length).toBeGreaterThan(0);
+      seen.push(...r.body.changes.map((c: { id: string }) => c.id));
+      pages += 1;
+      cursor = r.body.cursor;
+      if (!r.body.more) break;
+      expect(pages).toBeLessThan(40);
+    }
+    expect(pages).toBeGreaterThanOrEqual(4);
+    expect([...new Set(seen)].sort()).toEqual([...ids].sort());
+    // `want` is bounded the same way: what does not fit is left for the next request
+    const wanted = await sync(token, w, { cursor, want: ids });
+    expect(wanted.status).toBe(200);
+    expect(wanted.text.length).toBeLessThan(9.5 * 1024 * 1024);
+    expect(wanted.body.changes.length).toBeGreaterThan(0);
+    expect(wanted.body.changes.length).toBeLessThan(ids.length);
+    const missing = ids.filter((id) => !wanted.body.changes.some((c: { id: string }) => c.id === id));
+    const next = await sync(token, w, { cursor, want: missing.slice(0, 3) });
+    expect(next.body.changes.map((c: { id: string }) => c.id).sort()).toEqual(missing.slice(0, 3).sort());
+  }, 60_000);
+});

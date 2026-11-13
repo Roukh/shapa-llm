@@ -11,6 +11,7 @@ export const LIMITS = {
   recordBytes: 1_000_000, // one record <= 1 MB JSON
   opsPerSync: 200,
   changesPage: 500,
+  changesBytes: 8 * 1024 * 1024, // a sync response holds about this much record JSON (one record may pass it)
   wantIds: 500,
   syncBodyBytes: 8 * 1024 * 1024, // a sync request; clients batch by size as well as op count
   jsonBodyBytes: 1_100_000, // any other JSON body: one record plus envelope
