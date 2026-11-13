@@ -6,8 +6,10 @@ import { bodyLimit } from "hono/body-limit";
 import { createMiddleware } from "hono/factory";
 import { HTTPException } from "hono/http-exception";
 import { registerV1, type App, type AppEnv } from "./api.js";
-import { bearerOf, requireOwnerKey, resolveDeviceBearer, randomToken, sha256Hex, store, unauthorized } from "./auth.js";
+import { bearerOf, requireOwnerKey, randomToken, sha256Hex, store, unauthorized } from "./auth.js";
+import { getKit } from "./kit.js";
 import { ApiError, unwrap } from "./errors.js";
+import { resolveBearer } from "./oauth.js";
 import { DeviceOut, ErrorBody, LIMITS, SCOPES, WIKI_KEY_RE } from "./records.js";
 
 function tooBig(c: { json: (b: unknown, s: 413) => Response }): Response {
@@ -17,7 +19,8 @@ function tooBig(c: { json: (b: unknown, s: 413) => Response }): Response {
 const v1Auth = createMiddleware<AppEnv>(async (c, next) => {
   const token = bearerOf(c.req.raw);
   if (!token) return unauthorized();
-  const cred = await resolveDeviceBearer(c.env, token);
+  const kit = getKit(c.req.raw);
+  const cred = await resolveBearer(kit.server, c.env, kit.mcpResource, token);
   if (!cred) return unauthorized();
   c.set("cred", cred);
   await next();
@@ -65,13 +68,21 @@ function registerAdmin(app: App): void {
 
   app.openapi(
     createRoute({
-      method: "delete", path: "/admin/devices/{id}", tags, security, summary: "Revoke a device (its token stops on the next request)",
+      method: "delete", path: "/admin/devices/{id}", tags, security, summary: "Revoke a device (token and OAuth grants stop on the next request)",
       request: { params: z.object({ id: z.string().regex(/^[0-9a-f]{16}$/).openapi({ param: { name: "id", in: "path" } }) }) },
       responses: { 200: j(z.object({ device: DeviceOut }), "The revoked device"), 404: j(ErrorBody, "Unknown device"), ...errs },
     }),
     async (c) => {
       const { id } = c.req.valid("param");
       const device = await unwrap(store(c.env).revokeDevice(id));
+      // The device row already refuses its OAuth tokens; also drop the grants so they cannot refresh.
+      const api = getKit(c.req.raw).server.getOAuthApi(c.env);
+      try {
+        const grants = await api.listUserGrants(id);
+        await Promise.all(grants.items.map((g) => api.revokeGrant(g.id, id)));
+      } catch {
+        // Best effort: the revoked device row is what enforces revocation.
+      }
       return c.json({ device }, 200);
     },
   );
