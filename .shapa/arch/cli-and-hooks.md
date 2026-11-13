@@ -15,7 +15,8 @@ automatically instead of a human typing it.
 
 ## Owns
 
-- `shapa/cli.py` - subcommand dispatch (`bootstrap`, `fetch`, `capture`, `save`, `maintain`, `heartbeat`, `score`, `validate`, `serve`, `mcp`, `upgrade`, `get`, `status`, plus `ledger`/`row`/`correction`).
+- `shapa/cli.py` - subcommand dispatch (`bootstrap`, `fetch`, `capture`, `save`, `maintain`, `heartbeat`, `score`, `validate`, `serve`, `mcp`, `upgrade`, `get`, `status`, plus `ledger`/`row`/`correction`/`doc`).
+- `shapa/docs.py` - `shapa doc add|edit|rm|list` (documents, kind D); MCP `save` and `shapa save --type` take `document` and `idea`.
 - `shapa/maintain.py` - prune orphans/stale, auto-merge near-duplicates, resolve contradicting rules (`claude -p`, on demand), lean-shape reporting, legacy-counter backfill.
 - `shapa/heartbeat.py`, `shapa/score.py` - the maintenance walk and the value-ranking formula it and the read path both use.
 - `shapa/validate.py`, `shapa/frontmatter.py`, `shapa/nodes.py` - frontmatter/lean-shape checks for the files that remain (`arch/`, `research/`).

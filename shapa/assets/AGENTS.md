@@ -86,6 +86,17 @@ of a new row: [[placement]].
   kept as the row's alias) prints a row or a ledger item in full.
 - Reads (`bootstrap`, `fetch`, MCP `search`/`get`) rank rows and any
   remaining note files together.
+- An idea is a memory tagged `idea` (`shapa save --type idea`), not a kind.
+
+## Documents
+
+`D` documents (database schema 2) hold a titled body kept whole: a spec, a
+runbook, pasted research. `shapa doc add TITLE --scope global|repo` (body from
+`--body`, `--file` or stdin), `edit`, `rm`, `list`; `shapa get D<n>` or its
+alias prints it. They take tags and links like rows, pass the same secret
+redaction, and are never swept for staleness. Recall shows the title only.
+Every delete (row, item or document) leaves a tombstone, so a hosted store
+(`shapa remote`, opt-in) can tell a deletion from a missing file.
 
 ## The database file
 

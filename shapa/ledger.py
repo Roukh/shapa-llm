@@ -218,6 +218,8 @@ def overview(root: Path, repo_label: str | None = None, *, work: bool = True) ->
         live = c["F"] + c["J"] + c["T"]
         label = f" {repo_label}" if repo_label else ""
         rows_text = f"{c['M']} memories, {c['R']} rules, {c['I']} issues"
+        if c["D"]:
+            rows_text += f", {c['D']} documents"
         if work and (live or c["M"] + c["R"] + c["I"]):
             lines.append(f"ledger{label}: {c['F']} features, {c['J']} jobs, {c['T']} tasks open; "
                          f"{rows_text}. `shapa ledger` lists, `shapa ledger claim ID` takes one.")

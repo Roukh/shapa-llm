@@ -7,7 +7,7 @@ Source of the `shapa` tool: an operational-memory engine for LLM agents (one SQL
 - `shapa/` is the engine package; `cli.py` is the `shapa` command (`python3 -m shapa` from a clone).
   - Wiki resolution and discovery: `config.py`, `registry.py` (`~/.shapa/wikis.json`).
   - Read path: `bootstrap.py` (SessionStart), `fetch.py`, `rank.py`, `bm25.py`, `embed.py`, `get.py`.
-  - Database (format 4): `db.py` (schema, work ledger, rows, sweep, worktree resolution), `ledger.py` (`shapa ledger`/`row`/`correction` and the git and harness triggers), `migrate4.py` (format 3 to 4), `commit.py` (`shapa commit`: the wiki commits itself on the default branch, as a SessionEnd/SessionStart hook).
+  - Database (format 4, schema 2): `db.py` (schema, work ledger, rows, documents, tombstones, sweep, worktree resolution), `docs.py` (`shapa doc`), `ledger.py` (`shapa ledger`/`row`/`correction` and the git and harness triggers), `migrate4.py` (format 3 to 4), `commit.py` (`shapa commit`: the wiki commits itself on the default branch, as a SessionEnd/SessionStart hook).
   - Write path: `capture.py` (Stop hook), `redact.py`, `memlog.py` (format-3 log, and the derived index that also mirrors database rows), `save.py`.
   - Index and daemon: `store.py`, `serve.py`. MCP server: `mcp.py`.
   - Maintenance: `maintain.py`, `heartbeat.py`, `score.py`. Format: `frontmatter.py`, `nodes.py`, `validate.py`, `upgrade.py`, `status.py`, `reconfigure.py` (the session-start restructure directive; its prompt is `assets/prompts/reconfigure.md`). Opt-in importer: `memri_import.py`.

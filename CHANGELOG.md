@@ -5,6 +5,21 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- Documents: a new stored type `D` (database schema 2, additive, applied
+  lazily on connect; an older shapa keeps working on the file). `shapa doc
+  add|edit|rm|list` (body from `--body`, `--file` or stdin), `shapa get D<n>`
+  or by alias, and `document` as a type for MCP `save` and `shapa save
+  --type`. Documents are tagged and linked like rows, pass secret
+  redaction, appear in recall by title, and are never swept for staleness.
+- `idea` as a type for MCP `save` and `shapa save --type`: a memory tagged
+  `idea`, not a new kind.
+- Delete tombstones: every row, item or document removed (the after-feature
+  sweep included) leaves an `(id, kind, created, deleted_at)` record.
+
 ## [0.9.0] - 2026-10-08
 
 ### Added

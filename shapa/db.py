@@ -12,6 +12,9 @@
 - **mri** - memories (``M``: something the operator said that matters, or
   a strategy shift), rules (``R``) and issues (``I``: an agent mistake the
   operator corrected). Same ID scheme.
+- **docs** (schema 2) - documents (``D``): a titled body kept whole and never
+  swept for staleness. ``tombstones`` records every deletion so a hosted
+  store can tell "deleted here" from "missing".
 
 ``tags`` and ``links`` relate any two ids (items or rows). Vectors are not
 stored here: they are derived from the text and cached in the gitignored
@@ -40,7 +43,7 @@ from pathlib import Path
 from shapa.redact import redact
 
 DB_FILENAME = "shapa.db"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 BUSY_TIMEOUT_MS = 10_000
 EXPIRY_DAYS = 30
 SUMMARY_MAX = 160
@@ -52,13 +55,17 @@ CONFLICT_COSINE = 0.80
 
 ITEM_KINDS = ("F", "J", "T")
 MRI_KINDS = ("M", "R", "I")
+DOC_KIND = "D"
 KIND_NAMES = {"F": "feature", "J": "job", "T": "task",
-              "M": "memory", "R": "rule", "I": "issue"}
+              "M": "memory", "R": "rule", "I": "issue", "D": "document"}
 #: A job's parent is a feature; a task's parent is a job. Both may stand alone.
 PARENT_KIND = {"J": "F", "T": "J"}
 CLOSE_REASONS = ("merge", "commit", "agent", "expired", "parent", "operator")
 LINK_RELS = ("about", "supersedes", "conflicts", "related")
-ID_RE = re.compile(r"^([FJTMRI])([1-9][0-9]*)$")
+ID_RE = re.compile(r"^([FJTMRID])([1-9][0-9]*)$")
+DEFAULT_MIME = "text/markdown"
+TITLE_MAX = 200
+_MIME_RE = re.compile(r"^[a-z0-9][a-z0-9.+-]{0,60}/[a-z0-9][a-z0-9.+-]{0,60}$")
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -105,6 +112,28 @@ CREATE TABLE IF NOT EXISTS links (
     PRIMARY KEY (src, dst, rel)
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS links_dst ON links(dst);
+"""
+
+#: Schema 2, additive: applied lazily on connect to a schema-1 file. An older
+#: shapa never reads these tables, so it keeps working on a schema-2 file.
+_SCHEMA_V2 = """
+CREATE TABLE IF NOT EXISTS docs (
+    id TEXT PRIMARY KEY,
+    alias TEXT UNIQUE,
+    title TEXT NOT NULL,
+    body TEXT NOT NULL DEFAULT '',
+    mime TEXT NOT NULL DEFAULT 'text/markdown',
+    source TEXT NOT NULL DEFAULT '',
+    hash TEXT NOT NULL,
+    created TEXT NOT NULL,
+    updated TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS tombstones (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    created TEXT NOT NULL,
+    deleted_at TEXT NOT NULL
+);
 """
 
 
@@ -205,19 +234,39 @@ def connect(root, *, create: bool = False) -> sqlite3.Connection | None:
         conn.execute("PRAGMA journal_mode = DELETE")
     if create or not _has_schema(conn):
         with write(conn):
-            for stmt in _SCHEMA.split(";"):
-                if stmt.strip():
-                    conn.execute(stmt)
-            conn.execute("INSERT OR IGNORE INTO meta(key, value) VALUES ('schema', ?)",
-                         (str(SCHEMA_VERSION),))
-            for kind in ITEM_KINDS + MRI_KINDS:
-                conn.execute("INSERT OR IGNORE INTO counters(kind, next) VALUES (?, 1)", (kind,))
+            _apply_schema(conn)
+    elif not (_has_table(conn, "docs") and _has_table(conn, "tombstones")):
+        try:
+            with write(conn):
+                _apply_schema(conn)
+        except sqlite3.OperationalError:
+            pass  # a read-only file stays schema 1; a write there fails where it happens
     return conn
 
 
+def _apply_schema(conn: sqlite3.Connection) -> None:
+    """Create every table (idempotent) and stamp the schema version, inside
+    the caller's write transaction."""
+    for stmt in (_SCHEMA + _SCHEMA_V2).split(";"):
+        if stmt.strip():
+            conn.execute(stmt)
+    conn.execute("INSERT OR IGNORE INTO meta(key, value) VALUES ('schema', ?)",
+                 (str(SCHEMA_VERSION),))
+    conn.execute("UPDATE meta SET value = ? WHERE key = 'schema' AND CAST(value AS INTEGER) < ?",
+                 (str(SCHEMA_VERSION), SCHEMA_VERSION))
+    for kind in ITEM_KINDS + MRI_KINDS + (DOC_KIND,):
+        conn.execute("INSERT OR IGNORE INTO counters(kind, next) VALUES (?, 1)", (kind,))
+
+
+def _has_table(conn: sqlite3.Connection, name: str) -> bool:
+    return conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                        (name,)).fetchone() is not None
+
+
 def read_rows(root) -> list["Row"]:
-    """Every M/R/I row of *root*'s database, opened read-only (never creates
-    or migrates the file; ``[]`` when there is none or it is unreadable)."""
+    """Every M/R/I row and every document (as a ``D`` row: its title is the
+    summary) of *root*'s database, opened read-only (never creates or
+    migrates the file; ``[]`` when there is none or it is unreadable)."""
     path = db_path(root)
     if not path.is_file():
         return []
@@ -227,7 +276,7 @@ def read_rows(root) -> list["Row"]:
         try:
             if not _has_schema(conn):
                 return []
-            return rows(conn)
+            return rows(conn) + doc_rows(conn)
         finally:
             conn.close()
     except sqlite3.Error:
@@ -570,16 +619,125 @@ def update_row(conn: sqlite3.Connection, row_id: str, *, summary: str | None = N
     return get_row(conn, row["id"])
 
 
-def delete(conn: sqlite3.Connection, ids) -> int:
-    """Delete rows or items by id, with their tags and links."""
+# --- documents -----------------------------------------------------------------------
+
+@dataclass
+class Doc:
+    id: str
+    alias: str | None
+    title: str
+    body: str
+    mime: str
+    source: str
+    hash: str
+    created: str
+    updated: str
+    tags: list[str]
+
+
+def _doc(conn, r) -> Doc:
+    return Doc(**{k: r[k] for k in r.keys()}, tags=_tags_of(conn, r["id"]))
+
+
+def get_doc(conn: sqlite3.Connection, doc_id: str) -> Doc | None:
+    if not _has_table(conn, "docs"):
+        return None
+    r = conn.execute("SELECT * FROM docs WHERE id = ? OR alias = ?", (doc_id, doc_id)).fetchone()
+    return _doc(conn, r) if r else None
+
+
+def documents(conn: sqlite3.Connection) -> list[Doc]:
+    if not _has_table(conn, "docs"):
+        return []
+    tag_map: dict[str, list[str]] = {}
+    for rid, tag_text in conn.execute("SELECT id, tag FROM tags ORDER BY tag"):
+        tag_map.setdefault(rid, []).append(tag_text)
+    return [Doc(**{k: r[k] for k in r.keys()}, tags=tag_map.get(r["id"], []))
+            for r in conn.execute("SELECT * FROM docs ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)")]
+
+
+def doc_rows(conn: sqlite3.Connection) -> list["Row"]:
+    """Documents shaped as :class:`Row` (kind ``D``, the title as the summary)
+    for the derived recall index; never part of :func:`rows`, so the sweep's
+    duplicate and staleness rules cannot reach them."""
+    return [Row(id=d.id, kind=DOC_KIND, alias=d.alias, summary=one_line(d.title), body=d.body,
+                source=d.source, session="", hash=d.hash, created=d.created, updated=d.updated,
+                tags=d.tags) for d in documents(conn)]
+
+
+def _clean_mime(mime: str | None) -> str:
+    mime = (mime or DEFAULT_MIME).strip().lower()
+    if not _MIME_RE.match(mime):
+        raise LedgerError(f"invalid mime type {mime!r}")
+    return mime
+
+
+def add_doc(conn: sqlite3.Connection, title: str, body: str = "", *, tags=(), alias: str | None = None,
+            mime: str | None = None, source: str = "", now: datetime | None = None) -> str:
+    """Write one document (kind ``D``); returns its id."""
+    title = one_line(redact(title), TITLE_MAX)
+    if not title:
+        raise LedgerError("title is required")
+    body = redact(str(body or "").strip())
+    mime = _clean_mime(mime)
+    ts = now_iso(now)
+    with write(conn):
+        if alias and conn.execute("SELECT 1 FROM docs WHERE alias = ? OR id = ?",
+                                  (alias, alias)).fetchone():
+            raise LedgerError(f"alias {alias!r} already names a document")
+        doc_id = _next_id(conn, DOC_KIND)
+        conn.execute("INSERT INTO docs(id, alias, title, body, mime, source, hash, created, "
+                     "updated) VALUES (?,?,?,?,?,?,?,?,?)",
+                     (doc_id, alias or None, title, body, mime, source,
+                      content_hash(title, body), ts, ts))
+        for t in tags:
+            t = _clean_tag(t)
+            if t:
+                conn.execute("INSERT OR IGNORE INTO tags(id, tag) VALUES (?, ?)", (doc_id, t))
+    return doc_id
+
+
+def update_doc(conn: sqlite3.Connection, doc_id: str, *, title: str | None = None,
+               body: str | None = None, alias: str | None = None, mime: str | None = None) -> Doc:
+    with write(conn):
+        r = conn.execute("SELECT * FROM docs WHERE id = ? OR alias = ?", (doc_id, doc_id)).fetchone()
+        if r is None:
+            raise LedgerError(f"no document {doc_id!r}")
+        t = one_line(redact(title), TITLE_MAX) if title is not None else r["title"]
+        if not t:
+            raise LedgerError("title is required")
+        b = redact(str(body).strip()) if body is not None else r["body"]
+        m = _clean_mime(mime) if mime is not None else r["mime"]
+        conn.execute("UPDATE docs SET title=?, body=?, mime=?, hash=?, alias=COALESCE(?, alias), "
+                     "updated=? WHERE id=?", (t, b, m, content_hash(t, b), alias, now_iso(), r["id"]))
+    return get_doc(conn, r["id"])
+
+
+def tombstones(conn: sqlite3.Connection) -> list[dict]:
+    if not _has_table(conn, "tombstones"):
+        return []
+    return [dict(r) for r in conn.execute(
+        "SELECT id, kind, created, deleted_at FROM tombstones ORDER BY deleted_at, id")]
+
+
+def delete(conn: sqlite3.Connection, ids, *, tombstone: bool = True) -> int:
+    """Delete rows, items or documents by id, with their tags and links, and
+    leave a tombstone for each (a hosted store learns of the deletion from it).
+    ``tombstone=False`` is for a deletion that came *from* the remote."""
     ids = [i for i in ids if i]
     if not ids:
         return 0
-    n = 0
+    n, ts = 0, now_iso()
     with write(conn):
         for i in ids:
-            n += conn.execute("DELETE FROM mri WHERE id = ?", (i,)).rowcount
-            n += conn.execute("DELETE FROM items WHERE id = ?", (i,)).rowcount
+            for table in ("mri", "items", "docs"):
+                found = conn.execute(f"SELECT created FROM {table} WHERE id = ?", (i,)).fetchone()
+                if found is None:
+                    continue
+                if tombstone:
+                    conn.execute("INSERT OR REPLACE INTO tombstones(id, kind, created, deleted_at) "
+                                 "VALUES (?,?,?,?)", (i, i[:1], found[0], ts))
+                n += conn.execute(f"DELETE FROM {table} WHERE id = ?", (i,)).rowcount
             conn.execute("DELETE FROM tags WHERE id = ?", (i,))
             conn.execute("DELETE FROM links WHERE src = ? OR dst = ?", (i, i))
     return n
@@ -788,10 +946,10 @@ def sweep(conn: sqlite3.Connection, *, vectors: dict[str, list[float]] | None = 
 
     with write(conn):
         cur = conn.execute(
-            "DELETE FROM links WHERE src NOT IN (SELECT id FROM mri UNION SELECT id FROM items) "
-            "OR dst NOT IN (SELECT id FROM mri UNION SELECT id FROM items)")
+            "DELETE FROM links WHERE src NOT IN (SELECT id FROM mri UNION SELECT id FROM items UNION SELECT id FROM docs) "
+            "OR dst NOT IN (SELECT id FROM mri UNION SELECT id FROM items UNION SELECT id FROM docs)")
         report.dangling_links = cur.rowcount
-        conn.execute("DELETE FROM tags WHERE id NOT IN (SELECT id FROM mri UNION SELECT id FROM items)")
+        conn.execute("DELETE FROM tags WHERE id NOT IN (SELECT id FROM mri UNION SELECT id FROM items UNION SELECT id FROM docs)")
     return report
 
 
@@ -812,12 +970,14 @@ def conflicts(conn: sqlite3.Connection) -> list[tuple[str, str]]:
 
 
 def counts(conn: sqlite3.Connection) -> dict[str, int]:
-    out = {k: 0 for k in ITEM_KINDS + MRI_KINDS}
+    out = {k: 0 for k in ITEM_KINDS + MRI_KINDS + (DOC_KIND,)}
     for kind, n in conn.execute("SELECT kind, COUNT(*) FROM items WHERE status != 'closed' "
                                 "GROUP BY kind"):
         out[kind] = n
     for kind, n in conn.execute("SELECT kind, COUNT(*) FROM mri GROUP BY kind"):
         out[kind] = n
+    if _has_table(conn, "docs"):
+        out[DOC_KIND] = conn.execute("SELECT COUNT(*) FROM docs").fetchone()[0]
     return out
 
 
@@ -832,7 +992,10 @@ def scrub(conn: sqlite3.Connection, terms) -> int:
     pattern = re.compile("|".join(re.escape(t) for t in sorted(terms, key=len, reverse=True)), re.I)
     with write(conn):
         for table, cols in (("mri", ("summary", "body", "source", "alias")),
-                            ("items", ("title", "body", "verify", "git_ref", "alias"))):
+                            ("items", ("title", "body", "verify", "git_ref", "alias")),
+                            ("docs", ("title", "body", "source", "alias"))):
+            if not _has_table(conn, table):
+                continue
             for row in conn.execute(f"SELECT id, {', '.join(cols)} FROM {table}").fetchall():
                 vals = [row[c] for c in cols]
                 new = [pattern.sub("[workspace]", v) if isinstance(v, str) else v for v in vals]
@@ -851,5 +1014,10 @@ def scrub(conn: sqlite3.Connection, terms) -> int:
         for row in conn.execute("SELECT id, summary, body FROM mri").fetchall():
             digest = content_hash(row["summary"], row["body"])
             conn.execute("UPDATE mri SET hash = ? WHERE id = ? AND hash IS NOT ?",
+                         (digest, row["id"], digest))
+        for row in (conn.execute("SELECT id, title, body FROM docs").fetchall()
+                    if _has_table(conn, "docs") else []):
+            digest = content_hash(row["title"], row["body"])
+            conn.execute("UPDATE docs SET hash = ? WHERE id = ? AND hash IS NOT ?",
                          (digest, row["id"], digest))
     return changed

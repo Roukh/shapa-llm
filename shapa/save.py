@@ -23,7 +23,7 @@ instead of being swallowed.
 CLI::
 
     shapa save --summary "..." --body "..." [--scope global|repo|external]
-               [--applies-to REPO] [--type memory|rule|issue]
+               [--applies-to REPO] [--type memory|rule|issue|idea|document]
                [--tags a,b,c] [--id explicit-id] [--root DIR]
 """
 
@@ -43,7 +43,9 @@ from shapa.validate import validate_node
 #: Every scope this CLI accepts. ``external`` is CLI-only (see module
 #: docstring) - the note ends up stored as ``scope: repo`` regardless.
 CLI_SCOPES = {"global", "repo", "external"}
-VALID_NOTE_TYPES = {"memory", "rule", "issue"}
+VALID_NOTE_TYPES = {"memory", "rule", "issue", "document", "idea"}
+#: Types that exist only in a format-4 database, never as a note file.
+DB_ONLY_TYPES = {"document", "idea"}
 MAX_SUMMARY_CHARS = 160  # F04
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
@@ -86,11 +88,17 @@ def save_row(root, scope: str, note_type: str, summary: str, body: str, tags, al
     note file. *alias* keeps a caller-supplied slug findable by ``get``."""
     from shapa import db
 
-    kind = {"memory": "M", "rule": "R", "issue": "I"}[note_type]
     conn = db.connect(root)
+    created = True
     try:
-        rid, created = db.add_row(conn, kind, summary, body, tags=tags or [], alias=alias or None,
-                                  source="save")
+        if note_type == "document":
+            rid = db.add_doc(conn, summary, body, tags=tags or [], alias=alias or None, source="save")
+        else:
+            # An idea is a memory tagged `idea`, never a kind of its own.
+            kind = {"memory": "M", "idea": "M", "rule": "R", "issue": "I"}[note_type]
+            all_tags = list(tags or []) + (["idea"] if note_type == "idea" else [])
+            rid, created = db.add_row(conn, kind, summary, body, tags=all_tags,
+                                      alias=alias or None, source="save")
     except db.LedgerError as exc:
         return {"error": str(exc)}
     finally:
@@ -185,6 +193,9 @@ def save_note(
 
     if db.exists(root):
         return save_row(root, stored_scope, note_type, summary, body, tags, alias=(id or "").strip())
+    if note_type in DB_ONLY_TYPES:
+        return {"error": f"type {note_type!r} needs a format-4 wiki (a shapa.db) - "
+                         f"run `shapa upgrade {root}` first"}
 
     note_id = (id or "").strip() or _slugify(summary)
     if not _is_safe_note_id(note_id):

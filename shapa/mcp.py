@@ -62,7 +62,7 @@ PROTOCOL_VERSION = "2024-11-05"
 SERVER_NAME = "shapa"
 
 VALID_SAVE_SCOPES = {"global", "repo"}
-VALID_NOTE_TYPES = {"memory", "rule", "issue"}
+VALID_NOTE_TYPES = {"memory", "rule", "issue", "document", "idea"}
 MAX_SUMMARY_CHARS = 160  # F04
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
@@ -144,6 +144,12 @@ def _db_lookup(root_path: Path, key: str) -> dict[str, Any] | None:
                     "meta": {"summary": row.summary, "alias": row.alias, "tags": row.tags,
                              "created": row.created, "origin": row.source},
                     "links": db.links_of(conn, row.id), "body": row.body}
+        doc = db.get_doc(conn, key)
+        if doc is not None:
+            return {"id": doc.id, "type": "document", "source": "row",
+                    "meta": {"summary": doc.title, "alias": doc.alias, "tags": doc.tags,
+                             "created": doc.created, "mime": doc.mime, "origin": doc.source},
+                    "links": db.links_of(conn, doc.id), "body": doc.body}
         item = db.get_item(conn, key)
         if item is not None:
             lines = []
@@ -260,6 +266,9 @@ def tool_save(args: dict[str, Any], cwd: str | None) -> dict[str, Any]:
     if db.exists(root):
         return save_mod.save_row(root, scope, note_type, summary, body, tags,
                                  alias=str(args.get("id") or "").strip())
+    if note_type in save_mod.DB_ONLY_TYPES:
+        return {"error": f"type {note_type!r} needs a format-4 wiki (a shapa.db) - "
+                         f"run `shapa upgrade {root}` first"}
 
     note_id = str(args.get("id") or "").strip() or _slugify(summary)
     if not _is_safe_note_id(note_id):
@@ -395,7 +404,7 @@ TOOLS: list[dict[str, Any]] = [
                 "body": {"type": "string", "description": "The note's full body."},
                 "type": {
                     "type": "string",
-                    "enum": ["memory", "rule", "issue"],
+                    "enum": ["memory", "rule", "issue", "document", "idea"],
                     "default": "memory",
                 },
                 "tags": {"type": "array", "items": {"type": "string"}},
