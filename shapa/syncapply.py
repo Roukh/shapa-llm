@@ -83,6 +83,14 @@ class _Apply:
             self.result.renamed += 1
 
     def ack(self, op, res) -> None:
+        if res["status"] == "rejected" and res["error"]:
+            # the server refused the op itself (invalid record, missing scope): not an answer to retry
+            rid = op["record"]["id"] if op["op"] == "put" else op["id"]
+            self.result.refused.append((rid, res["error"]))
+            self.result.invalid += 1
+            if op["op"] == "put":
+                self.state["refused"][rid] = self.snap.get(key_of(op["record"]), "")
+            return
         if op["op"] == "put":
             rec = op["record"]
             final = res["new_id"] if res["new_id"] and key_of(rec) in self.cur else rec["id"]
@@ -174,6 +182,11 @@ def apply(conn, wiki_dir: Path, local, hashes, state, ex, result, notes: bool = 
                                                               len(r["id"]), r["id"])):
             ap.change(rec)
         dbsync.raise_counters(conn, ex.counters)
+        if ex.results or result.applied or result.renamed:
+            conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('sync_token', ?)",
+                         (db.new_uid(),))
+        row = conn.execute("SELECT value FROM meta WHERE key = 'sync_token'").fetchone()
+        state["token"] = row[0] if row else None
         final = {key_of(r): r for r in dbsync.snapshot(conn).values()}
         for rec in ap.written:
             if rec["kind"] == "N":

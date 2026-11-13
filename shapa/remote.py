@@ -122,6 +122,8 @@ def _print_result(r: sync.SyncResult) -> None:
                             if n)
             print(f"{r.key}: sent {r.sent_put} record(s) and {r.sent_del} delete(s), "
                   f"received {r.received}, applied {r.applied}{extra}")
+        for rid, message in r.refused[:10]:
+            print(f"{r.key}: the server refused {rid}: {message}", file=sys.stderr)
         if r.oversized:
             print(f"{r.key}: skipped {len(r.oversized)} record(s) over the server limit of 1 MB: "
                   f"{', '.join(r.oversized[:10])}", file=sys.stderr)

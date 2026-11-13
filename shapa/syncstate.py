@@ -133,7 +133,7 @@ def _valid_base(base) -> bool:
 
 def fresh_state(key: str, url: str) -> dict:
     return {"version": STATE_VERSION, "key": key, "url": url, "cursor": 0, "base": {},
-            "last_sync": "", "retry": []}
+            "last_sync": "", "retry": [], "refused": {}, "token": None}
 
 
 def load_state(path: Path, key: str, url: str) -> dict:
@@ -152,6 +152,11 @@ def load_state(path: Path, key: str, url: str) -> dict:
     retry = data.get("retry")
     data["retry"] = ([r for r in retry if isinstance(r, str)][:MAX_RETRY]
                      if isinstance(retry, list) else [])
+    refused = data.get("refused")
+    data["refused"] = ({k: v for k, v in refused.items() if isinstance(k, str) and isinstance(v, str)}
+                       if isinstance(refused, dict) else {})
+    if not isinstance(data.get("token"), str):
+        data["token"] = None
     return data
 
 

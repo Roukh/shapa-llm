@@ -903,3 +903,209 @@ def test_a_locally_deleted_note_comes_back_on_the_default_branch(a, double):
     a.sync()
     assert (a.wiki / "keep.md").read_text() == "precious\n"
     assert double.live(KEY)["keep.md"]  # deleting a note is done through the API
+
+
+# --- J85: fixes from the independent review ---------------------------------------------------------------
+
+def test_a_delete_whose_record_never_entered_the_base_is_still_sent(a, double, monkeypatch):
+    from shapa import syncapply
+
+    rid = a.add_row("M", "stored by the server, never applied here")
+
+    def dropped(*args, **kwargs):  # the network dropped, or the hook budget ran out, before apply
+        raise remotehttp.RemoteError("time budget exhausted before the changes were applied")
+
+    monkeypatch.setattr(syncapply, "apply", dropped)
+    assert a.sync().status == "error"
+    monkeypatch.undo()
+    assert rid in double.live(KEY) and not list((a.rdir / "sync").glob("*.json"))  # not in the base
+    c = a.conn()
+    db.delete(c, [rid])
+    c.close()
+    res = a.sync()
+    assert res.sent_del == 1
+    assert double.wiki(KEY).records[rid]["deleted"] is True
+    c = a.conn()
+    assert db.tombstones(c) == []
+    c.close()
+    state = json.loads(next((a.rdir / "sync").glob("*.json")).read_text())
+    assert state["retry"] == [] and rid not in rows_of(a)
+    assert a.sync().status == "ok" and rid not in rows_of(a)
+
+
+def test_a_rejected_delete_drops_the_tombstone_and_the_record_comes_back(a, double):
+    rid = a.add_row("R", "edited elsewhere after the delete")
+    a.sync()
+    c = a.conn()
+    db.delete(c, [rid])
+    c.close()
+    rec = dict(double.wiki(KEY).records[rid])
+    rec.update(updated="2999-01-01T00:00:00Z", data={**rec["data"], "body": "edited later"})
+    double.remote_put(KEY, rec)
+    a.sync()
+    c = a.conn()
+    assert db.tombstones(c) == []
+    c.close()
+    assert rows_of(a)[rid].body == "edited later"
+
+
+def test_a_tombstone_with_no_record_on_the_server_is_dropped(a, double):
+    rid = a.add_row("M", "never reached the server")
+    c = a.conn()
+    db.delete(c, [rid])
+    c.close()
+    res = a.sync()
+    assert res.sent_del == 1 and res.status == "ok"
+    c = a.conn()
+    assert db.tombstones(c) == []
+    c.close()
+    assert double.live(KEY) == {}
+
+
+def test_a_local_edit_is_not_overwritten_when_the_last_remote_write_is_ahead_of_this_clock(a, double):
+    rid = a.add_row("R", "skewed", "v1")
+    a.sync()
+    rec = dict(double.wiki(KEY).records[rid])
+    rec.update(updated="2999-01-01T00:00:00Z", data={**rec["data"], "body": "from a clock far ahead"})
+    double.remote_put(KEY, rec)
+    a.sync()
+    assert rows_of(a)[rid].body == "from a clock far ahead"
+    c = a.conn()
+    db.update_row(c, rid, body="my edit, made now")
+    c.close()
+    res = a.sync()
+    assert res.sent_put == 1 and res.wanted == 0
+    assert rows_of(a)[rid].body == "my edit, made now"
+    assert double.live(KEY)[rid]["data"]["body"] == "my edit, made now"
+
+
+def test_an_idle_sync_leaves_the_database_byte_identical(a):
+    a.add_row("M", "something to sync")
+    a.sync()
+    before = db.db_path(a.wiki).read_bytes()
+    for _ in range(2):
+        assert a.sync().status == "ok"
+        assert db.db_path(a.wiki).read_bytes() == before
+
+
+def sync_token(device):
+    c = device.conn()
+    try:
+        row = c.execute("SELECT value FROM meta WHERE key = 'sync_token'").fetchone()
+        return row[0] if row else None
+    finally:
+        c.close()
+
+
+def test_the_sync_token_rotates_when_a_sync_pushes_or_applies_and_is_kept_in_the_state(a, b):
+    a.add_row("M", "one")
+    assert sync_token(a) is None
+    a.sync()
+    first = sync_token(a)
+    assert first
+    state = json.loads(next((a.rdir / "sync").glob("*.json")).read_text())
+    assert state["token"] == first
+    b.add_row("M", "from b")
+    b.sync()
+    a.sync()  # applies something
+    assert sync_token(a) not in (None, first)
+
+
+def test_a_swapped_database_heals_even_when_the_record_updated_stamps_are_equal(a, double):
+    rid = a.add_row("R", "swapped", "v1")
+    a.sync()
+    older = db.db_path(a.wiki).read_bytes()
+    c = a.conn()
+    c.execute("UPDATE mri SET body = 'v2' WHERE id = ?", (rid,))  # updated stays the same
+    c.close()
+    a.add_row("R", "another")
+    a.sync()
+    assert double.live(KEY)[rid]["data"]["body"] == "v2"
+    db.db_path(a.wiki).write_bytes(older)
+    a.sync()
+    assert rows_of(a)[rid].body == "v2" and double.live(KEY)[rid]["data"]["body"] == "v2"
+
+
+def test_sweep_on_a_synced_wiki_keeps_memories_unused_for_a_long_time(wikis, monkeypatch):
+    from datetime import datetime, timezone
+
+    from shapa import ledger
+
+    old = datetime(2020, 1, 1, tzinfo=timezone.utc)
+    c = wikis.conn()
+    db.add_row(c, "M", "old and never recalled here", now=old)
+    c.close()
+    path = syncstate.state_path(syncstate.remote_dir(), db.db_path(wikis.wiki))
+    syncstate.save_state(path, syncstate.fresh_state("my-repo", URL))
+    ledger.run_sweep(wikis.wiki)
+    c = wikis.conn()
+    assert [r.summary for r in db.rows(c)] == ["old and never recalled here"]
+    c.close()
+
+
+def test_sweep_on_a_wiki_without_sync_state_still_drops_stale_memories(wikis):
+    from datetime import datetime, timezone
+
+    from shapa import ledger
+
+    c = wikis.conn()
+    db.add_row(c, "M", "old and never recalled", now=datetime(2020, 1, 1, tzinfo=timezone.utc))
+    c.close()
+    ledger.run_sweep(wikis.wiki)
+    c = wikis.conn()
+    assert db.rows(c) == []
+    c.close()
+
+
+def test_a_record_the_server_refuses_is_reported_and_not_resent_until_it_changes(a, double):
+    double.refuse = lambda rec: "summary is not allowed" if "forbidden" in rec["data"].get("summary", "") else None
+    bad = a.add_row("M", "a forbidden summary")
+    good = a.add_row("M", "a fine one")
+    res = a.sync()
+    assert res.status == "ok" and res.invalid >= 1 and [r[0] for r in res.refused] == [bad]
+    assert list(double.live(KEY)) == [good]
+    before = len(double.sync_requests)
+    again = a.sync()
+    assert again.status == "ok" and again.sent_put == 0 and again.refused == []
+    assert [o for _, req in double.sync_requests[before:] for o in req["ops"]] == []  # not sent again
+    c = a.conn()
+    db.update_row(c, bad, summary="now acceptable")
+    c.close()
+    assert a.sync().sent_put == 1
+    assert bad in double.live(KEY)
+
+
+def test_a_delete_refused_for_lack_of_the_delete_scope_is_per_op_not_a_failed_sync(tmp_path):
+    double = HostedDouble()
+    d = Device(tmp_path, "limited", double)
+    for dev in double.devices.values():
+        dev["scopes"] = ["read", "write"]
+    rid = d.add_row("M", "cannot delete me")
+    d.sync()
+    c = d.conn()
+    db.delete(c, [rid])
+    c.close()
+    res = d.sync()
+    assert res.status == "ok" and [r[0] for r in res.refused] == [rid]
+    assert rid in double.live(KEY)
+
+
+def test_a_changes_page_cut_by_bytes_is_followed_to_the_end(tmp_path):
+    double = HostedDouble(page_bytes=2500)
+    a, b = Device(tmp_path, "a", double), Device(tmp_path, "b", double)
+    for i in range(6):
+        a.add_row("M", f"memory {i}", "padding " * 100)
+    a.sync()
+    before = len(double.sync_requests)
+    b.sync()
+    assert len(double.sync_requests) - before >= 3
+    assert len(rows_of(b)) == 6
+
+
+def test_a_new_local_note_loses_to_a_different_note_already_stored(a, b, double):
+    (b.wiki / "shared.md").write_text("stored body\n", encoding="utf-8")
+    b.sync()
+    (a.wiki / "shared.md").write_text("never synced here\n", encoding="utf-8")
+    a.sync()
+    assert (a.wiki / "shared.md").read_text() == "stored body\n"
+    assert double.live(KEY)["shared.md"]["data"]["body"] == "stored body\n"
