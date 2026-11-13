@@ -30,6 +30,11 @@ venv/
 build/
 dist/
 
+# Hosted Worker (hosted/): dependencies, wrangler build and state, local secrets
+node_modules/
+.wrangler/
+.dev.vars
+
 # Worktrees live at the repo root
 .worktrees/
 .local/

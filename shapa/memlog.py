@@ -68,9 +68,9 @@ GITATTRIBUTES_LINE = f"{MEMORY_DIRNAME}/*{LOG_SUFFIX} merge=union"
 GITATTRIBUTES_COMMENT = "# shapa: memory log lines merge as a union (append-only)"
 
 KINDS = ("decision", "fact", "gotcha", "outcome", "open_question", "preference",
-         "memory", "rule", "issue")
+         "memory", "rule", "issue", "document")
 #: Kinds of the rows a format-4 wiki keeps in its database (shapa.db).
-ROW_KINDS = ("memory", "rule", "issue")
+ROW_KINDS = ("memory", "rule", "issue", "document")
 #: The ``memory_logs`` key that records the database's (mtime, size).
 DB_SOURCE = "shapa.db"
 SCOPES = ("global", "repo")
@@ -95,7 +95,8 @@ MAX_APPEND = 24
 #: Value scoring inputs for a memory (shapa.score.score_meta) - captured
 #: memories rank below curated notes of the same age unless they get used.
 KIND_CONSEQUENCE = {"preference": 6, "gotcha": 6, "decision": 5, "open_question": 5,
-                    "fact": 4, "outcome": 4, "issue": 8, "rule": 7, "memory": 5}
+                    "fact": 4, "outcome": 4, "issue": 8, "rule": 7, "memory": 5,
+                    "document": 3}
 KIND_LOCUS = {"preference": "output-meta", "gotcha": "output-meta", "rule": "output-meta",
               "issue": "output-meta"}
 
@@ -174,12 +175,12 @@ def one_line(text: str) -> str:
 
 
 _CTRL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
-_WRAPPER_TAG_RE = re.compile(r"<(\s*/?\s*shapa-memory)", re.I)
+_WRAPPER_TAG_RE = re.compile(r"<(\s*/?\s*shapa-[\w-]*)", re.I)
 
 
 def display_line(text: str) -> str:
     """*text* made safe to print inside a ``<shapa-memory>`` block: control
-    characters become spaces, and a literal wrapper tag in the text can no
+    characters become spaces, and a literal shapa-* wrapper tag in the text can no
     longer open or close the block (its ``<`` becomes ``‹``)."""
     return _WRAPPER_TAG_RE.sub("‹\\1", _CTRL_RE.sub(" ", text or ""))
 

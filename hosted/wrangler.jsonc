@@ -1,0 +1,19 @@
+{
+  // Hosted shapa: one Worker, one SQLite-backed Durable Object (name "main"), one KV namespace.
+  // No account id here: wrangler takes it from the logged-in account or CLOUDFLARE_ACCOUNT_ID.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "shapa-hosted",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-12",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "observability": { "enabled": true, "traces": { "enabled": true } },
+  "durable_objects": {
+    "bindings": [{ "name": "STORE", "class_name": "ShapaStore" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ShapaStore"] }],
+  // OAuth state only (clients, grants, codes, tokens as hashes). No id: `wrangler deploy` creates and binds it.
+  "kv_namespaces": [{ "binding": "OAUTH_KV" }],
+  // Set with `wrangler secret put SHAPA_OWNER_KEY` (32+ characters).
+  "secrets": { "required": ["SHAPA_OWNER_KEY"] }
+}

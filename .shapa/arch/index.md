@@ -5,7 +5,7 @@ created: "2026-10-05T20:22:00Z"
 consequence: 7
 locus: output
 scope: repo
-summary: shapa-llm as a diagram - five boxes (read path, write path, database, CLI and hooks, installer) and how they call each other.
+summary: shapa-llm as a diagram - six boxes (read path, write path, database, CLI and hooks, installer, hosted) and how they call each other.
 ---
 
 # Architecture index
@@ -21,6 +21,7 @@ summary: shapa-llm as a diagram - five boxes (read path, write path, database, C
 | database | [[database]] | `shapa/db.py`, `ledger.py`, `migrate4.py` | the one `shapa.db` ledger (F/J/T work items) and MRI rows |
 | CLI and hooks | [[cli-and-hooks]] | `shapa/cli.py`, `maintain.py`, `heartbeat.py`, `score.py`, `validate.py`, `upgrade.py`, `mcp.py`, `frontmatter.py`, `nodes.py`, `status.py` | the `shapa` command, hook dispatch, maintenance, and the MCP surface |
 | installer | [[installer]] | `install.sh`, `bootstrap.sh`, `shapa/assets/` | wires a fresh machine's harness and wiki to the engine |
+| hosted | [[hosted]] | `hosted/`, `shapa/remote.py`, `shapa/sync.py` | the opt-in Cloudflare store, its REST and MCP surface, and the two-way sync of every wiki |
 
 ## Edges
 
@@ -33,3 +34,5 @@ summary: shapa-llm as a diagram - five boxes (read path, write path, database, C
 | read-path | database | ranks ledger items and M/R/I rows together with any remaining note files |
 | write-path | database | new M/I rows (`db.add_row`) |
 | database | read-path | rows backing the derived, gitignored `.shapa-index.db` |
+| cli-and-hooks | hosted | `shapa remote` dispatch; `shapa remote sync --hook` at session start, stop and end, where a harness installer wires it (shapa's own `install.sh` does not) |
+| hosted | database | pulled records written through explicit-id upserts; local changes and tombstones read for the push |

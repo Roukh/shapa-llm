@@ -139,6 +139,8 @@ which is why shapa commits it only on the default branch.
 | `shapa get ID` | print a row's or a note's full text |
 | `shapa save` | write one note or row (`--scope global\|repo\|external`) |
 | `shapa row add\|edit\|rm\|link\|tag\|list` | manage memory, rule and issue rows |
+| `shapa doc add\|edit\|rm\|list` | manage documents (a titled body kept whole; `shapa get D<n>` prints one) |
+| `shapa remote login\|sync\|status\|devices\|logout\|instructions` | the opt-in hosted store (see Hosted) |
 | `shapa ledger add\|claim\|close\|tree\|issues` | manage the work ledger |
 | `shapa correction` | record an operator correction as an issue row |
 | `shapa maintain [--prune] [--dry-run]` | self-heal: merge duplicates, prune stale and orphaned rows |
@@ -148,6 +150,34 @@ which is why shapa commits it only on the default branch.
 | `shapa serve` | run the optional warm per-wiki daemon |
 
 Run `shapa` with no arguments for the full, versioned usage text.
+
+## Hosted
+
+Opt-in and off by default. A hosted store lets chat apps and phones, which
+have no hooks, read and write the same memory through remote MCP or REST,
+and keeps every machine's wikis in step. It is one Cloudflare Worker you
+deploy to your own account, with a single Durable Object holding the data;
+nobody else sees it. Without a remote configured, nothing here runs and
+shapa makes no network call for it.
+
+Self-host in three commands, then log this machine in:
+
+```sh
+cd hosted && npm install
+npx wrangler deploy
+npx wrangler secret put SHAPA_OWNER_KEY      # at least 32 characters
+shapa remote login URL                       # prompts for the owner key
+```
+
+`shapa remote login URL` asks for the owner key (or reads `$SHAPA_OWNER_KEY`),
+registers this machine as a device and stores a device token in `~/.shapa`
+(mode 0600). A repo with no git origin has no automatic key: run `shapa remote sync --key KEY` once. `shapa remote sync` then syncs this repo's wiki and the global
+one both ways: ledger items, rows, documents and the `arch/` and `research/`
+notes. Wire it to a session hook with `shapa remote sync --hook`, which stays
+within eight seconds and never fails the session. Note files (`arch/`, `research/`) sync only while the repo is on its default branch, and a note deleted locally comes back: delete it through the API. `shapa remote status
+--check` verifies the login and the connection; `shapa remote devices
+--revoke ID` cuts a device off. The URL must be HTTPS (plain HTTP is allowed
+only for localhost).
 
 ## Files and privacy
 
@@ -159,9 +189,12 @@ Everything shapa reads or writes stays on disk, in files you own:
   put it elsewhere.
 - `<repo>/.shapa/shapa.db`: that repo's wiki, tracked in git.
 - `<repo>/.shapa/.shapa-index.db`: the derived search index, gitignored.
+- `~/.shapa/remote.json`, `remote.token` (mode 0600) and `sync/`: only after
+  `shapa remote login`.
 
 There is no hosted service and no account, and shapa makes no network calls
-of its own. Two exceptions you opt into: the `[semantic]` extra downloads
+of its own. Three exceptions you opt into: `shapa remote` talks to the store
+you deployed (see Hosted), the `[semantic]` extra downloads
 its embedding model once, and session distillation
 (`SHAPA_CAPTURE_DISTILL=1`) and `shapa maintain --resolve` run the `claude`
 CLI you already use. The core engine has no dependencies beyond the Python

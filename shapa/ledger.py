@@ -218,6 +218,8 @@ def overview(root: Path, repo_label: str | None = None, *, work: bool = True) ->
         live = c["F"] + c["J"] + c["T"]
         label = f" {repo_label}" if repo_label else ""
         rows_text = f"{c['M']} memories, {c['R']} rules, {c['I']} issues"
+        if c["D"]:
+            rows_text += f", {c['D']} documents"
         if work and (live or c["M"] + c["R"] + c["I"]):
             lines.append(f"ledger{label}: {c['F']} features, {c['J']} jobs, {c['T']} tasks open; "
                          f"{rows_text}. `shapa ledger` lists, `shapa ledger claim ID` takes one.")
@@ -379,8 +381,21 @@ def _vectors_and_uses(root: Path):
     return vectors, uses
 
 
+def _is_synced(root: Path) -> bool:
+    """True when the wiki has hosted-sync state: use counts are per device, so
+    one device must not decide a memory is unused for all of them."""
+    from shapa import syncstate
+
+    try:
+        return syncstate.state_path(syncstate.remote_dir(), db.db_path(root)).exists()
+    except OSError:
+        return False
+
+
 def run_sweep(root: Path, *, keep_closed_since: str | None = None) -> db.SweepReport:
     vectors, uses = _vectors_and_uses(root)
+    if _is_synced(root):
+        uses = None  # no stale-memory step on a synced wiki
     conn = _connect(root)
     try:
         return db.sweep(conn, vectors=vectors, uses=uses, keep_closed_since=keep_closed_since)

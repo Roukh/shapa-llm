@@ -93,7 +93,8 @@ def _render_line(node: Node, root: WikiRoot) -> str:
     helper between selection and rendering also means the two can never
     drift apart.
     """
-    return f"- [{root.kind}] {node.id} ({node.type}): {_summary(node)}"
+    return (f"- [{root.kind}] {memlog.display_line(str(node.id))} "
+            f"({memlog.display_line(str(node.type))}): {_summary(node)}")
 
 
 def _load_root(root: WikiRoot) -> dict[str, Node]:
