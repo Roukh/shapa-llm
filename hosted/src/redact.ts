@@ -51,9 +51,11 @@ export const PATTERNS: readonly Pattern[] = [
   pattern("npm-token", String.raw`${B_START}npm_[A-Za-z0-9]{36}`),
   pattern("supabase-key", String.raw`${B_START}sb_(?:secret|publishable)_[A-Za-z0-9_-]{10,}`),
   pattern("resend-key", String.raw`${B_START}re_[A-Za-z0-9]{20,}`),
+  // A token starts at the front of its run: also refusing a hyphen before it keeps a long run of
+  // "eyJ-eyJ-..." from being rescanned from every start (quadratic).
   pattern(
     "jwt",
-    String.raw`${B_START}eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}`,
+    String.raw`(?<![${W}-])eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}`,
   ),
   pattern(
     "url-password",
@@ -66,8 +68,8 @@ export const PATTERNS: readonly Pattern[] = [
   // the value must be a single unbroken run (prose such as "token: none of these apply" stays).
   pattern(
     "credential-assignment",
-    String.raw`${B_START}[${W}.-]*(?:api[_-]?key|secret|token|passw(?:or)?d|passwd|pwd|access[_-]?key|` +
-      String.raw`private[_-]?key|client[_-]?secret)[${W}.-]*["']?\s*[:=]\s*["']?` +
+    String.raw`${B_START}[${W}.-]{0,64}(?:api[_-]?key|secret|token|passw(?:or)?d|passwd|pwd|access[_-]?key|` +
+      String.raw`private[_-]?key|client[_-]?secret)[${W}.-]{0,64}["']?\s*[:=]\s*["']?` +
       String.raw`(?<secret>[A-Za-z0-9+/_=.~-]{12,})`,
     "i",
   ),
@@ -82,7 +84,7 @@ export const PATTERNS: readonly Pattern[] = [
  * whitespace-separated run that follows it. */
 const PREFIX_SPLIT = new RegExp(
   String.raw`(?<![A-Za-z0-9_-])((?:sk-|rk_|pk_|whsec_|gh[opsru]_|github_pat_|glpat-|xox[abposr]-|AKIA|ASIA|` +
-    String.raw`AIza|hf_|npm_|sb_|re_|eyJ)[A-Za-z0-9_.-]*)(\s+)([A-Za-z0-9_+/=.-]{4,})`,
+    String.raw`AIza|hf_|npm_|sb_|re_|eyJ)[A-Za-z0-9_.-]{0,200})(\s+)([A-Za-z0-9_+/=.-]{4,})`,
   "gu",
 );
 

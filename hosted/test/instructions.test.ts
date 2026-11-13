@@ -124,10 +124,8 @@ describe("session instructions", () => {
     expect(restFlavor.text).toContain("POST /v1/wikis/{wiki}/records");
   });
 
-  it("needs the read scope, is never cached, and cannot be sniffed as HTML", async () => {
+  it("needs a token, is never cached, and cannot be sniffed as HTML", async () => {
     const { token } = await setup();
-    const wo = await mint("writer", ["write"]);
-    expect((await get("/v1/instructions", wo.token)).status).toBe(403);
     const plain = await send("GET", "/v1/instructions", { token, headers: { accept: "text/plain" } });
     expect(plain.headers.get("x-content-type-options")).toBe("nosniff");
     expect(plain.headers.get("cache-control")).toBe("no-store");

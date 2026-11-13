@@ -122,7 +122,6 @@ describe("REST: create", () => {
     expect((await create(token, w, { type: "memory" })).status).toBe(400);
     expect((await create(token, w, { type: "bogus", summary: "x" })).status).toBe(400);
     expect((await create(token, w, { type: "memory", summary: "x", parent: "F1" })).status).toBe(400);
-    expect((await create(token, w, { type: "memory", summary: "x", verify: "y" })).status).toBe(400);
     expect((await send("POST", rec(w), { token, raw: "{not json" })).status).toBe(400);
     expect((await create(token, "no-such-wiki", { type: "memory", summary: "x" })).status).toBe(404);
   });
@@ -164,7 +163,6 @@ describe("REST: read and edit", () => {
     const same = await send("PATCH", rec(w, "/M1"), { token, body: { summary: "new" } });
     expect(same.body.rev).toBe(p.body.rev);
 
-    expect((await send("PATCH", rec(w, "/M1"), { token, body: { verify: "x" } })).status).toBe(400);
     expect((await send("PATCH", rec(w, "/M404"), { token, body: { summary: "x" } })).status).toBe(404);
     expect((await send("PATCH", rec(w, "/M1"), { token, body: { summary: "   " } })).status).toBe(400);
   });
@@ -174,8 +172,8 @@ describe("REST: read and edit", () => {
     await create(token, w, { type: "feature", title: "one" });
     await create(token, w, { type: "feature", title: "two" });
     await create(token, w, { type: "job", title: "j", parent: "F1" });
-    const moved = await send("PATCH", rec(w, "/J1"), { token, body: { parent: "F2", verify: "true", title: "renamed" } });
-    expect(moved.body.data).toMatchObject({ parent: "F2", verify: "true", title: "renamed" });
+    const moved = await send("PATCH", rec(w, "/J1"), { token, body: { parent: "F2", git_ref: "abc", title: "renamed" } });
+    expect(moved.body.data).toMatchObject({ parent: "F2", git_ref: "abc", title: "renamed" });
     expect((await send("PATCH", rec(w, "/J1"), { token, body: { parent: "J1" } })).status).toBe(400);
     expect((await send("PATCH", rec(w, "/F1"), { token, body: { parent: "F2" } })).status).toBe(400);
   });
@@ -235,7 +233,6 @@ describe("REST: scopes and wiki allowlists", () => {
     const { token, w } = await setup();
     await create(token, w, { type: "memory", summary: "x" });
     const ro = await mint("reader", ["read"]);
-    const wo = await mint("writer", ["write"]);
     const status = async (t: string, m: string, p: string, b?: unknown) => (await send(m, p, { token: t, ...(b ? { body: b } : {}) })).status;
     for (const [m, p, b] of [
       ["POST", rec(w), { type: "memory", summary: "y" }],
@@ -248,11 +245,7 @@ describe("REST: scopes and wiki allowlists", () => {
     ] as [string, string, unknown][]) {
       expect(await status(ro.token, m, p, b), `${m} ${p}`).toBe(403);
     }
-    for (const p of [rec(w), rec(w, "/M1"), "/v1/wikis", "/v1/search?q=x", "/v1/get?id=M1"]) {
-      expect(await status(wo.token, "GET", p), p).toBe(403);
-    }
     expect(await status(ro.token, "GET", rec(w, "/M1"))).toBe(200);
-    expect(await status(wo.token, "POST", rec(w), { type: "memory", summary: "from writer" })).toBe(201);
   });
 
   it("keeps a restricted device inside its wiki list", async () => {

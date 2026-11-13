@@ -68,7 +68,6 @@ export function createRecord(repo: Repo, d: Device, wiki: string, body: CreateIn
   const text = body.title ?? body.summary ?? "";
   if (body.parent !== undefined && !isLedger(kind)) fail("invalid", "only a job or task takes a parent");
   if (body.parent !== undefined && kind === "F") fail("invalid", "a feature has no parent");
-  if (body.verify !== undefined && !isLedger(kind)) fail("invalid", "verify applies to ledger items");
 
   let id: string;
   let raw: Data;
@@ -79,7 +78,7 @@ export function createRecord(repo: Repo, d: Device, wiki: string, body: CreateIn
   } else if (isLedger(kind)) {
     id = `${kind}1`;
     const parent = body.parent === undefined ? null : checkParent(repo, wiki, kind, body.parent);
-    raw = { title: text, body: body.body ?? "", parent, verify: body.verify ?? null, alias: body.alias ?? null };
+    raw = { title: text, body: body.body ?? "", parent, alias: body.alias ?? null };
   } else if (kind === "D") {
     id = "D1";
     raw = { title: text, body: body.body ?? "", alias: body.alias ?? null, ...(body.mime ? { mime: body.mime } : {}) };
@@ -157,7 +156,6 @@ export function patchRecord(repo: Repo, d: Device, wiki: string, ref: string, p:
   }
   if (p.body !== undefined) data["body"] = p.body;
   if (p.alias !== undefined) { only("alias", k !== "N"); data["alias"] = p.alias; }
-  if (p.verify !== undefined) { only("verify", isLedger(k)); data["verify"] = p.verify; }
   if (p.git_ref !== undefined) { only("git_ref", isLedger(k)); data["git_ref"] = p.git_ref; }
   if (p.mime !== undefined) { only("mime", k === "D"); data["mime"] = p.mime; }
   if (p.parent !== undefined) {

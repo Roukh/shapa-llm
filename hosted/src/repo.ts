@@ -34,6 +34,12 @@ type Row = Record<string, SqlStorageValue>;
 /** Bytes a stored row adds to a response: its JSON columns plus a flat allowance for the envelope. */
 const SIZE_SQL = `(length(CAST(data AS BLOB)) + length(CAST(tags AS BLOB)) + length(CAST(links AS BLOB)) + 512)`;
 
+/** `verify` was once a ledger field. It is a shell command and must never be served, whatever a row holds. */
+function dropVerify(data: Data): Data {
+  delete data["verify"];
+  return data;
+}
+
 function fromRow(r: Row): Stored {
   return {
     seq: r["seq"] as number,
@@ -47,7 +53,7 @@ function fromRow(r: Row): Stored {
     deleted: r["deleted"] === 1,
     device: r["device"] as string,
     alias: r["alias"] as string,
-    data: JSON.parse(r["data"] as string) as Data,
+    data: dropVerify(JSON.parse(r["data"] as string) as Data),
     tags: JSON.parse(r["tags"] as string) as string[],
     links: JSON.parse(r["links"] as string) as Link[],
   };

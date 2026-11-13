@@ -62,17 +62,25 @@ const LINK_DST_RE = /^[A-Za-z0-9][A-Za-z0-9._/:-]{0,119}$/;
 export const UID_RE = /^[A-Za-z0-9_-]{16,64}$/;
 const TS_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
 const MIME_RE = /^[A-Za-z0-9][\w.+-]{0,60}\/[A-Za-z0-9][\w.+-]{0,60}$/;
-/** Root notes that are shipped by shapa itself and never sync (either case, for case-folding disks). */
-const RESERVED_ROOT_NOTES = new Set(["agents.md", "placement.md"]);
+/** File names that a coding harness loads as instructions, or that shapa ships itself: never synced,
+ *  in any folder and in any case (for case-folding disks). */
+const RESERVED_NOTE_NAMES = new Set(["agents.md", "claude.md", "gemini.md", "placement.md"]);
 
 export function isNoteId(id: string): boolean {
   if (!NOTE_ID_RE.test(id)) return false;
-  if (!id.includes("/") && RESERVED_ROOT_NOTES.has(id.toLowerCase())) return false;
-  return true;
+  return !RESERVED_NOTE_NAMES.has(id.slice(id.lastIndexOf("/") + 1).toLowerCase());
 }
 
 export function isTimestamp(value: string): boolean {
   return TS_RE.test(value) && !Number.isNaN(Date.parse(value));
+}
+
+const FUTURE_SLACK_MS = 5 * 60 * 1000;
+
+/** A timestamp more than 5 minutes ahead of the server clock becomes the server time: a device with
+ *  a fast clock still syncs, but cannot win last-write-wins forever. */
+export function clampFuture(ts: string): string {
+  return Date.parse(ts) > Date.now() + FUTURE_SLACK_MS ? nowIso() : ts;
 }
 
 export function nowIso(): string {
@@ -150,7 +158,6 @@ export const LedgerData = z.object({
   title: z.string(),
   body: z.string().default(""),
   parent: z.string().nullable().default(null),
-  verify: z.string().nullable().default(null),
   status: z.enum(STATUSES).default("open"),
   closed_reason: z.enum(CLOSE_REASONS).nullable().default(null),
   git_ref: z.string().max(200).nullable().default(null),
@@ -259,7 +266,6 @@ function normalizeData(kind: Kind, id: string, raw: unknown): { data: Data; alia
         title,
         body: redact(d.body),
         parent: d.parent,
-        verify: d.verify === null ? null : redact(d.verify),
         status: d.status,
         closed_reason: d.closed_reason,
         git_ref: d.git_ref,
@@ -433,7 +439,6 @@ export const CreateBody = z.object({
   tags: z.array(z.string().max(500)).max(500).optional(),
   alias: z.string().max(200).optional(),
   parent: z.string().max(120).optional(),
-  verify: z.string().max(5000).optional(),
   path: z.string().max(200).optional().describe("Note path, for type note."),
   mime: z.string().max(100).optional(),
 }).openapi("CreateRecord");
@@ -445,7 +450,6 @@ export const PatchBody = z.object({
   tags: z.array(z.string().max(500)).max(500).optional(),
   alias: z.string().max(200).nullable().optional(),
   parent: z.string().max(120).nullable().optional(),
-  verify: z.string().max(5000).nullable().optional(),
   git_ref: z.string().max(200).nullable().optional(),
   mime: z.string().max(100).optional(),
   base_rev: z.number().int().min(0).optional(),

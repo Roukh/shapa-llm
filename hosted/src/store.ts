@@ -5,7 +5,7 @@
 // Durable Object RPC does not carry custom error classes.
 
 import { DurableObject } from "cloudflare:workers";
-import { type Device, Devices, needWiki, validDeviceName, validScopes, validWikis, wikiAllowed } from "./devices.js";
+import { type Device, Devices, needWiki, scopesCoherent, validDeviceName, validScopes, validWikis, wikiAllowed } from "./devices.js";
 import { fail, run, type Out } from "./errors.js";
 import { composeInstructions, type ClientKind } from "./instructions.js";
 import * as ledger from "./ledger.js";
@@ -56,6 +56,7 @@ export class ShapaStore extends DurableObject<Env> {
     return this.tx(() => {
       if (!validDeviceName(a.name)) fail("invalid", "name must be 1-64 characters, no control characters, no surrounding spaces");
       if (!validScopes(a.scopes)) fail("invalid", "scopes must be a non-empty list of read, write, delete");
+      if (!scopesCoherent(a.scopes)) fail("invalid", "write needs read, and delete needs read and write");
       if (!validWikis(a.wikis)) fail("invalid", "wikis must be null or a list of wiki keys");
       return this.devices.create(a);
     });

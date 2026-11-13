@@ -77,7 +77,7 @@ export function row(id: string, summary: string, over: Record<string, unknown> =
 export function job(id: string, title: string, parent: string | null = null, over: Record<string, unknown> = {}) {
   return {
     id, uid: uidOf(id, String(over["created"] ?? TS)), kind: id[0], created: TS, updated: TS, deleted: false,
-    data: { title, body: "", parent, verify: null, status: "open", closed_reason: null, git_ref: null, alias: null, claimed_by: null, closed: null },
+    data: { title, body: "", parent, status: "open", closed_reason: null, git_ref: null, alias: null, claimed_by: null, closed: null },
     tags: [], links: [], ...over,
   };
 }

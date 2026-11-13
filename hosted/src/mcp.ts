@@ -186,7 +186,6 @@ export function buildServer(env: Env, cred: Cred): McpServer {
         title: z.string().min(1).max(5000),
         parent: z.string().max(120).optional().describe("Id of the feature (for a job) or job (for a task)."),
         body: z.string().max(LIMITS.recordBytes).optional(),
-        verify: z.string().max(5000).optional().describe("A command that proves it is done."),
       }),
       annotations: { ...WRITE, idempotentHint: false },
     },
@@ -202,7 +201,7 @@ export function buildServer(env: Env, cred: Cred): McpServer {
     {
       title: "Claim, release, close or edit a ledger item",
       description:
-        "claim: mark it yours. release: give it back. close: finish it (closes open children too); fields.reason is agent (default) or operator. edit: change fields.title, body, verify, parent, alias or git_ref.",
+        "claim: mark it yours. release: give it back. close: finish it (closes open children too); fields.reason is agent (default) or operator. edit: change fields.title, body, parent, alias or git_ref.",
       inputSchema: z.object({
         wiki: wikiKey,
         id: z.string().min(1).max(120),
@@ -211,7 +210,6 @@ export function buildServer(env: Env, cred: Cred): McpServer {
           .object({
             title: z.string().max(5000).optional(),
             body: z.string().max(LIMITS.recordBytes).optional(),
-            verify: z.string().max(5000).nullable().optional(),
             parent: z.string().max(120).nullable().optional(),
             alias: z.string().max(100).nullable().optional(),
             git_ref: z.string().max(200).nullable().optional(),

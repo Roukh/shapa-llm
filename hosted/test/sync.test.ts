@@ -284,7 +284,7 @@ describe("sync: replays", () => {
 
   it("is atomic: a refused request applies none of its ops", async () => {
     const { token, w } = await setup();
-    const rw = await mint("wo", ["write"]);
+    const rw = await mint("wo", ["read", "write"]);
     const tooMany = Array.from({ length: 201 }, (_, i) => put(row(`M${i + 1}`, "x")));
     const r = await sync(token, w, { ops: tooMany });
     expect(r.status).toBe(413);

@@ -148,7 +148,7 @@ describe("OAuth 2.1", () => {
     const clientId = await registerClient();
     const { challenge, verifier } = await pkce();
     const url = authorizeUrl(clientId, challenge);
-    for (const fields of <Record<string, string | string[]>[]>[{ device_name: "" }, { device_name: "x".repeat(65) }, { device_name: "a\u0000b" }, { scope: [] as string[] }, { scope: ["root"] }, { wikis: "Bad Key!" }]) {
+    for (const fields of <Record<string, string | string[]>[]>[{ device_name: "" }, { device_name: "x".repeat(65) }, { device_name: "a\u0000b" }, { scope: [] as string[] }, { scope: ["root"] }, { scope: ["write"] }, { scope: ["delete"] }, { scope: ["read", "delete"] }, { scope: ["write", "delete"] },{ wikis: "Bad Key!" }]) {
       const page = await openConsent(url);
       const res = await submitConsent(page, fields);
       expect(res.status, JSON.stringify(fields)).toBe(400);

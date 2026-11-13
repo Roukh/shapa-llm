@@ -7,7 +7,7 @@
 
 import { AuthorizationError, type OAuthHelpers } from "@cloudflare/workers-oauth-provider";
 import { ownerKeyConfigured, requireOwnerKey, store } from "./auth.js";
-import { randomHex, timingSafeEqualStr, validDeviceName } from "./devices.js";
+import { randomHex, scopesCoherent, timingSafeEqualStr, validDeviceName } from "./devices.js";
 import { ApiError, unwrap } from "./errors.js";
 import type { OAuthKit } from "./oauth.js";
 import { SCOPES, WIKI_KEY_RE, type Scope } from "./records.js";
@@ -154,6 +154,7 @@ async function decide(oauth: OAuthHelpers, request: Request, env: Env): Promise<
   if (!validDeviceName(name)) return again("Give the device a name of 1 to 64 characters.", 400);
   const scopes = SCOPES.filter((s) => form.getAll("scope").includes(s));
   if (scopes.length === 0) return again("Pick at least one scope.", 400);
+  if (!scopesCoherent(scopes)) return again("Write needs read, and delete needs read and write.", 400);
   const wikiText = field(form, "wikis").trim();
   const wikis = wikiText ? [...new Set(wikiText.split(/[\s,]+/).filter(Boolean))] : null;
   if (wikis && !wikis.every((w) => WIKI_KEY_RE.test(w))) return again("Wiki keys are lowercase letters, digits, dots, dashes and underscores.", 400);

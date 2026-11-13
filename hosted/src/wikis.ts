@@ -35,9 +35,11 @@ export function putWiki(
     return { wiki: info(repo, key), created: true };
   }
   if (cur.kind !== body.kind) fail("conflict", `wiki ${key} is a ${cur.kind} wiki`);
-  if (cur.origin && body.origin && cur.origin !== body.origin) {
-    fail("conflict", `wiki ${key} belongs to ${cur.origin}, not ${body.origin}; choose another key with --key`);
+  // An empty origin is a value, not a wildcard: two repos that share a folder name must not share a wiki.
+  if (cur.origin !== body.origin) {
+    const was = cur.origin ? `belongs to ${cur.origin}` : "has no origin";
+    fail("conflict", `wiki ${key} ${was}, not ${body.origin || "an empty origin"}; choose another key with --key`);
   }
-  repo.updateWiki(key, body.name, cur.kind, cur.origin || body.origin);
+  repo.updateWiki(key, body.name, cur.kind, cur.origin);
   return { wiki: info(repo, key), created: false };
 }

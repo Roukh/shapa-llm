@@ -44,6 +44,12 @@ export function validWikis(wikis: unknown): wikis is string[] | null {
   return wikis === null || (Array.isArray(wikis) && wikis.length <= 100 && wikis.every((w) => typeof w === "string" && WIKI_KEY_RE.test(w)));
 }
 
+/** write needs read, and delete needs both: a write-only device could still read through every
+ *  response that echoes records. */
+export function scopesCoherent(scopes: readonly string[]): boolean {
+  return (!scopes.includes("write") || scopes.includes("read")) && (!scopes.includes("delete") || (scopes.includes("read") && scopes.includes("write")));
+}
+
 export function validScopes(scopes: unknown): scopes is Scope[] {
   return Array.isArray(scopes) && scopes.length >= 1 && scopes.every((s) => (SCOPES as readonly string[]).includes(s));
 }

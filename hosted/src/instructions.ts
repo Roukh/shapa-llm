@@ -6,7 +6,8 @@
 import { type Device, needScope, wikiAllowed } from "./devices.js";
 import { fail } from "./errors.js";
 import { ledgerTree } from "./ledger.js";
-import { LIMITS, type Data } from "./records.js";
+import { LIMITS, oneLine, type Data } from "./records.js";
+import { redact } from "./redact.js";
 import { Repo } from "./repo.js";
 
 export type ClientKind = "mcp" | "rest";
@@ -71,6 +72,10 @@ function clip(text: string, room: number): string {
   return text.slice(0, room - 1).trimEnd() + "…";
 }
 
+/** Record text that goes into the instructions: masked, and one line, so a record can never add a
+ *  line or a heading of its own to the operator session text. */
+const line = (text: unknown, limit: number): string => oneLine(redact(String(text ?? "")), limit);
+
 function section(title: string, body: string): string {
   return body ? `${title}\n${body}` : "";
 }
@@ -108,9 +113,11 @@ export function composeInstructions(
     add(section("OPERATOR'S STYLE", noteBody(repo, "response-style")), 0.15);
   }
   const rules: string[] = [];
+  // Rules come from the global wiki, plus the wiki the request names: not from every wiki.
   for (const w of visible) {
+    if (w.key !== "global" && w.key !== opts.wiki) continue;
     for (const r of repo.live(w.key, ["R"])) {
-      rules.push(`${w.key === "global" ? "" : `${w.key}/`}${r.id} ${String((r.data as Data)["summary"] ?? "")}`);
+      rules.push(`${w.key === "global" ? "" : `${w.key}/`}${r.id} ${line((r.data as Data)["summary"], 160)}`);
     }
   }
   if (rules.length) {
@@ -124,7 +131,8 @@ export function composeInstructions(
     for (const f of ledgerTree(repo, w.key)) {
       if (f.type !== "feature") continue;
       const open = f.children.length;
-      features.push(`${w.key}/${f.id} ${f.title}${f.claimed_by ? ` [claimed by ${f.claimed_by}]` : ""}${open ? ` (${open} open ${open === 1 ? "job" : "jobs"})` : ""}`);
+      const by = line(f.claimed_by, 64);
+      features.push(`${w.key}/${f.id} ${line(f.title, LIMITS.title)}${by ? ` [claimed by ${by}]` : ""}${open ? ` (${open} open ${open === 1 ? "job" : "jobs"})` : ""}`);
     }
   }
   if (features.length) add(section("LIVE FEATURES", fit(features, Math.max(0, room - 16))));

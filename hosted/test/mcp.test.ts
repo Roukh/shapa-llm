@@ -98,14 +98,14 @@ describe("MCP: tools call the same store as REST", () => {
   it("runs the ledger: add, list, claim, edit, close", async () => {
     const { token, w } = await setup();
     expect((await tool(token, "ledger_add", { wiki: w, kind: "feature", title: "Hosted" })).text).toBe(`Added F1 in ${w}.`);
-    expect((await tool(token, "ledger_add", { wiki: w, kind: "job", title: "Store", parent: "F1", verify: "npm test" })).text).toBe(`Added J1 in ${w}.`);
+    expect((await tool(token, "ledger_add", { wiki: w, kind: "job", title: "Store", parent: "F1" })).text).toBe(`Added J1 in ${w}.`);
     expect((await tool(token, "ledger_add", { wiki: w, kind: "task", title: "Schema", parent: "J1" })).text).toBe(`Added T1 in ${w}.`);
     expect((await tool(token, "ledger_add", { wiki: w, kind: "job", title: "x", parent: "T1" })).isError).toBe(true);
 
     expect((await tool(token, "ledger_set", { wiki: w, id: "J1", action: "claim" })).text).toBe("Claimed J1.");
     const list = await tool(token, "ledger_list", { wiki: w });
     expect(list.text).toBe(`# ${w}\nF1 [feature] Hosted\n  J1 [job] Store (claimed by tester)\n    T1 [task] Schema`);
-    expect((await tool(token, "ledger_set", { wiki: w, id: "J1", action: "edit", fields: { title: "Store v2", verify: "npm run t" } })).text).toMatch(/^Edited J1/);
+    expect((await tool(token, "ledger_set", { wiki: w, id: "J1", action: "edit", fields: { title: "Store v2", git_ref: "abc" } })).text).toMatch(/^Edited J1/);
     expect((await tool(token, "ledger_set", { wiki: w, id: "J1", action: "release" })).text).toBe("Released J1.");
     expect((await tool(token, "ledger_set", { wiki: w, id: "F1", action: "close", fields: { reason: "operator", git_ref: "abc" } })).text).toBe("Closed F1, J1, T1.");
     expect((await tool(token, "ledger_set", { wiki: w, id: "F1", action: "close" })).text).toBe("F1 was already closed.");
@@ -148,15 +148,18 @@ describe("MCP: scopes and allowlists hold on every tool", () => {
     }
   });
 
-  it("lets a write-only device write but not read", async () => {
+  it("lets a read-only device read but not write", async () => {
     const a = await setup();
-    const wo = await mint("writer", ["write"]);
-    expect((await tool(wo.token, "save", { wiki: a.w, type: "memory", summary: "blind write" })).isError).toBe(false);
-    for (const [name, args] of [["search", { query: "blind" }], ["get", { id: "M1" }], ["ledger_list", {}], ["wikis", {}], ["session_start", {}]] as [string, Record<string, unknown>][]) {
-      const r = await tool(wo.token, name, args);
+    const ro = await mint("reader2", ["read"]);
+    for (const [name, args] of [
+      ["save", { wiki: a.w, type: "memory", summary: "blind write" }],
+      ["ledger_add", { wiki: a.w, kind: "feature", title: "x" }],
+    ] as [string, Record<string, unknown>][]) {
+      const r = await tool(ro.token, name, args);
       expect(r.isError, name).toBe(true);
       expect(r.text, name).toMatch(/^forbidden:/);
     }
+    expect((await tool(ro.token, "wikis", {})).isError).toBe(false);
   });
 
   it("keeps a restricted device inside its wiki list", async () => {

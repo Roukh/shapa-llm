@@ -5,7 +5,7 @@
 import { type Device, needScope } from "./devices.js";
 import { ApiError, fail } from "./errors.js";
 import {
-  COUNTER_KINDS, Invalid, LIMITS, contentKey, isTimestamp, normalizeRecord, normLinks,
+  COUNTER_KINDS, Invalid, LIMITS, clampFuture, contentKey, isTimestamp, normalizeRecord, normLinks,
   type Normalized, type SyncOpIn, type SyncResponseOut, type SyncResultOut,
 } from "./records.js";
 import { Repo, toWire, type Stored } from "./repo.js";
@@ -54,6 +54,7 @@ function applyPut(
     const id = typeof (raw as { id?: unknown } | null)?.id === "string" ? String((raw as { id: string }).id).slice(0, 120) : "";
     return { id, status: "rejected", rev: 0, error: e.message };
   }
+  n = { ...n, updated: clampFuture(n.updated) };
   if (n.deleted) {
     // A put that carries the tombstone flag is a delete and needs the delete scope.
     return applyDel(repo, d, wiki, { op: "del", id: n.id, uid: n.uid, deleted_at: n.updated, base_rev: baseRev }, extras);
@@ -118,10 +119,11 @@ function applyDel(
   if (!isTimestamp(op.deleted_at)) return { id: op.id, status: "rejected", rev: 0, error: "deleted_at must be YYYY-MM-DDTHH:MM:SSZ" };
   // The record is found by its uid, under whatever id it has: a client whose last response was
   // lost may delete a record it never learned the stored id of. A note (no uid) is found by path.
+  const deletedAt = clampFuture(op.deleted_at);
   const cur = op.uid ? repo.byUid(wiki, op.uid) : repo.get(wiki, op.id);
   if (!cur || cur.deleted || (!op.uid && cur.uid !== "")) return { id: op.id, status: "noop", rev: cur?.rev ?? 0 };
-  if (op.base_rev === cur.rev || cur.updated <= op.deleted_at) {
-    const tomb: Normalized = { id: cur.id, uid: cur.uid, kind: cur.kind, created: cur.created, updated: op.deleted_at, deleted: true, alias: "", data: {}, tags: [], links: [] };
+  if (op.base_rev === cur.rev || cur.updated <= deletedAt) {
+    const tomb: Normalized = { id: cur.id, uid: cur.uid, kind: cur.kind, created: cur.created, updated: deletedAt, deleted: true, alias: "", data: {}, tags: [], links: [] };
     return { id: op.id, status: "accepted", rev: repo.save(wiki, tomb, d.name, cur).rev };
   }
   extras.add(cur.id);
