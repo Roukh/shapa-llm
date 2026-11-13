@@ -175,12 +175,12 @@ def one_line(text: str) -> str:
 
 
 _CTRL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
-_WRAPPER_TAG_RE = re.compile(r"<(\s*/?\s*shapa-memory)", re.I)
+_WRAPPER_TAG_RE = re.compile(r"<(\s*/?\s*shapa-[\w-]*)", re.I)
 
 
 def display_line(text: str) -> str:
     """*text* made safe to print inside a ``<shapa-memory>`` block: control
-    characters become spaces, and a literal wrapper tag in the text can no
+    characters become spaces, and a literal shapa-* wrapper tag in the text can no
     longer open or close the block (its ``<`` becomes ``‹``)."""
     return _WRAPPER_TAG_RE.sub("‹\\1", _CTRL_RE.sub(" ", text or ""))
 

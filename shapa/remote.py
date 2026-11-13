@@ -152,7 +152,7 @@ def cmd_sync(args) -> int:
     else:
         for r in results:
             _print_result(r)
-    return 1 if any(r.status in ("error", "busy") for r in results) else 0
+    return 1 if any(r.status in ("error", "busy", "needs-key") for r in results) else 0
 
 
 # --- status / devices / instructions -----------------------------------------------------------
@@ -167,7 +167,12 @@ def cmd_status(args) -> int:
         out.update(url=creds.url, device=creds.device, device_id=creds.device_id)
         rdir = syncstate.remote_dir()
         for root in remotesync.wikis_in_scope(args.cwd, args.all):
-            key = remotesync.wiki_key(root)
+            key = remotesync.wiki_key(root, rdir=rdir)
+            if key is None:
+                out["wikis"].append({"key": None, "name": remotesync.folder_name(root),
+                                     "path": str(root), "pending": None, "last_sync": None,
+                                     "needs_key": True})
+                continue
             pending = sync.pending_changes(root, key=key, url=creds.url, rdir=rdir)
             state = syncstate.load_state(syncstate.state_path(rdir, db.db_path(root)), key, creds.url)
             out["wikis"].append({"key": key, "path": str(root), "pending": pending,
@@ -186,6 +191,9 @@ def cmd_status(args) -> int:
         return code
     print(f"logged in as {creds.device} ({creds.device_id}) at {creds.url}")
     for w in out["wikis"]:
+        if w.get("needs_key"):
+            print(f"  {w['name']}: needs --key (no git origin; run `shapa remote sync --key KEY` once)")
+            continue
         pending = "no database" if w["pending"] is None else f"{w['pending']} pending"
         print(f"  {w['key']}: {pending}, last sync {w['last_sync'] or 'never'}")
     if args.check:

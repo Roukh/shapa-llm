@@ -27,7 +27,8 @@ from shapa.redact import redact
 
 MAX_RECORD_BYTES = 1_000_000
 NOTE_RE = re.compile(r"^(arch/|research/)?[A-Za-z0-9][A-Za-z0-9._-]{0,99}\.md$")
-NOTE_EXCLUDED = ("AGENTS.md", "placement.md")
+#: Harness instruction files never sync, in any folder, in any letter case.
+NOTE_RESERVED = ("agents.md", "claude.md", "gemini.md", "placement.md")
 KIND_ORDER = "FJTMRIDN"
 ISO_RE = re.compile(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
 UID_RE = re.compile(r"^[A-Za-z0-9_-]{16,64}$")
@@ -40,7 +41,7 @@ MAX_LINKS = 200
 
 def is_note_id(note_id) -> bool:
     return (isinstance(note_id, str) and bool(NOTE_RE.match(note_id))
-            and note_id not in NOTE_EXCLUDED)
+            and note_id.rsplit("/", 1)[-1].lower() not in NOTE_RESERVED)
 
 
 def id_matches_kind(rec_id, kind) -> bool:
@@ -81,6 +82,11 @@ def snapshot_notes(wiki_dir: Path) -> dict[str, dict]:
         for path in sorted(wiki_dir.glob(pattern)):
             note_id = path.relative_to(wiki_dir).as_posix()
             if not is_note_id(note_id) or path.is_symlink() or not path.is_file():
+                continue
+            try:
+                if _note_target(wiki_dir, note_id, create_dir=False) != path.resolve():
+                    continue  # the folder or the file leads out of the wiki
+            except (ValueError, OSError):
                 continue
             try:
                 if path.stat().st_size > MAX_RECORD_BYTES // 2:
@@ -205,11 +211,9 @@ def _data(kind: str, raw: dict) -> dict | None:
         return None
     if closed is not None and not (isinstance(closed, str) and ISO_RE.match(closed)):
         return None
-    verify = raw.get("verify")
-    if verify is not None and not isinstance(verify, str):
-        return None
-    return {"title": redact(title), "body": body, "parent": parent,
-            "verify": redact(verify) if verify else verify, "status": status,
+    # `verify` is a shell command run by `shapa ledger close`: it never leaves a machine, so it
+    # is never read from the server either.
+    return {"title": redact(title), "body": body, "parent": parent, "status": status,
             "closed_reason": reason, "git_ref": _opt_line(raw.get("git_ref"), 200),
             "alias": alias, "claimed_by": _opt_line(raw.get("claimed_by"), 200), "closed": closed}
 

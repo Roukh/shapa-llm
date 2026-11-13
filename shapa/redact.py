@@ -37,7 +37,7 @@ PATTERNS: tuple[tuple[str, re.Pattern], ...] = (
     ("npm-token", re.compile(r"\bnpm_[A-Za-z0-9]{36}")),
     ("supabase-key", re.compile(r"\bsb_(?:secret|publishable)_[A-Za-z0-9_-]{10,}")),
     ("resend-key", re.compile(r"\bre_[A-Za-z0-9]{20,}")),
-    ("jwt", re.compile(r"\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}")),
+    ("jwt", re.compile(r"(?<![\w-])eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}")),
     ("url-password", re.compile(
         r"\b[a-z][a-z0-9+.-]{1,20}://[^\s:/?#@]+:(?P<secret>[^\s@/]{3,})@", re.I)),
     ("bearer", re.compile(r"\bBearer\s+(?P<secret>[A-Za-z0-9._~+/=-]{10,})")),
@@ -46,8 +46,8 @@ PATTERNS: tuple[tuple[str, re.Pattern], ...] = (
     # like a credential, and the value must be a single unbroken run (prose
     # such as "token: none of these apply" stays untouched).
     ("credential-assignment", re.compile(
-        r"(?i)\b[\w.-]*(?:api[_-]?key|secret|token|passw(?:or)?d|passwd|pwd|access[_-]?key|"
-        r"private[_-]?key|client[_-]?secret)[\w.-]*[\"']?\s*[:=]\s*[\"']?"
+        r"(?i)\b[\w.-]{0,64}(?:api[_-]?key|secret|token|passw(?:or)?d|passwd|pwd|access[_-]?key|"
+        r"private[_-]?key|client[_-]?secret)[\w.-]{0,64}[\"']?\s*[:=]\s*[\"']?"
         r"(?P<secret>[A-Za-z0-9+/_=.~-]{12,})")),
     ("conn-string-password", re.compile(r"(?i)\b(?:password|pwd)\s*=\s*(?P<secret>[^;\s\"']{6,})")),
 )
@@ -66,7 +66,7 @@ def _mask(match: re.Match) -> str:
 #: line wrap, and the whitespace-separated run that follows it.
 _PREFIX_SPLIT_RE = re.compile(
     r"(?<![A-Za-z0-9_-])((?:sk-|rk_|pk_|whsec_|gh[opsru]_|github_pat_|glpat-|xox[abposr]-|AKIA|ASIA|"
-    r"AIza|hf_|npm_|sb_|re_|eyJ)[A-Za-z0-9_.-]*)(\s+)([A-Za-z0-9_+/=.-]{4,})")
+    r"AIza|hf_|npm_|sb_|re_|eyJ)[A-Za-z0-9_.-]{0,200})(\s+)([A-Za-z0-9_+/=.-]{4,})")
 #: Key-shaped runs right after a redaction - the rest of a secret that a
 #: line wrap or a reflow split off (a run with a digit, or a long one).
 _TAIL_RE = re.compile(

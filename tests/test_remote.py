@@ -228,6 +228,7 @@ def test_sync_all_reaches_registered_wikis(logged_in, double, wikis, capsys, tmp
 
     other = tmp_path / "other-repo"
     (other / ".git").mkdir(parents=True)
+    (other / ".git" / "config").write_text('[remote "origin"]\n\turl = https://git.example/o/other-repo.git\n')
     (other / ".shapa").mkdir()
     (other / ".shapa" / "AGENTS.md").write_text("m\n", encoding="utf-8")
     c = db.connect(other / ".shapa", create=True)
@@ -341,11 +342,11 @@ def test_hook_stays_within_its_budget_when_the_server_hangs(logged_in, double, w
 
 @pytest.mark.parametrize("name,expected", [("My Repo", "my-repo"), ("shapa-llm", "shapa-llm"),
                                            ("Ünï.code", "n-.code"),
-                                           ("---", "repo"), (".hidden", "hidden"),
+                                           ("---", ""), ("проект", ""), (".hidden", "hidden"),
                                            ("UPPER_case", "upper_case"), ("a" * 100, "a" * 64)])
 def test_slug(name, expected):
     out = remotesync.slug(name)
-    assert out == expected and remotesync.KEY_RE.match(out)
+    assert out == expected and (out == "" or remotesync.KEY_RE.match(out))
 
 
 @pytest.mark.parametrize("url,expected", [
@@ -483,3 +484,56 @@ def test_sync_output_says_when_notes_and_oversized_records_were_skipped(logged_i
     c.close()
     code, out, err = run(capsys, ["sync", "--cwd", str(wikis.repo)])
     assert code == 0 and "note files skipped" in err and "over the server limit" in err
+
+
+# --- J88: a repo with no git origin has no automatic key ----------------------------------------------------
+
+@pytest.fixture
+def no_origin(wikis):
+    (wikis.repo / ".git" / "config").unlink()
+    c = wikis.conn()
+    db.add_row(c, "R", "a rule in a repo with no origin")
+    c.close()
+    return wikis
+
+
+def test_sync_without_an_origin_asks_for_a_key_and_sends_nothing_for_that_repo(logged_in, double, no_origin, capsys):
+    code, out, err = run(capsys, ["sync", "--cwd", str(no_origin.repo)])
+    assert code == 1 and "--key KEY" in err
+    assert "my-repo" not in double.wikis and "global" in double.wikis  # the global wiki is unaffected
+
+
+def test_the_hook_skips_a_repo_with_no_origin_silently(logged_in, double, no_origin, capsys, monkeypatch):
+    code, cap = hook(capsys, monkeypatch, no_origin.repo)
+    assert code == 0 and cap.out == "" and cap.err == ""
+    assert "my-repo" not in double.wikis
+
+
+def test_status_says_a_repo_needs_a_key(logged_in, no_origin, capsys):
+    code, out, _ = run(capsys, ["status", "--cwd", str(no_origin.repo)])
+    assert code == 0 and "needs --key" in out
+    data = json.loads(run(capsys, ["status", "--cwd", str(no_origin.repo), "--json"])[1])
+    assert [w for w in data["wikis"] if w.get("needs_key")]
+
+
+def test_a_key_passed_once_is_kept_for_later_syncs_and_the_hook(logged_in, double, no_origin, capsys, monkeypatch):
+    code, _, _ = run(capsys, ["sync", "--cwd", str(no_origin.repo), "--key", "my-chosen-key"])
+    assert code == 0 and "my-chosen-key" in double.wikis
+    c = no_origin.conn()
+    db.add_row(c, "M", "added later, synced by the hook")
+    c.close()
+    code, cap = hook(capsys, monkeypatch, no_origin.repo)
+    assert code == 0 and "sent 1" in cap.out
+    assert len(double.live("my-chosen-key")) == 2 and "my-repo" not in double.wikis
+    assert run(capsys, ["sync", "--cwd", str(no_origin.repo)])[0] == 0  # no --key needed any more
+
+
+def test_a_non_ascii_folder_name_needs_a_key_instead_of_becoming_repo(logged_in, double, tmp_path, capsys):
+    folder = tmp_path / "проект"
+    (folder / ".git").mkdir(parents=True)
+    (folder / ".git" / "config").write_text('[remote "origin"]\n\turl = https://git.example/o/r.git\n')
+    (folder / ".shapa").mkdir()
+    (folder / ".shapa" / "AGENTS.md").write_text("m\n", encoding="utf-8")
+    db.connect(folder / ".shapa", create=True).close()
+    code, _, err = run(capsys, ["sync", "--cwd", str(folder)])
+    assert code == 1 and "--key KEY" in err and "repo" not in double.wikis

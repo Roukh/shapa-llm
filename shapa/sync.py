@@ -293,7 +293,7 @@ def pending_changes(root, *, key: str, url: str, rdir: Path) -> int | None:
 
 def sync_wiki(root, *, client: Client, rdir: Path, key: str, name: str = "", kind: str = "repo",
               origin: str = "", dry_run: bool = False, if_changed: bool = False,
-              wait: float = 30.0) -> SyncResult:
+              wait: float = 30.0, named: bool = False) -> SyncResult:
     """Sync one wiki; never raises for a server, network or data problem (the
     result carries ``status`` and ``message``)."""
     result = SyncResult(key=key, dry_run=dry_run)
@@ -309,7 +309,7 @@ def sync_wiki(root, *, client: Client, rdir: Path, key: str, name: str = "", kin
                 result.status, result.message = "busy", "another sync holds this wiki"
                 return result
             return _locked_sync(result, root, wiki_dir, db_file, path, client, key, name, kind,
-                                origin, dry_run, if_changed)
+                                origin, dry_run, if_changed, named)
     except RemoteError as exc:
         result.status, result.message = "error", clean_text(exc)
     except (sqlite3.Error, OSError) as exc:
@@ -318,8 +318,11 @@ def sync_wiki(root, *, client: Client, rdir: Path, key: str, name: str = "", kin
 
 
 def _locked_sync(result, root, wiki_dir, db_file, path, client, key, name, kind, origin,
-                 dry_run, if_changed) -> SyncResult:
+                 dry_run, if_changed, named=False) -> SyncResult:
     state = syncstate.load_state(path, key, client.url)
+    if named and not state["named"] and not dry_run:
+        state["named"] = True  # a key typed once is the key from now on, hooks included
+        syncstate.save_state(path, state)
     conn = _open_readonly(db_file) if dry_run else db.connect(root)
     try:
         if not dry_run:

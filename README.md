@@ -171,7 +171,7 @@ shapa remote login URL                       # prompts for the owner key
 
 `shapa remote login URL` asks for the owner key (or reads `$SHAPA_OWNER_KEY`),
 registers this machine as a device and stores a device token in `~/.shapa`
-(mode 0600). `shapa remote sync` then syncs this repo's wiki and the global
+(mode 0600). A repo with no git origin has no automatic key: run `shapa remote sync --key KEY` once. `shapa remote sync` then syncs this repo's wiki and the global
 one both ways: ledger items, rows, documents and the `arch/` and `research/`
 notes. Wire it to a session hook with `shapa remote sync --hook`, which stays
 within eight seconds and never fails the session. Note files (`arch/`, `research/`) sync only while the repo is on its default branch, and a note deleted locally comes back: delete it through the API. `shapa remote status

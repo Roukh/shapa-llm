@@ -133,7 +133,8 @@ def _valid_base(base) -> bool:
 
 def fresh_state(key: str, url: str) -> dict:
     return {"version": STATE_VERSION, "key": key, "url": url, "cursor": 0, "base": {},
-            "last_sync": "", "retry": [], "refused": {}, "token": None}
+            "last_sync": "", "retry": [], "refused": {}, "token": None,
+            "named": False}
 
 
 def load_state(path: Path, key: str, url: str) -> dict:
@@ -157,7 +158,18 @@ def load_state(path: Path, key: str, url: str) -> dict:
                        if isinstance(refused, dict) else {})
     if not isinstance(data.get("token"), str):
         data["token"] = None
+    data["named"] = data.get("named") is True
     return data
+
+
+def named_key(path: Path) -> str | None:
+    """The wiki key the user passed once with ``--key`` (kept in the state), else None."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    key = data.get("key") if isinstance(data, dict) else None
+    return key if data.get("named") is True and isinstance(key, str) else None
 
 
 def save_state(path: Path, state: dict) -> None:

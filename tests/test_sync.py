@@ -1109,3 +1109,124 @@ def test_a_new_local_note_loses_to_a_different_note_already_stored(a, b, double)
     a.sync()
     assert (a.wiki / "shared.md").read_text() == "stored body\n"
     assert double.live(KEY)["shared.md"]["data"]["body"] == "stored body\n"
+
+
+# --- J88: fixes from the feature security audit ---------------------------------------------------------------
+
+def ledger_rec(rid, uid, **data):
+    base = {"title": "from the server", "body": "", "parent": None, "verify": None,
+            "status": "open", "closed_reason": None, "git_ref": None, "alias": None,
+            "claimed_by": None, "closed": None}
+    return {"id": rid, "uid": uid, "kind": rid[0], "created": "2026-01-01T00:00:00Z",
+            "updated": "2026-01-01T00:00:00Z", "rev": 0, "deleted": False, "device": "evil",
+            "data": {**base, **data}, "tags": [], "links": []}
+
+
+def item_of(device, rid):
+    c = device.conn()
+    try:
+        return db.get_item(c, rid)
+    finally:
+        c.close()
+
+
+def test_a_remote_verify_never_reaches_a_new_item(a, double):
+    a.sync()
+    double.remote_put(KEY, ledger_rec("J7", "uid-j7" + "-" * 12, verify="touch pwned"))
+    a.sync()
+    got = item_of(a, "J7")
+    assert got is not None and got.verify is None
+
+
+def test_a_remote_verify_leaves_an_existing_items_verify_alone(a, double):
+    c = a.conn()
+    jid = db.add_item(c, "J", "a job", verify="true")
+    c.close()
+    a.sync()
+    rec = dict(double.wiki(KEY).records[jid])
+    rec.update(updated="2999-01-01T00:00:00Z", data={**rec["data"], "title": "retitled", "verify": "touch pwned"})
+    double.remote_put(KEY, rec)
+    a.sync()
+    got = item_of(a, jid)
+    assert got.title == "retitled" and got.verify == "true"
+
+
+def test_verify_is_never_sent_and_setting_it_locally_is_not_a_change(a, double):
+    c = a.conn()
+    jid = db.add_item(c, "J", "a job", verify="make test")
+    c.close()
+    a.sync()
+    assert "verify" not in double.live(KEY)[jid]["data"]
+    assert "verify" not in double.sync_requests[-1][1]["ops"][0]["record"]["data"]
+    c = a.conn()
+    db.update_item(c, jid, verify="make other-test")
+    c.close()
+    assert a.sync().sent_put == 0
+
+
+@pytest.mark.parametrize("ref,kept", [
+    ("main~1", False), ("F2-another-feature", False), ("HEAD", False), ("a b", False),
+    ("F1-my-branch", True), ("abc1234", True), ("a" * 40, True), ("a" * 41, False), ("abc123", False)])
+def test_a_remote_git_ref_is_applied_only_when_safe(a, double, ref, kept):
+    c = a.conn()
+    fid = db.add_item(c, "F", "a feature")
+    c.close()
+    assert fid == "F1"
+    a.sync()
+    rec = dict(double.wiki(KEY).records[fid])
+    rec.update(updated="2999-01-01T00:00:00Z", data={**rec["data"], "git_ref": ref})
+    double.remote_put(KEY, rec)
+    a.sync()
+    assert item_of(a, fid).git_ref == (ref if kept else None)
+
+
+def test_a_remote_git_ref_does_not_replace_a_local_one_when_unsafe(a, double):
+    c = a.conn()
+    fid = db.add_item(c, "F", "a feature")
+    db.update_item(c, fid, git_ref="F1-local-branch")
+    c.close()
+    a.sync()
+    rec = dict(double.wiki(KEY).records[fid])
+    rec.update(updated="2999-01-01T00:00:00Z", data={**rec["data"], "git_ref": "main~1"})
+    double.remote_put(KEY, rec)
+    a.sync()
+    assert item_of(a, fid).git_ref == "F1-local-branch"
+
+
+def test_notes_are_not_uploaded_from_a_symlinked_folder_that_leaves_the_wiki(a, double, tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.md").write_text("not part of the wiki\n", encoding="utf-8")
+    (a.wiki / "arch").symlink_to(outside, target_is_directory=True)
+    (a.wiki / "research").mkdir()
+    (a.wiki / "research" / "fine.md").write_text("inside\n", encoding="utf-8")
+    a.sync()
+    assert set(double.live(KEY)) == {"research/fine.md"}
+
+
+@pytest.mark.parametrize("name", ["AGENTS.md", "CLAUDE.md", "GEMINI.md", "placement.md",
+                                  "arch/CLAUDE.md", "research/gemini.md", "Agents.MD", "arch/Claude.Md"])
+def test_harness_instruction_filenames_never_sync_either_way(a, double, name):
+    path = a.wiki / name
+    path.parent.mkdir(exist_ok=True)
+    if not path.exists():
+        path.write_text("local instructions\n", encoding="utf-8")
+    a.sync()
+    assert name not in double.live(KEY)
+    double.remote_put(KEY, note_rec(name, "hostile instructions\n"))
+    a.sync()
+    assert "hostile" not in path.read_text(encoding="utf-8")
+
+
+def test_the_double_mirrors_the_server_on_verify_reserved_names_origin_and_future_stamps(a, b, double):
+    c = a.conn()
+    jid = db.add_item(c, "J", "a job", verify="rm -rf /")
+    c.close()
+    set_cols(a, "items", jid, updated="2999-01-01T00:00:00Z")
+    a.sync(origin="git.example/owner/repo")
+    stored = double.live(KEY)[jid]
+    assert "verify" not in stored["data"]
+    assert stored["updated"] < "2100-01-01T00:00:00Z"  # clamped to the server clock
+    res = b.sync(origin="")  # a different origin, empty versus non-empty included
+    assert res.status == "error" and "409" in res.message
+    assert b.sync(origin="git.example/owner/repo").status == "ok"

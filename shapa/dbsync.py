@@ -16,11 +16,12 @@ are the already validated, redacted wire records of ``shapa.syncrec``.
 
 from __future__ import annotations
 
+import re
 import sqlite3
 
 from shapa import db
 
-ITEM_DATA = ("title", "body", "parent", "verify", "status", "closed_reason", "git_ref", "alias",
+ITEM_DATA = ("title", "body", "parent", "status", "closed_reason", "git_ref", "alias",
              "claimed_by", "closed")
 ROW_DATA = ("summary", "body", "alias", "source", "session")
 DOC_DATA = ("title", "body", "alias", "mime", "source")
@@ -114,6 +115,20 @@ def _alias_free(conn, table: str, record_id: str, alias) -> str | None:
     return None if clash else alias
 
 
+_HASH_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
+_BRANCH_RE = re.compile(r"^[A-Za-z0-9._/-]{1,200}$")
+
+
+def safe_git_ref(item_id: str, ref) -> bool:
+    """A remote ``git_ref`` is trusted only as a commit hash or as a branch named
+    for this very item: ``shapa ledger reconcile`` tests it for "merged" and then
+    closes the feature, so a value like ``main~1`` must not get in."""
+    if not isinstance(ref, str):
+        return False
+    return bool(_HASH_RE.match(ref)) or (bool(_BRANCH_RE.match(ref))
+                                         and db.feature_of_branch(ref) == item_id)
+
+
 class UidConflict(ValueError):
     """An upsert that would change the uid of the record holding that id."""
 
@@ -130,16 +145,18 @@ def upsert(conn: sqlite3.Connection, rec: dict) -> None:
     if kind in db.ITEM_KINDS:
         parent = d["parent"] if d["parent"] and conn.execute(
             "SELECT 1 FROM items WHERE id = ?", (d["parent"],)).fetchone() else None
-        vals = (kind, parent, d["title"], d["body"], d["verify"], d["status"], d["closed_reason"],
-                d["git_ref"], d["alias"], d["claimed_by"], rec["created"], rec["updated"], d["closed"])
-        if conn.execute("SELECT 1 FROM items WHERE id = ?", (rid,)).fetchone():
-            conn.execute("UPDATE items SET kind=?, parent=?, title=?, body=?, verify=?, status=?, "
+        local = conn.execute("SELECT git_ref FROM items WHERE id = ?", (rid,)).fetchone()
+        git_ref = d["git_ref"] if safe_git_ref(rid, d["git_ref"]) else (local[0] if local else None)
+        vals = (kind, parent, d["title"], d["body"], d["status"], d["closed_reason"],
+                git_ref, d["alias"], d["claimed_by"], rec["created"], rec["updated"], d["closed"])
+        if local is not None:  # the local `verify` is never touched
+            conn.execute("UPDATE items SET kind=?, parent=?, title=?, body=?, status=?, "
                          "closed_reason=?, git_ref=?, alias=?, claimed_by=?, created=?, updated=?, "
                          "closed=? WHERE id=?", (*vals, rid))
         else:
-            conn.execute("INSERT INTO items(kind, parent, title, body, verify, status, closed_reason, "
+            conn.execute("INSERT INTO items(kind, parent, title, body, status, closed_reason, "
                          "git_ref, alias, claimed_by, created, updated, closed, id) "
-                         "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (*vals, rid))
+                         "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", (*vals, rid))
     elif kind in db.MRI_KINDS:
         alias = _alias_free(conn, "mri", rid, d["alias"])
         vals = (kind, alias, d["summary"], d["body"], d["source"], d["session"],
