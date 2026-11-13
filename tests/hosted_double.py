@@ -17,6 +17,7 @@ MAX_OPS = 200
 MAX_RECORD_BYTES = 1_000_000
 MAX_REQUEST_BYTES = 8 * 1024 * 1024
 MAX_WANT = 500
+PAGE_BYTES = 8_000_000
 
 
 class Wiki:
@@ -42,7 +43,9 @@ class Wiki:
 
 
 class HostedDouble:
-    def __init__(self, *, page_size=500):
+    def __init__(self, *, page_size=500, page_bytes=PAGE_BYTES):
+        self.page_bytes = page_bytes
+        self.refuse = None     # fn(record) -> error message: the server refuses that record
         self.wikis = {}
         self.devices = {}      # id -> {name, scopes, token, revoked}
         self.page_size = page_size
@@ -156,16 +159,24 @@ class HostedDouble:
         results, rejected, renames = [], [], {}
         for op in ops:
             if op["op"] == "del" and "delete" not in device["scopes"]:
-                return 403, self.err("forbidden", "scope delete required")
-            res = self.apply_op(wiki, device, op, renames)
+                res = {"id": op["id"], "status": "rejected", "rev": 0,
+                       "error": "this device lacks the delete scope"}
+            else:
+                res = self.apply_op(wiki, device, op, renames)
             results.append(res)
             if res["status"] == "rejected":
                 rejected.append(res.get("new_id") or (op["record"]["id"] if op["op"] == "put" else op["id"]))
         cursor = int(req.get("cursor") or 0)
         pending = sorted((r for r in wiki.records.values() if r["rev"] > cursor),
                          key=lambda r: r["rev"])
-        more = len(pending) > self.page_size
-        page = pending[:self.page_size]
+        page, size = [], 0
+        for r in pending:  # a page holds at most page_size records and page_bytes of JSON
+            n = len(json.dumps(r))
+            if page and (len(page) >= self.page_size or size + n > self.page_bytes):
+                break
+            page.append(r)
+            size += n
+        more = len(page) < len(pending)
         extra = [wiki.records[i] for i in list(req.get("want") or []) + rejected
                  if i in wiki.records and wiki.records[i] not in page]
         out_cursor = page[-1]["rev"] if more else wiki.seq
@@ -186,6 +197,8 @@ class HostedDouble:
             data["parent"] = renames[data["parent"]]
         rec["links"] = [[renames.get(dst, dst), rel] for dst, rel in rec.get("links") or []]
         base_rev = op.get("base_rev")
+        if self.refuse is not None and (msg := self.refuse(rec)):
+            return {"id": orig, "status": "rejected", "rev": 0, "error": msg}
         if rec["kind"] == "N":  # a note path is its identity
             twin = wiki.records.get(orig)
         else:
@@ -212,13 +225,15 @@ class HostedDouble:
             return {"status": "noop", "rev": cur["rev"]}
         if base_rev is not None and base_rev == cur["rev"]:
             return self.store(wiki, device, rec, "accepted", cur["id"])
+        if rec["kind"] == "N" and base_rev is None and not cur["deleted"]:
+            return {"status": "rejected", "rev": cur["rev"]}  # a file mtime is not an edit time
         if rec["updated"] > cur["updated"]:
             return self.store(wiki, device, rec, "accepted", cur["id"])
         return {"status": "rejected", "rev": cur["rev"]}
 
     @staticmethod
     def same_content(cur, rec):
-        return all(cur.get(f) == rec.get(f) for f in ("data", "tags", "links"))
+        return all(cur.get(f) == rec.get(f) for f in ("data", "tags", "links", "updated"))
 
     def store(self, wiki, device, rec, status, orig):
         rev = wiki.next_rev()
@@ -235,9 +250,11 @@ class HostedDouble:
         return {"id": orig, "status": status, "rev": rev}
 
     def apply_del(self, wiki, device, op):
-        cur = wiki.records.get(op["id"])
-        if cur is None or cur["deleted"] or cur["uid"] != op["uid"]:
-            return {"id": op["id"], "status": "noop", "rev": cur["rev"] if cur else 0}
+        # the record is found by uid, under any id
+        cur = next((r for r in wiki.records.values()
+                    if r["uid"] == op["uid"] and not r["deleted"] and r["kind"] != "N"), None)
+        if cur is None:
+            return {"id": op["id"], "status": "noop", "rev": 0}
         if op.get("base_rev") == cur["rev"] or cur["updated"] <= op["deleted_at"]:
             cur["deleted"], cur["rev"], cur["device"] = True, wiki.next_rev(), device["name"]
             return {"id": op["id"], "status": "accepted", "rev": cur["rev"]}

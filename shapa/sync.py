@@ -52,6 +52,7 @@ class SyncResult:
     wanted: int = 0
     message: str = ""
     dry_run: bool = False
+    refused: list = field(default_factory=list)  # (id, message): the server refused the record
     oversized: list = field(default_factory=list)  # ids skipped: over the server limit for a record
     notes_skipped: bool = False  # the checkout is off its default branch: no note files synced
 
@@ -84,10 +85,17 @@ def too_big(rec: dict) -> bool:
 # --- step 2: classify -----------------------------------------------------------------------
 
 def classify(local: dict[str, dict], hashes: dict[str, str], base: dict[str, dict],
-             tombstones: dict[str, dict], notes: bool = True) -> Plan:
-    plan = Plan()
+             tombstones: dict[str, dict], notes: bool = True, swapped: bool = False,
+             refused: dict[str, str] | None = None) -> Plan:
+    """Step 2. *swapped* says the database is not the one the base was taken
+    from (its sync token differs): only then are clocks consulted, so that a
+    copy older than the server heals instead of overwriting it. *refused*
+    maps an id to the hash of the version the server already refused."""
+    plan, refused = Plan(), refused or {}
 
     def put(rec, base_rev):
+        if refused.get(rec["id"]) == hashes[rec["id"]]:
+            return  # the server refused exactly this version; resent once it changes
         if too_big(rec):
             plan.oversized.append(rec["id"])
         else:
@@ -99,23 +107,25 @@ def classify(local: dict[str, dict], hashes: dict[str, str], base: dict[str, dic
             put(rec, None)
         elif hashes[rid] == ent["hash"]:
             plan.unchanged += 1
-        elif rec["updated"] and ent["updated"] and rec["updated"] < ent["updated"]:
+        elif swapped and rec["updated"] and ent["updated"] and rec["updated"] <= ent["updated"]:
             plan.wants.append(rid)  # an older copy of what the server already has
         else:
             put(rec, ent["rev"])
     here = {r["uid"] for r in local.values() if r["uid"]}
+    stoned = {t["uid"] for t in tombstones.values() if t.get("uid")}
+    for stone in tombstones.values():  # every tombstone is sent until the server answers for it
+        if stone.get("uid") and stone["uid"] not in here:
+            ent = base.get(stone["id"])
+            plan.dels.append({"op": "del", "id": stone["id"], "uid": stone["uid"],
+                              "deleted_at": stone["deleted_at"],
+                              "base_rev": ent["rev"] if ent and ent["uid"] == stone["uid"] else None})
     for rid, ent in base.items():
         is_note = not db.ID_RE.match(rid)
         if (is_note and not notes) or (rid in local and local[rid]["uid"] == ent["uid"]):
             continue
-        if ent["uid"] and ent["uid"] in here:
-            continue  # the record is still here, under another label
-        stone = tombstones.get(rid)
-        if stone and not is_note and stone["uid"] == ent["uid"]:
-            plan.dels.append({"op": "del", "id": rid, "uid": ent["uid"],
-                              "deleted_at": stone["deleted_at"], "base_rev": ent["rev"]})
-        else:
-            plan.wants.append(rid)
+        if ent["uid"] and (ent["uid"] in here or ent["uid"] in stoned):
+            continue  # still here under another label, or deleted here and sent as a del
+        plan.wants.append(rid)
     return plan
 
 
@@ -161,7 +171,9 @@ def _check_results(ops: list, results) -> list[dict]:
         if new_id is not None and (op["op"] != "put" or kind == "N"
                                    or not syncrec.id_matches_kind(new_id, kind)):
             raise RemoteError("the server sent an invalid rename")
-        out.append({"status": res["status"], "rev": rev, "new_id": new_id})
+        error = res.get("error")
+        out.append({"status": res["status"], "rev": rev, "new_id": new_id,
+                    "error": clean_text(error, 160) if isinstance(error, str) and error else ""})
     return out
 
 
@@ -252,6 +264,11 @@ def _open_readonly(db_file: Path) -> sqlite3.Connection:
     return conn
 
 
+def _token(conn) -> str | None:
+    row = conn.execute("SELECT value FROM meta WHERE key = 'sync_token'").fetchone()
+    return row[0] if row else None
+
+
 def pending_changes(root, *, key: str, url: str, rdir: Path) -> int | None:
     """How many records a sync would send or re-fetch (no network); ``None``
     when the wiki has no database."""
@@ -263,12 +280,15 @@ def pending_changes(root, *, key: str, url: str, rdir: Path) -> int | None:
         notes = notes_enabled(db_file.parent)
         local, hashes = _snapshot(db_file.parent, conn, notes)
         tombs = {t["id"]: t for t in db.tombstones(conn)}
+        token = _token(conn)
     except sqlite3.Error:
         return None
     finally:
         conn.close()
     state = syncstate.load_state(syncstate.state_path(rdir, db_file), key, url)
-    return classify(local, hashes, state["base"], tombs, notes).pending
+    refused = {i: h for i, h in state["refused"].items() if hashes.get(i) == h}
+    return classify(local, hashes, state["base"], tombs, notes, state["token"] != token,
+                    refused).pending
 
 
 def sync_wiki(root, *, client: Client, rdir: Path, key: str, name: str = "", kind: str = "repo",
@@ -309,7 +329,9 @@ def _locked_sync(result, root, wiki_dir, db_file, path, client, key, name, kind,
         local, hashes = _snapshot(wiki_dir, conn, notes)
         tombs = dbsync.local_tombstones(conn)
         counters = dbsync.counters(conn)
-        plan = classify(local, hashes, state["base"], tombs, notes)
+        token = _token(conn)
+        refused = {i: h for i, h in state["refused"].items() if hashes.get(i) == h}
+        plan = classify(local, hashes, state["base"], tombs, notes, state["token"] != token, refused)
         plan.wants = sorted(set(plan.wants) | set(state.get("retry", [])))
         result.sent_put, result.sent_del, result.wanted = len(plan.puts), len(plan.dels), len(plan.wants)
         result.oversized = list(plan.oversized)
@@ -335,6 +357,7 @@ def _locked_sync(result, root, wiki_dir, db_file, path, client, key, name, kind,
         left = client.remaining()
         if left is not None and left <= 0:
             raise RemoteError("time budget exhausted before the changes were applied")
+        state["refused"] = refused
         syncapply.apply(conn, wiki_dir, local, hashes, state, ex, result, notes)
         syncstate.save_state(path, state)
         return result

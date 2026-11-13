@@ -35,6 +35,11 @@ This project follows [Semantic Versioning](https://semver.org/).
   Batches are cut at 200 ops or 4 MB, a record over 1 MB is skipped and
   reported, and note files sync only while the checkout is on its default
   branch (a note deleted locally comes back; delete it through the API).
+  A delete is sent for every tombstone until the server answers; local edits
+  are never judged stale by clock unless the database was swapped (a sync
+  token in `meta` tells); a record the server refuses is reported and not
+  resent until it changes; and the after-merge sweep no longer drops memories
+  for disuse on a wiki with sync state, since use counts are per device.
   Standard library only.
 
 ## [0.9.0] - 2026-10-08
