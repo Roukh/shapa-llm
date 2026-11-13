@@ -5,7 +5,7 @@ One directory (``~/.shapa``, or ``$SHAPA_REMOTE_DIR``) holds:
 - ``remote.json`` - ``{url, device, device_id}``; no secret.
 - ``remote.token`` - the device token, mode 0600, the only place it lives.
 - ``sync/<sha1 of the resolved db path>.json`` - one wiki's sync state
-  ``{version, key, url, cursor, base: {id: {rev, created, updated, hash}}}``.
+  ``{version, key, url, cursor, base: {id: {rev, uid, updated, hash}}, retry}``.
 - ``sync/<sha1>.lock`` - the per-wiki lock two sessions queue on.
 
 Every write is atomic (temp file + rename). A missing, truncated or corrupt
@@ -32,9 +32,9 @@ except ImportError:  # pragma: no cover - non-POSIX: no cross-process lock
 ENV_DIR = "SHAPA_REMOTE_DIR"
 CONFIG_NAME = "remote.json"
 TOKEN_NAME = "remote.token"
-STATE_VERSION = 1
+STATE_VERSION = 2
 LOCK_POLL = 0.05
-MAX_RETRY = 1000
+MAX_RETRY = 5000
 
 
 def remote_dir() -> Path:
@@ -126,7 +126,7 @@ def _valid_base(base) -> bool:
             return False
         if not (isinstance(ent.get("rev"), int) and not isinstance(ent.get("rev"), bool)):
             return False
-        if not all(isinstance(ent.get(f), str) for f in ("created", "updated", "hash")):
+        if not all(isinstance(ent.get(f), str) for f in ("uid", "updated", "hash")):
             return False
     return True
 

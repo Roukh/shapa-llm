@@ -15,6 +15,8 @@ from urllib.parse import parse_qs, urlsplit
 OWNER_KEY = "o" * 40
 MAX_OPS = 200
 MAX_RECORD_BYTES = 1_000_000
+MAX_REQUEST_BYTES = 8 * 1024 * 1024
+MAX_WANT = 500
 
 
 class Wiki:
@@ -141,6 +143,11 @@ class HostedDouble:
         ops = req.get("ops") or []
         if len(ops) > MAX_OPS:
             return 400, self.err("invalid", "too many ops")
+        if len(json.dumps(req)) > MAX_REQUEST_BYTES or len(req.get("want") or []) > MAX_WANT:
+            return 413, self.err("too_large", "request too large")
+        for op in ops:
+            if op["op"] == "put" and len(json.dumps(op["record"], separators=(",", ":"))) > MAX_RECORD_BYTES:
+                return 413, self.err("too_large", "record too large")
         self.sync_requests.append((key, req))
         if self.on_sync is not None:
             self.on_sync(key, req)
@@ -153,7 +160,7 @@ class HostedDouble:
             res = self.apply_op(wiki, device, op, renames)
             results.append(res)
             if res["status"] == "rejected":
-                rejected.append(op["record"]["id"] if op["op"] == "put" else op["id"])
+                rejected.append(res.get("new_id") or (op["record"]["id"] if op["op"] == "put" else op["id"]))
         cursor = int(req.get("cursor") or 0)
         pending = sorted((r for r in wiki.records.values() if r["rev"] > cursor),
                          key=lambda r: r["rev"])
@@ -172,32 +179,42 @@ class HostedDouble:
 
     def apply_put(self, wiki, device, op, renames):
         rec = json.loads(json.dumps(op["record"]))
-        if len(json.dumps(rec)) > MAX_RECORD_BYTES:
-            return {"id": rec["id"], "status": "rejected", "rev": 0}
         orig = rec["id"]
         # a rename earlier in this request rewrites later references to the old id
         data = rec.get("data") or {}
         if data.get("parent") in renames:
             data["parent"] = renames[data["parent"]]
         rec["links"] = [[renames.get(dst, dst), rel] for dst, rel in rec.get("links") or []]
-        cur = wiki.records.get(orig)
         base_rev = op.get("base_rev")
+        if rec["kind"] == "N":  # a note path is its identity
+            twin = wiki.records.get(orig)
+        else:
+            twin = next((r for r in wiki.records.values() if r["uid"] == rec["uid"]), None)
+        if twin is not None:  # the uid already lives here, maybe under another id
+            res = self.same_uid(wiki, device, twin, rec, base_rev)
+            if twin["id"] != orig:
+                res["new_id"] = twin["id"]
+                renames[orig] = twin["id"]
+            return {**res, "id": orig}
+        cur = wiki.records.get(orig)
         if cur is None:
             return self.store(wiki, device, rec, "accepted", orig)
-        if cur["created"] != rec["created"]:
-            new = wiki.fresh_id(rec["kind"])
-            renames[orig] = new
-            rec["id"] = new
-            res = self.store(wiki, device, rec, "renamed", orig)
-            res["new_id"] = new
-            return res
-        if base_rev is not None and base_rev == cur["rev"]:
-            return self.store(wiki, device, rec, "accepted", orig)
+        new = wiki.fresh_id(rec["kind"])  # the id is held by another uid
+        renames[orig] = new
+        rec["id"] = new
+        res = self.store(wiki, device, rec, "renamed", orig)
+        res["new_id"] = new
+        return res
+
+    def same_uid(self, wiki, device, cur, rec, base_rev):
+        rec = {**rec, "id": cur["id"]}
         if not cur["deleted"] and self.same_content(cur, rec):
-            return {"id": orig, "status": "noop", "rev": cur["rev"]}
+            return {"status": "noop", "rev": cur["rev"]}
+        if base_rev is not None and base_rev == cur["rev"]:
+            return self.store(wiki, device, rec, "accepted", cur["id"])
         if rec["updated"] > cur["updated"]:
-            return self.store(wiki, device, rec, "accepted", orig)
-        return {"id": orig, "status": "rejected", "rev": cur["rev"]}
+            return self.store(wiki, device, rec, "accepted", cur["id"])
+        return {"status": "rejected", "rev": cur["rev"]}
 
     @staticmethod
     def same_content(cur, rec):
@@ -205,7 +222,8 @@ class HostedDouble:
 
     def store(self, wiki, device, rec, status, orig):
         rev = wiki.next_rev()
-        stored = {"id": rec["id"], "kind": rec["kind"], "created": rec["created"],
+        stored = {"id": rec["id"], "uid": rec.get("uid", ""), "kind": rec["kind"],
+                  "created": rec["created"],
                   "updated": rec["updated"], "rev": rev, "deleted": False,
                   "device": device["name"], "data": rec.get("data") or {},
                   "tags": sorted(set(rec.get("tags") or [])),
@@ -218,7 +236,7 @@ class HostedDouble:
 
     def apply_del(self, wiki, device, op):
         cur = wiki.records.get(op["id"])
-        if cur is None or cur["deleted"] or cur["created"] != op["created"]:
+        if cur is None or cur["deleted"] or cur["uid"] != op["uid"]:
             return {"id": op["id"], "status": "noop", "rev": cur["rev"] if cur else 0}
         if op.get("base_rev") == cur["rev"] or cur["updated"] <= op["deleted_at"]:
             cur["deleted"], cur["rev"], cur["device"] = True, wiki.next_rev(), device["name"]

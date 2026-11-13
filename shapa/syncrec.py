@@ -30,6 +30,7 @@ NOTE_RE = re.compile(r"^(arch/|research/)?[A-Za-z0-9][A-Za-z0-9._-]{0,99}\.md$")
 NOTE_EXCLUDED = ("AGENTS.md", "placement.md")
 KIND_ORDER = "FJTMRIDN"
 ISO_RE = re.compile(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
+UID_RE = re.compile(r"^[A-Za-z0-9_-]{16,64}$")
 SPECIAL_LINE_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]+")
 _BODY_STRIP_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 ITEM_STATUSES = ("open", "claimed", "closed")
@@ -88,7 +89,7 @@ def snapshot_notes(wiki_dir: Path) -> dict[str, dict]:
                 updated = _iso_mtime(path)
             except (OSError, UnicodeDecodeError):
                 continue
-            out[note_id] = {"id": note_id, "kind": "N", "created": "", "updated": updated,
+            out[note_id] = {"id": note_id, "uid": "", "kind": "N", "created": "", "updated": updated,
                             "rev": 0, "deleted": False, "device": "", "data": {"body": body},
                             "tags": [], "links": []}
     return out
@@ -260,7 +261,14 @@ def validate_record(raw) -> dict | None:
         return None
     if not isinstance(updated, str) or not (ISO_RE.match(updated) or (deleted and updated == "")):
         return None
-    base = {"id": rec_id, "kind": kind, "created": created, "updated": updated, "rev": rev,
+    uid = raw.get("uid")
+    if kind == "N":
+        if uid not in ("", None):
+            return None
+        uid = ""
+    elif not (isinstance(uid, str) and UID_RE.match(uid)):
+        return None
+    base = {"id": rec_id, "uid": uid, "kind": kind, "created": created, "updated": updated, "rev": rev,
             "deleted": deleted, "device": _line(raw.get("device", ""), 80) or ""}
     if deleted:
         return {**base, "data": {}, "tags": [], "links": []}

@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import secrets
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -132,9 +133,18 @@ CREATE TABLE IF NOT EXISTS tombstones (
     id TEXT PRIMARY KEY,
     kind TEXT NOT NULL,
     created TEXT NOT NULL,
-    deleted_at TEXT NOT NULL
+    deleted_at TEXT NOT NULL,
+    uid TEXT NOT NULL DEFAULT ''
 );
+CREATE TABLE IF NOT EXISTS uids (
+    id TEXT PRIMARY KEY,
+    uid TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS uids_uid ON uids(uid);
 """
+#: A record's identity is its uid, kept in the ``uids`` side table (id -> uid)
+#: and not as a column of ``items``/``mri``: an older shapa builds its
+#: dataclasses from ``SELECT *`` and would fail on an extra column.
 
 
 class LedgerError(ValueError):
@@ -235,7 +245,7 @@ def connect(root, *, create: bool = False) -> sqlite3.Connection | None:
     if create or not _has_schema(conn):
         with write(conn):
             _apply_schema(conn)
-    elif not (_has_table(conn, "docs") and _has_table(conn, "tombstones")):
+    elif not _is_current(conn):
         try:
             with write(conn):
                 _apply_schema(conn)
@@ -244,18 +254,79 @@ def connect(root, *, create: bool = False) -> sqlite3.Connection | None:
     return conn
 
 
+def _is_current(conn: sqlite3.Connection) -> bool:
+    return (_has_table(conn, "docs") and _has_table(conn, "tombstones") and _has_table(conn, "uids")
+            and any(r[1] == "uid" for r in conn.execute("PRAGMA table_info(tombstones)")))
+
+
 def _apply_schema(conn: sqlite3.Connection) -> None:
-    """Create every table (idempotent) and stamp the schema version, inside
-    the caller's write transaction."""
+    """Create every table (idempotent), heal a schema-2 file written before
+    uids existed, and stamp the schema version, inside the caller's write
+    transaction."""
     for stmt in (_SCHEMA + _SCHEMA_V2).split(";"):
         if stmt.strip():
             conn.execute(stmt)
+    if not any(r[1] == "uid" for r in conn.execute("PRAGMA table_info(tombstones)")):
+        conn.execute("ALTER TABLE tombstones ADD COLUMN uid TEXT NOT NULL DEFAULT ''")
     conn.execute("INSERT OR IGNORE INTO meta(key, value) VALUES ('schema', ?)",
                  (str(SCHEMA_VERSION),))
     conn.execute("UPDATE meta SET value = ? WHERE key = 'schema' AND CAST(value AS INTEGER) < ?",
                  (str(SCHEMA_VERSION), SCHEMA_VERSION))
     for kind in ITEM_KINDS + MRI_KINDS + (DOC_KIND,):
         conn.execute("INSERT OR IGNORE INTO counters(kind, next) VALUES (?, 1)", (kind,))
+    _backfill_uids(conn)
+
+
+# --- uids: record identity ------------------------------------------------------------------
+
+def new_uid() -> str:
+    return secrets.token_hex(8)
+
+
+def legacy_uid(record_id: str, created: str) -> str:
+    """The uid of a record that predates uids: derived from its label and
+    creation time, so every copy of the same database derives the same one."""
+    return hashlib.sha256(f"{record_id}\n{created}".encode("utf-8")).hexdigest()[:16]
+
+
+def uid_of(conn: sqlite3.Connection, record_id: str) -> str | None:
+    """The stored uid of *record_id*, ``None`` when it has none yet."""
+    if not _has_table(conn, "uids"):
+        return None
+    r = conn.execute("SELECT uid FROM uids WHERE id = ?", (record_id,)).fetchone()
+    return r[0] or None if r else None
+
+
+def _backfill_uids(conn: sqlite3.Connection) -> int:
+    """Give every record without a uid its legacy uid, and every tombstone
+    without one the uid its record would have had. Inside a write transaction."""
+    n = 0
+    for table in ("items", "mri", "docs"):
+        if not _has_table(conn, table):
+            continue
+        for rid, created in conn.execute(
+                f"SELECT t.id, t.created FROM {table} t LEFT JOIN uids u ON u.id = t.id "
+                "WHERE u.id IS NULL OR u.uid = ''").fetchall():
+            conn.execute("INSERT OR REPLACE INTO uids(id, uid) VALUES (?, ?)",
+                         (rid, legacy_uid(rid, created)))
+            n += 1
+    for rid, created in conn.execute("SELECT id, created FROM tombstones WHERE uid = ''").fetchall():
+        conn.execute("UPDATE tombstones SET uid = ? WHERE id = ?", (legacy_uid(rid, created), rid))
+        n += 1
+    return n
+
+
+def backfill_uids(conn: sqlite3.Connection) -> int:
+    """:func:`_backfill_uids` in its own transaction, writing nothing when
+    nothing is missing (a rows-only database stays byte-identical)."""
+    missing = any(conn.execute(
+        f"SELECT 1 FROM {t} x LEFT JOIN uids u ON u.id = x.id WHERE u.id IS NULL OR u.uid = '' LIMIT 1"
+    ).fetchone() for t in ("items", "mri", "docs")) or conn.execute(
+        "SELECT 1 FROM tombstones WHERE uid = '' LIMIT 1").fetchone()
+    if not missing:
+        return 0
+    with write(conn):
+        return _backfill_uids(conn)
 
 
 def _has_table(conn: sqlite3.Connection, name: str) -> bool:
@@ -377,6 +448,7 @@ def add_item(conn: sqlite3.Connection, kind: str, title: str, *, parent: str | N
             "INSERT INTO items(id, kind, parent, title, body, verify, alias, git_ref, created, "
             "updated) VALUES (?,?,?,?,?,?,?,?,?,?)",
             (new_id, kind, parent, title, body, verify, alias, git_ref, ts, ts))
+        conn.execute("INSERT OR REPLACE INTO uids(id, uid) VALUES (?, ?)", (new_id, new_uid()))
     return new_id
 
 
@@ -593,6 +665,7 @@ def add_row(conn: sqlite3.Connection, kind: str, summary: str, body: str = "", *
             conn.execute("INSERT INTO mri(id, kind, alias, summary, body, source, session, hash, "
                          "created, updated) VALUES (?,?,?,?,?,?,?,?,?,?)",
                          (row_id, kind, alias, summary, body, source, session, digest, ts, ts))
+            conn.execute("INSERT OR REPLACE INTO uids(id, uid) VALUES (?, ?)", (row_id, new_uid()))
         for tag in tags:
             tag = _clean_tag(tag)
             if tag:
@@ -690,6 +763,7 @@ def add_doc(conn: sqlite3.Connection, title: str, body: str = "", *, tags=(), al
                      "updated) VALUES (?,?,?,?,?,?,?,?,?)",
                      (doc_id, alias or None, title, body, mime, source,
                       content_hash(title, body), ts, ts))
+        conn.execute("INSERT OR REPLACE INTO uids(id, uid) VALUES (?, ?)", (doc_id, new_uid()))
         for t in tags:
             t = _clean_tag(t)
             if t:
@@ -716,8 +790,10 @@ def update_doc(conn: sqlite3.Connection, doc_id: str, *, title: str | None = Non
 def tombstones(conn: sqlite3.Connection) -> list[dict]:
     if not _has_table(conn, "tombstones"):
         return []
-    return [dict(r) for r in conn.execute(
-        "SELECT id, kind, created, deleted_at FROM tombstones ORDER BY deleted_at, id")]
+    cols = "id, kind, created, deleted_at" + (
+        ", uid" if any(r[1] == "uid" for r in conn.execute("PRAGMA table_info(tombstones)"))
+        else ", '' AS uid")
+    return [dict(r) for r in conn.execute(f"SELECT {cols} FROM tombstones ORDER BY deleted_at, id")]
 
 
 def delete(conn: sqlite3.Connection, ids, *, tombstone: bool = True) -> int:
@@ -743,9 +819,11 @@ def remove(conn: sqlite3.Connection, ids, *, tombstone: bool = True,
             if found is None:
                 continue
             if tombstone:
-                conn.execute("INSERT OR REPLACE INTO tombstones(id, kind, created, deleted_at) "
-                             "VALUES (?,?,?,?)", (i, i[:1], found[0], ts))
+                conn.execute("INSERT OR REPLACE INTO tombstones(id, kind, created, deleted_at, uid) "
+                             "VALUES (?,?,?,?,?)",
+                             (i, i[:1], found[0], ts, uid_of(conn, i) or legacy_uid(i, found[0])))
             n += conn.execute(f"DELETE FROM {table} WHERE id = ?", (i,)).rowcount
+            conn.execute("DELETE FROM uids WHERE id = ?", (i,))
         conn.execute("DELETE FROM tags WHERE id = ?", (i,))
         if keep_inbound:
             conn.execute("DELETE FROM links WHERE src = ?", (i,))
