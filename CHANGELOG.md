@@ -5,6 +5,32 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- Documents: a new stored type `D` (database schema 2, additive, applied
+  lazily on connect; an older shapa keeps working on the file). `shapa doc
+  add|edit|rm|list` (body from `--body`, `--file` or stdin), `shapa get D<n>`
+  or by alias, and `document` as a type for MCP `save` and `shapa save
+  --type`. Documents are tagged and linked like rows, pass secret
+  redaction, appear in recall by title, and are never swept for staleness.
+- `idea` as a type for MCP `save` and `shapa save --type`: a memory tagged
+  `idea`, not a new kind.
+- Delete tombstones: every row, item or document removed (the after-feature
+  sweep included) leaves an `(id, kind, created, deleted_at)` record.
+- `shapa remote`: an opt-in hosted store (a Cloudflare Worker you deploy,
+  under `hosted/`). `login URL` registers the machine as a device (owner
+  key from `$SHAPA_OWNER_KEY` or a hidden prompt, never argv), `sync`
+  two-way syncs every wiki in scope (ledger items, rows, documents and the
+  `arch/` and `research/` notes) by revision with last-write-wins,
+  `--hook` for a session hook (8 s budget, never fails), `--if-changed`,
+  `--dry-run`, `--all`, `status [--check]`, `devices [--revoke]`, `logout`
+  and `instructions`. HTTPS is required (plain HTTP only for localhost),
+  redirects are never followed, the server's answers are validated and
+  redacted before anything is written locally, and a database swapped by git
+  heals from the server instead of pushing deletes. Standard library only.
+
 ## [0.9.0] - 2026-10-08
 
 ### Added
