@@ -417,7 +417,7 @@ def test_a_wiki_in_a_linked_worktree_syncs_the_primary_checkouts_database(tmp_pa
 # --- break-it: a hostile or broken server -----------------------------------------------------------
 
 def note_rec(note_id, body="x\n", kind="N", **over):
-    rec = {"id": note_id, "kind": kind, "created": "", "updated": "2026-01-01T00:00:00Z",
+    rec = {"id": note_id, "uid": "", "kind": kind, "created": "", "updated": "2026-01-01T00:00:00Z",
            "rev": 0, "deleted": False, "device": "evil", "data": {"body": body}, "tags": [],
            "links": []}
     rec.update(over)
@@ -425,7 +425,8 @@ def note_rec(note_id, body="x\n", kind="N", **over):
 
 
 def row_rec(rid="R9", summary="from the server", **over):
-    rec = {"id": rid, "kind": rid[0], "created": "2026-01-01T00:00:00Z",
+    rec = {"id": rid, "uid": "uid-" + rid.lower() + "-" * 12, "kind": rid[0],
+           "created": "2026-01-01T00:00:00Z",
            "updated": "2026-01-01T00:00:00Z", "rev": 0, "deleted": False, "device": "x",
            "data": {"summary": summary, "body": "", "alias": None, "source": "", "session": ""},
            "tags": [], "links": []}
@@ -493,7 +494,7 @@ def test_malformed_records_are_dropped_not_applied(a, double, mutate):
 
 def test_an_item_whose_parent_kind_is_wrong_is_dropped(a, double):
     a.sync()
-    bad = {"id": "J5", "kind": "J", "created": "2026-01-01T00:00:00Z",
+    bad = {"id": "J5", "uid": "uid-j5" + "-" * 12, "kind": "J", "created": "2026-01-01T00:00:00Z",
            "updated": "2026-01-01T00:00:00Z", "rev": 0, "deleted": False, "device": "x",
            "data": {"title": "job", "body": "", "parent": "T1", "status": "open"},
            "tags": [], "links": []}
@@ -526,7 +527,7 @@ def test_a_malformed_sync_response_aborts_and_leaves_local_data_alone(a, double,
     assert rid in rows_of(a)
 
 
-def test_a_rename_to_an_id_that_exists_locally_is_refused(a, b, double):
+def test_a_rename_onto_a_label_held_locally_moves_the_other_record_aside(a, b, double):
     a.add_row("R", "r one")
     a.sync()
     b.add_row("R", "b's r1")
@@ -540,10 +541,10 @@ def test_a_rename_to_an_id_that_exists_locally_is_refused(a, b, double):
         return p
 
     double.mutate_response = hostile
-    res = b.sync()
-    rows = rows_of(b)
-    assert rows["R1"].summary == "b's r1" and rows["R2"].summary == "b's r2"  # nothing relabeled
-    assert res.skipped >= 1
+    b.sync()
+    summaries = sorted(r.summary for r in rows_of(b).values())
+    assert summaries == ["b's r1", "b's r2", "r one"]  # a label moved, nothing was lost
+    assert len(set(rows_of(b))) == 3
 
 
 def test_html_and_control_characters_become_inert_text(a, double):
@@ -685,24 +686,24 @@ def test_pulled_records_of_every_kind_do_not_bounce_back(a, b, double):
     c.close()
 
 
-def test_a_change_skipped_for_a_label_clash_arrives_on_the_next_sync(a, b, double):
+def test_a_label_clash_made_during_the_call_moves_the_local_record_aside(a, b, double):
     a.sync()
     b.add_row("M", "b's first")
     b.sync()
 
     def local_create(key, req):
         a.add_row("M", "a's first, written during the call")
-        set_cols(a, "mri", "M1", created="2021-01-01T00:00:00Z")
 
     double.on_sync = local_create
     a.sync()
     double.on_sync = None
-    assert rows_of(a)["M1"].summary == "a's first, written during the call"
     a.sync()
     summaries = {r.summary for r in rows_of(a).values()}
     assert summaries == {"a's first, written during the call", "b's first"}
+    assert len(rows_of(a)) == 2
     b.sync()
     assert {r.summary for r in rows_of(b).values()} == summaries
+    assert len(double.live(KEY)) == 2
 
 
 def test_crlf_note_files_are_preserved_exactly(a, b, double):
@@ -719,3 +720,186 @@ def test_a_server_that_never_stops_paging_is_cut_off(a, double):
     res = a.sync()
     assert res.status == "ok"
     assert len(double.sync_requests) <= sync.MAX_PAGES + 3
+
+
+# --- uid identity (J82) ---------------------------------------------------------------------------------
+
+def seed_same_second(device):
+    """A rule, and a job with a child task, all created in the same second as on the other device."""
+    c = device.conn()
+    rule, _ = db.add_row(c, "R", f"rule from {device.name}")
+    job = db.add_item(c, "J", f"job {device.name}")
+    task = db.add_item(c, "T", f"task {device.name}", parent=job)
+    c.close()
+    for table, rid in (("mri", rule), ("items", job), ("items", task)):
+        set_cols(device, table, rid, created="2026-06-06T06:06:06Z")
+    return rule, job, task
+
+
+def test_the_same_label_created_in_the_same_second_on_two_devices_keeps_both(a, b, double):
+    assert seed_same_second(a) == seed_same_second(b) == ("R1", "J1", "T1")
+    a.sync()
+    assert b.sync().renamed == 3  # the rule, the job and the task each move to a fresh label
+    for _ in range(2):
+        a.sync()
+        b.sync()
+    for device in (a, b):
+        assert sorted(r.summary for r in rows_of(device).values()) == ["rule from a", "rule from b"]
+        items = items_of(device)
+        jobs = {i.title: i.id for i in items.values() if i.kind == "J"}
+        assert sorted(jobs) == ["job a", "job b"]
+        for owner in "ab":
+            tasks = [i for i in items.values() if i.kind == "T" and i.title == f"task {owner}"]
+            assert [t.parent for t in tasks] == [jobs[f"job {owner}"]]
+    assert len(double.live(KEY)) == 6
+    assert a.sync().sent_put == 0 and b.sync().sent_put == 0
+
+
+def make_legacy_db(path):
+    import sqlite3
+
+    conn = sqlite3.connect(str(path))
+    for stmt in db._SCHEMA.split(";"):
+        if stmt.strip():
+            conn.execute(stmt)
+    conn.execute("INSERT INTO meta(key, value) VALUES ('schema', '1')")
+    for kind in "FJTMRI":
+        conn.execute("INSERT INTO counters(kind, next) VALUES (?, 2)", (kind,))
+    ts = "2026-03-03T03:03:03Z"
+    conn.execute("INSERT INTO items(id, kind, title, created, updated) VALUES ('F1','F','old feature',?,?)", (ts, ts))
+    conn.execute("INSERT INTO items(id, kind, parent, title, created, updated) VALUES "
+                 "('J1','J','F1','old job',?,?)", (ts, ts))
+    conn.execute("INSERT INTO mri(id, kind, summary, hash, created, updated) VALUES "
+                 "('R1','R','old rule','h',?,?)", (ts, ts))
+    conn.execute("INSERT INTO tags(id, tag) VALUES ('R1', 'legacy')")
+    conn.commit()
+    conn.close()
+
+
+def test_legacy_rows_on_two_copies_of_one_database_derive_equal_uids_and_converge(a, b, double):
+    import shutil
+
+    from shapa import dbsync
+
+    origin = a.wikis.tmp / "legacy.db"
+    make_legacy_db(origin)
+    for d in (a, b):
+        shutil.copy(origin, db.db_path(d.wiki))
+    a.sync()
+    res = b.sync()
+    assert res.renamed == 0
+    uids = []
+    for d in (a, b):
+        c = d.conn()
+        uids.append({i: r["uid"] for i, r in dbsync.snapshot(c).items()})
+        c.close()
+    assert uids[0] == uids[1] and len(set(uids[0].values())) == 3
+    assert sorted(double.live(KEY)) == ["F1", "J1", "R1"]  # no duplicates
+    assert a.sync().sent_put == 0 and b.sync().sent_put == 0
+    assert rows_of(b)["R1"].tags == ["legacy"]
+
+
+def test_a_schema_2_file_written_without_uids_is_healed_at_sync(a, double):
+    c = a.conn()
+    c.execute("INSERT INTO mri(id, kind, summary, body, hash, created, updated) VALUES "
+              "('M7','M','from an older writer','', 'h','2026-04-04T04:04:04Z','2026-04-04T04:04:04Z')")
+    c.close()
+    a.sync()
+    legacy_uid = double.live(KEY)["M7"]["uid"]
+    c = a.conn()
+    assert db.uid_of(c, "M7") == legacy_uid
+    # an older writer deletes it again, leaving a tombstone without a uid
+    c.execute("DELETE FROM mri WHERE id = 'M7'")
+    c.execute("DELETE FROM uids WHERE id = 'M7'")
+    c.execute("INSERT INTO tombstones(id, kind, created, deleted_at, uid) VALUES "
+              "('M7','M','2026-04-04T04:04:04Z','2026-05-05T05:05:05Z','')")
+    c.close()
+    res = a.sync()
+    assert res.sent_del == 1
+    assert double.wiki(KEY).records["M7"]["deleted"] is True
+
+
+def test_a_delete_names_the_record_by_uid_and_never_removes_another_record(a, double):
+    rid = a.add_row("R", "to delete")
+    a.sync()
+    old_uid = double.live(KEY)[rid]["uid"]
+    c = a.conn()
+    db.delete(c, [rid])
+    c.close()
+    # meanwhile the label on the server is held by a different record
+    other = dict(double.wiki(KEY).records[rid])
+    other.update(uid="otheruid-" + "0" * 12, updated="2026-11-11T00:00:00Z",
+                 data={**other["data"], "summary": "someone else's rule"})
+    double.remote_put(KEY, other)
+    res = a.sync()
+    dels = [o for _, req in double.sync_requests for o in req["ops"] if o["op"] == "del"]
+    assert res.sent_del == 1 and dels[0]["uid"] == old_uid and "created" not in dels[0]
+    assert double.live(KEY)[rid]["data"]["summary"] == "someone else's rule"
+    assert rows_of(a)[rid].summary == "someone else's rule"
+
+
+def test_a_plan_over_the_byte_limit_is_split_across_requests(a, double):
+    for i in range(5):
+        a.add_row("M", f"big memory {i}", ("lorem ipsum " * 75_000)[:900_000])
+    res = a.sync()
+    assert res.status == "ok" and res.sent_put == 5
+    sizes = [len(json.dumps(req)) for _, req in double.sync_requests if req["ops"]]
+    assert len(sizes) >= 2 and max(sizes) < 4_100_000
+    assert len(double.live(KEY)) == 5
+
+
+def test_a_record_over_the_server_limit_is_skipped_and_reported(a, double):
+    big = a.add_row("M", "far too big", "z" * 1_200_000)
+    small = a.add_row("M", "fits")
+    res = a.sync()
+    assert res.status == "ok" and res.oversized == [big]
+    assert list(double.live(KEY)) == [small]
+    again = a.sync()
+    assert again.status == "ok" and again.oversized == [big] and again.sent_put == 0
+
+
+def git(path, *args):
+    import subprocess
+
+    subprocess.run(["git", "-C", str(path), *args], check=True, capture_output=True)
+
+
+def real_git(device):
+    import shutil
+
+    repo = device.wikis.repo
+    shutil.rmtree(repo / ".git")
+    git(repo, "init", "-q", "-b", "main")
+    git(repo, "commit", "-q", "--allow-empty", "-m", "start")
+    return repo
+
+
+def test_notes_sync_only_while_the_checkout_is_on_its_default_branch(a, b, double):
+    repo = real_git(a)
+    (a.wiki / "arch").mkdir()
+    (a.wiki / "arch" / "design.md").write_text("# design\n", encoding="utf-8")
+    git(repo, "checkout", "-q", "-b", "feature")
+    row = a.add_row("M", "database records still sync")
+    res = a.sync()
+    assert res.notes_skipped and res.status == "ok"
+    assert set(double.live(KEY)) == {row}
+    # the other device writes a note while this checkout is off its default branch
+    (b.wiki / "remote-note.md").write_text("from b\n", encoding="utf-8")
+    b.sync()
+    a.sync()
+    assert not (a.wiki / "remote-note.md").exists()
+    git(repo, "checkout", "-q", "main")
+    res = a.sync()
+    assert not res.notes_skipped
+    assert (a.wiki / "remote-note.md").read_text() == "from b\n"
+    assert "arch/design.md" in double.live(KEY)
+
+
+def test_a_locally_deleted_note_comes_back_on_the_default_branch(a, double):
+    (a.wiki / "keep.md").write_text("precious\n", encoding="utf-8")
+    real_git(a)
+    a.sync()
+    (a.wiki / "keep.md").unlink()
+    a.sync()
+    assert (a.wiki / "keep.md").read_text() == "precious\n"
+    assert double.live(KEY)["keep.md"]  # deleting a note is done through the API

@@ -23,14 +23,16 @@ from __future__ import annotations
 import itertools
 import json
 import sqlite3
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from shapa import db, dbsync, syncapply, syncrec, syncstate
+from shapa import db, dbsync, ledger, syncapply, syncrec, syncstate
 from shapa.remotehttp import Client, RemoteError, clean_text
 
 BATCH_OPS = 200
-BATCH_BYTES = 3_000_000
+BATCH_BYTES = 4_000_000  # the server refuses a request over 8 MiB
+MAX_RECORD_BYTES = syncrec.MAX_RECORD_BYTES
 MAX_PAGES = 200
 MAX_CHANGES = 20_000
 STATUSES = ("accepted", "noop", "rejected", "renamed")
@@ -50,6 +52,8 @@ class SyncResult:
     wanted: int = 0
     message: str = ""
     dry_run: bool = False
+    oversized: list = field(default_factory=list)  # ids skipped: over the server limit for a record
+    notes_skipped: bool = False  # the checkout is off its default branch: no note files synced
 
     def as_dict(self) -> dict:
         return {k: v for k, v in self.__dict__.items()}
@@ -60,6 +64,7 @@ class Plan:
     puts: list = field(default_factory=list)   # (record, base_rev)
     dels: list = field(default_factory=list)   # wire del ops
     wants: list = field(default_factory=list)  # ids to re-fetch
+    oversized: list = field(default_factory=list)  # ids too big to send
     unchanged: int = 0
 
     @property
@@ -68,31 +73,46 @@ class Plan:
 
 
 def wire_put(rec: dict) -> dict:
-    return {k: rec[k] for k in ("id", "kind", "created", "updated", "rev", "deleted", "device",
-                                "data", "tags", "links")}
+    return {k: rec[k] for k in ("id", "uid", "kind", "created", "updated", "rev", "deleted",
+                                "device", "data", "tags", "links")}
+
+
+def too_big(rec: dict) -> bool:
+    return len(json.dumps(wire_put(rec), separators=(",", ":"))) > MAX_RECORD_BYTES
 
 
 # --- step 2: classify -----------------------------------------------------------------------
 
 def classify(local: dict[str, dict], hashes: dict[str, str], base: dict[str, dict],
-             tombstones: dict[str, dict]) -> Plan:
+             tombstones: dict[str, dict], notes: bool = True) -> Plan:
     plan = Plan()
+
+    def put(rec, base_rev):
+        if too_big(rec):
+            plan.oversized.append(rec["id"])
+        else:
+            plan.puts.append((rec, base_rev))
+
     for rid in sorted(local, key=lambda i: (syncrec.KIND_ORDER.index(local[i]["kind"]), len(i), i)):
         rec, ent = local[rid], base.get(rid)
-        if ent is None:
-            plan.puts.append((rec, None))
+        if ent is None or ent["uid"] != rec["uid"]:
+            put(rec, None)
         elif hashes[rid] == ent["hash"]:
             plan.unchanged += 1
         elif rec["updated"] and ent["updated"] and rec["updated"] < ent["updated"]:
             plan.wants.append(rid)  # an older copy of what the server already has
         else:
-            plan.puts.append((rec, ent["rev"]))
+            put(rec, ent["rev"])
+    here = {r["uid"] for r in local.values() if r["uid"]}
     for rid, ent in base.items():
-        if rid in local:
+        is_note = not db.ID_RE.match(rid)
+        if (is_note and not notes) or (rid in local and local[rid]["uid"] == ent["uid"]):
             continue
+        if ent["uid"] and ent["uid"] in here:
+            continue  # the record is still here, under another label
         stone = tombstones.get(rid)
-        if stone and stone["created"] == ent["created"] and db.ID_RE.match(rid):
-            plan.dels.append({"op": "del", "id": rid, "created": ent["created"],
+        if stone and not is_note and stone["uid"] == ent["uid"]:
+            plan.dels.append({"op": "del", "id": rid, "uid": ent["uid"],
                               "deleted_at": stone["deleted_at"], "base_rev": ent["rev"]})
         else:
             plan.wants.append(rid)
@@ -108,7 +128,7 @@ def _batches(plan: Plan):
     ops_all += plan.dels
     chunks, cur, size = [], [], 0
     for op in ops_all:
-        n = len(json.dumps(op))
+        n = len(json.dumps(op, separators=(",", ":")))
         if cur and (len(cur) >= BATCH_OPS or size + n > BATCH_BYTES):
             chunks.append(cur)
             cur, size = [], 0
@@ -135,10 +155,12 @@ def _check_results(ops: list, results) -> list[dict]:
         if not isinstance(rev, int) or isinstance(rev, bool) or rev < 0:
             raise RemoteError("the server sent a malformed result")
         new_id = res.get("new_id")
-        if res["status"] == "renamed":
-            kind = _op_id(op)[:1]
-            if op["op"] != "put" or kind == "N" or not syncrec.id_matches_kind(new_id, kind):
-                raise RemoteError("the server sent an invalid rename")
+        kind = _op_id(op)[:1]
+        if res["status"] == "renamed" and new_id is None:
+            raise RemoteError("the server sent an invalid rename")
+        if new_id is not None and (op["op"] != "put" or kind == "N"
+                                   or not syncrec.id_matches_kind(new_id, kind)):
+            raise RemoteError("the server sent an invalid rename")
         out.append({"status": res["status"], "rev": rev, "new_id": new_id})
     return out
 
@@ -201,9 +223,26 @@ def exchange(client: Client, key: str, plan: Plan, cursor: int, counters: dict) 
 
 # --- the whole thing -------------------------------------------------------------------------------
 
-def _snapshot(wiki_dir: Path, conn):
+def notes_enabled(wiki_dir: Path) -> bool:
+    """Note files sync only while the wiki primary checkout is on its default
+    branch; a wiki outside any git checkout always syncs them."""
+    checkout = wiki_dir.parent
+    if not (checkout / ".git").exists():
+        return True
+    try:
+        top = ledger._git(checkout, "rev-parse", "--show-toplevel")
+        if top.returncode != 0 or Path(top.stdout.strip()).resolve() != checkout.resolve():
+            return True
+        head = ledger._git(checkout, "symbolic-ref", "--quiet", "--short", "HEAD")
+        return head.returncode == 0 and head.stdout.strip() == ledger.default_branch(checkout)
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def _snapshot(wiki_dir: Path, conn, notes: bool):
     local = dbsync.snapshot(conn)
-    local.update(syncrec.snapshot_notes(wiki_dir))
+    if notes:
+        local.update(syncrec.snapshot_notes(wiki_dir))
     return local, syncrec.record_hashes(local)
 
 
@@ -221,14 +260,15 @@ def pending_changes(root, *, key: str, url: str, rdir: Path) -> int | None:
         return None
     conn = _open_readonly(db_file)
     try:
-        local, hashes = _snapshot(db_file.parent, conn)
+        notes = notes_enabled(db_file.parent)
+        local, hashes = _snapshot(db_file.parent, conn, notes)
         tombs = {t["id"]: t for t in db.tombstones(conn)}
     except sqlite3.Error:
         return None
     finally:
         conn.close()
     state = syncstate.load_state(syncstate.state_path(rdir, db_file), key, url)
-    return classify(local, hashes, state["base"], tombs).pending
+    return classify(local, hashes, state["base"], tombs, notes).pending
 
 
 def sync_wiki(root, *, client: Client, rdir: Path, key: str, name: str = "", kind: str = "repo",
@@ -262,12 +302,17 @@ def _locked_sync(result, root, wiki_dir, db_file, path, client, key, name, kind,
     state = syncstate.load_state(path, key, client.url)
     conn = _open_readonly(db_file) if dry_run else db.connect(root)
     try:
-        local, hashes = _snapshot(wiki_dir, conn)
+        if not dry_run:
+            db.backfill_uids(conn)  # a record from before uids, or from an older shapa
+        notes = notes_enabled(wiki_dir)
+        result.notes_skipped = not notes
+        local, hashes = _snapshot(wiki_dir, conn, notes)
         tombs = dbsync.local_tombstones(conn)
         counters = dbsync.counters(conn)
-        plan = classify(local, hashes, state["base"], tombs)
+        plan = classify(local, hashes, state["base"], tombs, notes)
         plan.wants = sorted(set(plan.wants) | set(state.get("retry", [])))
         result.sent_put, result.sent_del, result.wanted = len(plan.puts), len(plan.dels), len(plan.wants)
+        result.oversized = list(plan.oversized)
         if if_changed and not plan.pending:
             result.status = "unchanged"
             return result
@@ -290,7 +335,7 @@ def _locked_sync(result, root, wiki_dir, db_file, path, client, key, name, kind,
         left = client.remaining()
         if left is not None and left <= 0:
             raise RemoteError("time budget exhausted before the changes were applied")
-        syncapply.apply(conn, wiki_dir, hashes, state, ex, result)
+        syncapply.apply(conn, wiki_dir, local, hashes, state, ex, result, notes)
         syncstate.save_state(path, state)
         return result
     finally:

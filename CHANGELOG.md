@@ -29,7 +29,13 @@ This project follows [Semantic Versioning](https://semver.org/).
   and `instructions`. HTTPS is required (plain HTTP only for localhost),
   redirects are never followed, the server's answers are validated and
   redacted before anything is written locally, and a database swapped by git
-  heals from the server instead of pushing deletes. Standard library only.
+  heals from the server instead of pushing deletes. Records are matched by
+  a uid (random at creation; a derived one for records that predate it), so
+  two devices that create the same label in the same second keep both.
+  Batches are cut at 200 ops or 4 MB, a record over 1 MB is skipped and
+  reported, and note files sync only while the checkout is on its default
+  branch (a note deleted locally comes back; delete it through the API).
+  Standard library only.
 
 ## [0.9.0] - 2026-10-08
 

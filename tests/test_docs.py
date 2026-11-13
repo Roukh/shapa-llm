@@ -293,3 +293,83 @@ def test_session_start_stays_lean_with_many_documents(wikis):
         conn.close()
     ctx = bootstrap.build_context(start=wikis.repo)
     assert ctx.count("(document)") <= bootstrap.MEMORY_CAP_PER_ROOT
+
+
+# --- uid: the identity of a record ------------------------------------------------------------------
+
+def legacy(rec_id, created):
+    import hashlib
+
+    return hashlib.sha256(f"{rec_id}\n{created}".encode()).hexdigest()[:16]
+
+
+def test_new_records_get_random_distinct_uids(wikis):
+    conn = wikis.conn()
+    try:
+        ids = [db.add_item(conn, "J", "a job"), db.add_row(conn, "M", "a memory")[0],
+               db.add_doc(conn, "A doc", "text")]
+        uids = [db.uid_of(conn, i) for i in ids]
+        assert len(set(uids)) == 3
+        assert all(len(u) == 16 and int(u, 16) >= 0 for u in uids)
+    finally:
+        conn.close()
+
+
+def test_migration_gives_pre_uid_rows_the_deterministic_legacy_uid(tmp_path):
+    wiki = tmp_path / "w"
+    wiki.mkdir()
+    make_v1_db(wiki / "shapa.db")
+    conn = db.connect(wiki)
+    try:
+        assert db.uid_of(conn, "M1") == legacy("M1", "2026-01-01T00:00:00Z")
+    finally:
+        conn.close()
+
+
+def test_a_schema_2_file_from_before_uids_is_healed_on_connect(tmp_path):
+    wiki = tmp_path / "w"
+    wiki.mkdir()
+    make_v1_db(wiki / "shapa.db")
+    raw = sqlite3.connect(str(wiki / "shapa.db"))
+    raw.executescript("""
+        CREATE TABLE docs (id TEXT PRIMARY KEY, alias TEXT UNIQUE, title TEXT NOT NULL,
+            body TEXT NOT NULL DEFAULT '', mime TEXT NOT NULL DEFAULT 'text/markdown',
+            source TEXT NOT NULL DEFAULT '', hash TEXT NOT NULL, created TEXT NOT NULL,
+            updated TEXT NOT NULL);
+        CREATE TABLE tombstones (id TEXT PRIMARY KEY, kind TEXT NOT NULL, created TEXT NOT NULL,
+            deleted_at TEXT NOT NULL);
+        UPDATE meta SET value = '2' WHERE key = 'schema';
+        INSERT INTO tombstones VALUES ('M5', 'M', '2026-02-02T00:00:00Z', '2026-03-03T00:00:00Z');
+    """)
+    raw.commit()
+    raw.close()
+    conn = db.connect(wiki)
+    try:
+        assert db.uid_of(conn, "M1") == legacy("M1", "2026-01-01T00:00:00Z")
+        assert db.tombstones(conn)[0]["uid"] == legacy("M5", "2026-02-02T00:00:00Z")
+    finally:
+        conn.close()
+
+
+def test_a_row_an_older_shapa_wrote_without_a_uid_is_backfilled(wikis):
+    conn = wikis.conn()
+    try:
+        conn.execute("INSERT INTO mri(id, kind, summary, body, hash, created, updated) VALUES "
+                     "('M9','M','old writer','', 'h', '2026-05-05T00:00:00Z','2026-05-05T00:00:00Z')")
+        assert db.uid_of(conn, "M9") is None
+        db.backfill_uids(conn)
+        assert db.uid_of(conn, "M9") == legacy("M9", "2026-05-05T00:00:00Z")
+    finally:
+        conn.close()
+
+
+def test_delete_records_the_uid_in_the_tombstone_and_drops_it_from_the_live_table(wikis):
+    conn = wikis.conn()
+    try:
+        rid, _ = db.add_row(conn, "R", "doomed rule")
+        uid = db.uid_of(conn, rid)
+        db.delete(conn, [rid])
+        assert db.tombstones(conn)[0]["uid"] == uid
+        assert db.uid_of(conn, rid) is None
+    finally:
+        conn.close()

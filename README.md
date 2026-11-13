@@ -174,7 +174,7 @@ registers this machine as a device and stores a device token in `~/.shapa`
 (mode 0600). `shapa remote sync` then syncs this repo's wiki and the global
 one both ways: ledger items, rows, documents and the `arch/` and `research/`
 notes. Wire it to a session hook with `shapa remote sync --hook`, which stays
-within eight seconds and never fails the session. `shapa remote status
+within eight seconds and never fails the session. Note files (`arch/`, `research/`) sync only while the repo is on its default branch, and a note deleted locally comes back: delete it through the API. `shapa remote status
 --check` verifies the login and the connection; `shapa remote devices
 --revoke ID` cuts a device off. The URL must be HTTPS (plain HTTP is allowed
 only for localhost).

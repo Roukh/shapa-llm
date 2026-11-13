@@ -122,6 +122,12 @@ def _print_result(r: sync.SyncResult) -> None:
                             if n)
             print(f"{r.key}: sent {r.sent_put} record(s) and {r.sent_del} delete(s), "
                   f"received {r.received}, applied {r.applied}{extra}")
+        if r.oversized:
+            print(f"{r.key}: skipped {len(r.oversized)} record(s) over the server limit of 1 MB: "
+                  f"{', '.join(r.oversized[:10])}", file=sys.stderr)
+        if r.notes_skipped:
+            print(f"{r.key}: note files skipped - this checkout is not on its default branch "
+                  "(database records still synced)", file=sys.stderr)
     else:
         print(f"{r.key}: {r.status}" + (f" - {r.message}" if r.message else ""), file=sys.stderr)
 

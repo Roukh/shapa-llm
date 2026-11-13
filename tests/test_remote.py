@@ -471,3 +471,15 @@ def test_the_request_deadline_is_enforced_before_any_call():
     with pytest.raises(remotehttp.RemoteError):
         client.request("GET", "/v1/whoami")
     assert calls == []
+
+
+def test_sync_output_says_when_notes_and_oversized_records_were_skipped(logged_in, wikis, capsys,
+                                                                        monkeypatch):
+    from shapa import sync
+
+    monkeypatch.setattr(sync, "notes_enabled", lambda wiki_dir: False)
+    c = wikis.conn()
+    db.add_row(c, "M", "huge", "q" * 1_200_000)
+    c.close()
+    code, out, err = run(capsys, ["sync", "--cwd", str(wikis.repo)])
+    assert code == 0 and "note files skipped" in err and "over the server limit" in err
