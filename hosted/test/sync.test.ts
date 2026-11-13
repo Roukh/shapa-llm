@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { TS, TS2, TS3, del, get, job, mint, put, rec, row, send, setup, sync } from "./helpers.js";
+import { TS, TS2, TS3, del, get, job, mint, mintAll, put, rec, row, send, setup, sync, uidOf } from "./helpers.js";
 
 const ids = (changes: { id: string }[]) => changes.map((c) => c.id);
 const statuses = (r: { body: { results: { status: string }[] } }) => r.body.results.map((x) => x.status);
@@ -100,7 +100,7 @@ describe("sync: put", () => {
 
   it("stores notes with a derived alias and summary and refuses unsafe note ids", async () => {
     const { token, w } = await setup();
-    const note = { id: "research/topic.md", kind: "N", created: "", updated: TS, deleted: false, data: { body: "---\nid: topic-x\n---\n# A topic\ntext" }, tags: [], links: [] };
+    const note = { id: "research/topic.md", uid: "", kind: "N", created: "", updated: TS, deleted: false, data: { body: "---\nid: topic-x\n---\n# A topic\ntext" }, tags: [], links: [] };
     const r = await sync(token, w, { ops: [put(note)] });
     expect(r.body.results[0].status).toBe("accepted");
     expect(r.body.changes[0].data).toMatchObject({ alias: "topic-x", summary: "A topic" });
@@ -274,7 +274,8 @@ describe("sync: replays", () => {
     const ops = [put(row("M1", "client", { created: TS2, updated: TS2 })), put(row("M7", "refers", { links: [["M1", "about"]] }))];
     const first = await sync(token, w, { ops });
     const second = await sync(token, w, { ops });
-    expect(second.body.results[0]).toMatchObject({ status: "renamed", new_id: first.body.results[0].new_id });
+    // the uid is now stored under the new id, so the replay targets that record
+    expect(second.body.results[0]).toMatchObject({ status: "noop", new_id: first.body.results[0].new_id });
     expect(second.body.results[1].status).toBe("noop");
     const all = await get(rec(w, "?kind=M"), token);
     expect(all.body.records.map((r: { id: string }) => r.id)).toEqual(["M1", first.body.results[0].new_id, "M7"]);
@@ -315,5 +316,126 @@ describe("sync: limits and shape", () => {
     const r = await sync(token, w, { ops: [put(row("M1", `token ${key}`, { data: { summary: `token ${key}`, body: `password: ${"s3cretValue12345"}`, alias: null, source: "", session: "" } }))] });
     expect(r.body.changes[0].data.summary).toBe("token [REDACTED]");
     expect(r.body.changes[0].data.body).toBe("password: [REDACTED]");
+  });
+});
+
+describe("sync: record identity is the uid", () => {
+  const UID_A = "device-a-uid-0001";
+  const UID_B = "device-b-uid-0002";
+  const byId = (records: { id: string }[]) => Object.fromEntries(records.map((x) => [x.id, x])) as Record<string, any>;
+
+  it("keeps both records when two devices create the same id in the same second", async () => {
+    const a = await setup();
+    const b = await mintAll("device-b");
+    // device A and device B each created R2 and J2 offline with the same created time
+    const fromA = await sync(a.token, a.w, { ops: [put(row("R2", "rule from A", { uid: UID_A })), put(job("J2", "job from A", null, { uid: UID_A + "j" }))] });
+    expect(statuses(fromA)).toEqual(["accepted", "accepted"]);
+    const fromB = await sync(b.token, a.w, {
+      ops: [
+        put(row("R2", "rule from B", { uid: UID_B })),
+        put(job("J2", "job from B", null, { uid: UID_B + "j" })),
+        put(job("T2", "task of B job", "J2", { uid: UID_B + "t" })),
+      ],
+    });
+    expect(statuses(fromB)).toEqual(["renamed", "renamed", "accepted"]);
+    const [r, j] = fromB.body.results;
+    expect(r.new_id).not.toBe("R2");
+    expect(j.new_id).not.toBe("J2");
+    const all = byId((await get(rec(a.w), a.token)).body.records);
+    // A kept its labels; B was relabelled; nothing was lost
+    expect(all["R2"].data.summary).toBe("rule from A");
+    expect(all["J2"].data.title).toBe("job from A");
+    expect(all[r.new_id].data.summary).toBe("rule from B");
+    expect(all[j.new_id].data.title).toBe("job from B");
+    // the task that named B's job by its old id now hangs under B's job, not A's
+    expect(all["T2"].data.parent).toBe(j.new_id);
+    expect(all[j.new_id].uid).toBe(UID_B + "j");
+    expect(all["R2"].uid).toBe(UID_A);
+  });
+
+  it("does not let a put change the uid of a stored id", async () => {
+    const { token, w } = await setup();
+    await sync(token, w, { ops: [put(row("M1", "original", { uid: UID_A }))] });
+    const swap = await sync(token, w, { ops: [put(row("M1", "hijack", { uid: UID_B, updated: TS3 }), 0)] });
+    expect(swap.body.results[0].status).toBe("renamed");
+    const m1 = (await get(rec(w, "/M1"), token)).body;
+    expect(m1.uid).toBe(UID_A);
+    expect(m1.data.summary).toBe("original");
+    expect((await get(rec(w, `/${swap.body.results[0].new_id}`), token)).body.uid).toBe(UID_B);
+    // a tombstone holds its id and uid just the same
+    await sync(token, w, { ops: [del("M1", TS, TS2, null, UID_A)] });
+    const again = await sync(token, w, { ops: [put(row("M1", "after delete", { uid: "device-c-uid-0003", updated: TS3 }))] });
+    expect(again.body.results[0].status).toBe("renamed");
+    const tomb = again.body.changes.find((c: { id: string }) => c.id === "M1");
+    expect(tomb.deleted).toBe(true);
+    expect(tomb.uid).toBe(UID_A);
+  });
+
+  it("targets the stored record when the uid is already stored under another id", async () => {
+    const { token, w } = await setup();
+    const first = await sync(token, w, { ops: [put(job("J1", "server job", null, { uid: UID_A, updated: TS2 }))] });
+    const rev = first.body.results[0].rev;
+    // the client calls it J7 (relabelled locally): same uid, so it is J1
+    const equal = await sync(token, w, { ops: [put(job("J7", "server job", null, { uid: UID_A, updated: TS2 }))] });
+    expect(equal.body.results[0]).toEqual({ id: "J7", status: "noop", rev, new_id: "J1" });
+    const stale = await sync(token, w, { ops: [put(job("J7", "older edit", null, { uid: UID_A, updated: TS }), 0)] });
+    expect(stale.body.results[0]).toMatchObject({ status: "rejected", new_id: "J1" });
+    expect(stale.body.changes.map((c: { id: string }) => c.id)).toContain("J1");
+    const newer = await sync(token, w, {
+      ops: [put(job("J7", "newer edit", null, { uid: UID_A, updated: TS3 }), 0), put(job("T1", "task", "J7", { uid: UID_B }))],
+    });
+    expect(statuses(newer)).toEqual(["accepted", "accepted"]);
+    expect(newer.body.results[0].new_id).toBe("J1");
+    const byBase = await sync(token, w, { ops: [put(job("J7", "by base rev", null, { uid: UID_A, updated: TS }), newer.body.results[0].rev)] });
+    expect(byBase.body.results[0]).toMatchObject({ status: "accepted", new_id: "J1" });
+    const all = byId((await get(rec(w), token)).body.records);
+    expect(Object.keys(all).sort()).toEqual(["J1", "T1"]);
+    expect(all["J1"].data.title).toBe("by base rev");
+    // the later op that named J7 as parent follows it to J1
+    expect(all["T1"].data.parent).toBe("J1");
+  });
+
+  it("deletes by uid: a wrong uid is a noop, the right one a tombstone", async () => {
+    const { token, w } = await setup();
+    const a = await sync(token, w, { ops: [put(row("M1", "x", { uid: UID_A }))] });
+    const wrong = await sync(token, w, { ops: [del("M1", TS, TS3, null, UID_B), del("M1", TS, TS3, null, "")] });
+    expect(statuses(wrong)).toEqual(["noop", "noop"]);
+    expect((await get(rec(w, "/M1"), token)).status).toBe(200);
+    const right = await sync(token, w, { cursor: a.body.cursor, ops: [del("M1", TS, TS3, null, UID_A)] });
+    expect(right.body.results[0].status).toBe("accepted");
+    expect(right.body.changes[0]).toMatchObject({ id: "M1", uid: UID_A, deleted: true });
+    // a put carrying the tombstone flag is a delete by uid too
+    await sync(token, w, { ops: [put(row("M2", "y", { uid: UID_B }))] });
+    const flag = await sync(token, w, {
+      ops: [put(row("M2", "", { uid: UID_A + "z", deleted: true, updated: TS3 })), put(row("M2", "", { uid: UID_B, deleted: true, updated: TS3 }))],
+    });
+    expect(statuses(flag)).toEqual(["noop", "accepted"]);
+  });
+
+  it("validates the uid", async () => {
+    const { token, w } = await setup();
+    const bad = ["", "short", "x".repeat(65), "has space 0123456789", "semi;colon-0123456789", "é".repeat(16)];
+    const r = await sync(token, w, { ops: bad.map((uid, i) => put(row(`M${i + 1}`, "x", { uid }))) });
+    expect(statuses(r)).toEqual(bad.map(() => "rejected"));
+    expect(r.body.results[0].error).toMatch(/uid/);
+    const edge = await sync(token, w, { ops: [put(row("M20", "min", { uid: "a".repeat(16) })), put(row("M21", "max", { uid: "A_-".repeat(21) + "z" }))] });
+    expect(statuses(edge)).toEqual(["accepted", "accepted"]);
+    // a note has no uid; a uid on a note is refused
+    const note = { id: "research/n.md", kind: "N", created: "", updated: TS, deleted: false, data: { body: "x" }, tags: [], links: [] };
+    const notes = await sync(token, w, { ops: [put({ ...note, uid: UID_A }), put({ ...note, uid: "" })] });
+    expect(statuses(notes)).toEqual(["rejected", "accepted"]);
+    // a uid cannot be reused for a record of another kind
+    const kinds = await sync(token, w, { ops: [put(row("R1", "rule", { uid: "a".repeat(16) }))] });
+    expect(kinds.body.results[0].status).toBe("rejected");
+    expect(kinds.body.results[0].error).toMatch(/another kind/);
+  });
+
+  it("returns the uid on every record, tombstones included", async () => {
+    const { token, w } = await setup();
+    await sync(token, w, { ops: [put(row("M1", "x", { uid: UID_A })), put(row("M2", "y", { uid: UID_B }))] });
+    await sync(token, w, { ops: [del("M2", TS, TS2, null, UID_B)] });
+    const all = await sync(token, w, { cursor: 0 });
+    expect(all.body.changes.map((c: { id: string; uid: string }) => [c.id, c.uid])).toEqual([["M1", UID_A], ["M2", UID_B]]);
+    expect(uidOf("M1", TS)).toMatch(/^[A-Za-z0-9_-]{16,64}$/);
   });
 });

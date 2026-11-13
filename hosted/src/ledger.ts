@@ -3,7 +3,7 @@
 // mirror shapa/db.py (parent kinds, no child under a closed parent, close cascade, claim and
 // release, identical row text returns the existing row, ids never reused).
 
-import { type Device, needScope, needWiki } from "./devices.js";
+import { type Device, needScope, needWiki, randomHex } from "./devices.js";
 import { fail } from "./errors.js";
 import {
   CLOSE_REASONS, Invalid, LEDGER_KINDS, PARENT_KIND, TYPE_NAMES, buildData, contentKey, isNoteId, nowIso, normTags,
@@ -26,7 +26,7 @@ function wrap<T>(fn: () => T): T {
 }
 
 function norm(s: Stored): Normalized {
-  return { id: s.id, kind: s.kind, created: s.created, updated: s.updated, deleted: s.deleted, alias: s.alias, data: s.data, tags: s.tags, links: s.links };
+  return { id: s.id, uid: s.uid, kind: s.kind, created: s.created, updated: s.updated, deleted: s.deleted, alias: s.alias, data: s.data, tags: s.tags, links: s.links };
 }
 
 /** `updated` for a REST/MCP write: now, never earlier than the record already says. */
@@ -111,7 +111,7 @@ export function createRecord(repo: Repo, d: Device, wiki: string, body: CreateIn
   }
   const alias = kind === "N" && repo.aliasHolder(wiki, built.alias) ? "" : built.alias;
   const n: Normalized = {
-    id, kind, created: kind === "N" ? "" : ts, updated: existing ? stamp(existing.updated) : ts, deleted: false,
+    id, uid: kind === "N" ? "" : randomHex(16), kind, created: kind === "N" ? "" : ts, updated: existing ? stamp(existing.updated) : ts, deleted: false,
     alias, data: kind === "N" ? { ...built.data, alias: alias || null } : built.data, tags, links: [],
   };
   return { record: toWire(repo.save(wiki, n, d.name, existing)), created: true };

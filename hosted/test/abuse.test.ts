@@ -81,10 +81,10 @@ describe("abuse: ids and paths", () => {
   it("does not let a sync put take over a note id in another kind, or smuggle a path", async () => {
     const { token, w } = await setup();
     const evil = ["research/%2e%2e/x.md", "research//x.md", "research/x.md/", "arch\\x.md", "arch/x.md\u0000", " arch/x.md", "arch/.md", "arch/x.MD", "ARCH/x.md"];
-    const r = await sync(token, w, { ops: evil.map((id) => put({ id, kind: "N", created: "", updated: "2026-01-01T00:00:00Z", data: { body: "x" } })) });
+    const r = await sync(token, w, { ops: evil.map((id) => put({ id, uid: "", kind: "N", created: "", updated: "2026-01-01T00:00:00Z", data: { body: "x" } })) });
     expect(r.body.results.map((x: { status: string }) => x.status)).toEqual(evil.map(() => "rejected"));
     // a ledger kind with a note-looking id, and a note kind with a ledger id
-    const mixed = await sync(token, w, { ops: [put({ ...row("M1", "x"), id: "research/x.md" }), put({ id: "M2", kind: "N", created: "", updated: "2026-01-01T00:00:00Z", data: { body: "x" } })] });
+    const mixed = await sync(token, w, { ops: [put({ ...row("M1", "x"), id: "research/x.md" }), put({ id: "M2", uid: "", kind: "N", created: "", updated: "2026-01-01T00:00:00Z", data: { body: "x" } })] });
     expect(mixed.body.results.map((x: { status: string }) => x.status)).toEqual(["rejected", "rejected"]);
   });
 });

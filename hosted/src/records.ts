@@ -57,6 +57,8 @@ export const WIKI_KEY_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 export const NOTE_ID_RE = /^(arch\/|research\/)?[A-Za-z0-9][A-Za-z0-9._-]{0,99}\.md$/;
 const ALIAS_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$/;
 const LINK_DST_RE = /^[A-Za-z0-9][A-Za-z0-9._/:-]{0,119}$/;
+/** The identity of a record: random, set where it is created, never changed. Notes use "" (their path). */
+export const UID_RE = /^[A-Za-z0-9_-]{16,64}$/;
 const TS_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
 const MIME_RE = /^[A-Za-z0-9][\w.+-]{0,60}\/[A-Za-z0-9][\w.+-]{0,60}$/;
 /** Root notes that are shipped by shapa itself and never sync (either case, for case-folding disks). */
@@ -220,6 +222,7 @@ function zparse<T extends z.ZodType>(schema: T, raw: unknown, what: string): z.i
  * store drops it when another live record already holds it. */
 export interface Normalized {
   id: string;
+  uid: string;
   kind: Kind;
   created: string;
   updated: string;
@@ -286,6 +289,7 @@ function normalizeData(kind: Kind, id: string, raw: unknown): { data: Data; alia
 /** The record as a client sends it in a sync `put`; `rev` and `device` are accepted and ignored. */
 export const RecordIn = z.object({
   id: z.string().min(1).max(120),
+  uid: z.string().max(64),
   kind: z.enum(KINDS),
   created: z.string().max(40),
   updated: z.string().max(40),
@@ -311,17 +315,19 @@ export function normalizeRecord(raw: unknown): Normalized {
   if (kind === "N") {
     if (!isNoteId(r.id)) throw new Invalid("record: note id must be a relative .md path under arch/ or research/ or the root");
     if (r.created !== "") throw new Invalid("record: a note has no created time");
+    if (r.uid !== "") throw new Invalid("record: a note has no uid (its path is its identity)");
   } else {
+    if (!UID_RE.test(r.uid)) throw new Invalid("record: uid must be 16-64 characters of A-Z a-z 0-9 _ -");
     if (kindOfId(r.id) !== kind) throw new Invalid(`record: id ${r.id} does not belong to kind ${kind}`);
     if (!isTimestamp(r.created)) throw new Invalid("record: created must be YYYY-MM-DDTHH:MM:SSZ");
   }
   if (!isTimestamp(r.updated)) throw new Invalid("record: updated must be YYYY-MM-DDTHH:MM:SSZ");
   if (r.deleted) {
-    return { id: r.id, kind, created: r.created, updated: r.updated, deleted: true, alias: "", data: {}, tags: [], links: [] };
+    return { id: r.id, uid: r.uid, kind, created: r.created, updated: r.updated, deleted: true, alias: "", data: {}, tags: [], links: [] };
   }
   const { data, alias } = normalizeData(kind, r.id, r.data);
   return {
-    id: r.id, kind, created: r.created, updated: r.updated, deleted: false, alias, data,
+    id: r.id, uid: r.uid, kind, created: r.created, updated: r.updated, deleted: false, alias, data,
     tags: normTags(r.tags), links: normLinks(r.links),
   };
 }
@@ -353,6 +359,7 @@ function sortKeys(v: unknown): unknown {
 
 export const RecordOut = z.object({
   id: z.string(),
+  uid: z.string(),
   kind: z.enum(KINDS),
   created: z.string(),
   updated: z.string(),
@@ -387,7 +394,7 @@ export const WikiPut = z.object({
 const BaseRev = z.number().int().min(0).nullable();
 export const PutOp = z.object({ op: z.literal("put"), base_rev: BaseRev, record: z.unknown() }).openapi("PutOp");
 export const DelOp = z.object({
-  op: z.literal("del"), id: z.string().min(1).max(120), created: z.string().max(40),
+  op: z.literal("del"), id: z.string().min(1).max(120), uid: z.string().max(64),
   deleted_at: z.string().max(40), base_rev: BaseRev,
 }).openapi("DelOp");
 export const SyncOp = z.discriminatedUnion("op", [PutOp, DelOp]);

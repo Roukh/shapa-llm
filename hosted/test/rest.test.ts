@@ -27,6 +27,31 @@ describe("REST: create", () => {
     expect((await create(token, w, { type: "job", title: "alone" })).body.id).toBe("J2");
   });
 
+  it("gives every created record a server-made uid and ignores a client-chosen one", async () => {
+    const { token, w } = await setup();
+    const chosen = "client-chosen-uid-0001";
+    const a = await create(token, w, { type: "memory", summary: "one", uid: chosen });
+    const b = await create(token, w, { type: "memory", summary: "two" });
+    const f = await create(token, w, { type: "feature", title: "feat" });
+    const j = await create(token, w, { type: "job", title: "job", parent: "F1" });
+    const d = await create(token, w, { type: "document", title: "doc" });
+    for (const r of [a, b, f, j, d]) expect(r.body.uid).toMatch(/^[A-Za-z0-9_-]{16,64}$/);
+    expect(a.body.uid).not.toBe(chosen);
+    expect(new Set([a, b, f, j, d].map((r) => r.body.uid)).size).toBe(5);
+    // a note has no uid; the uid survives edits, claims and deletion
+    const note = await create(token, w, { type: "note", path: "research/u.md", body: "x" });
+    expect(note.body.uid).toBe("");
+    const patched = await send("PATCH", rec(w, "/M1"), { token, body: { summary: "edited", uid: "other-uid-0123456789" } });
+    expect(patched.body.uid).toBe(a.body.uid);
+    expect((await send("POST", rec(w, "/J1/claim"), { token })).body.uid).toBe(j.body.uid);
+    expect((await get(rec(w, "/M1"), token)).body.uid).toBe(a.body.uid);
+    const gone = await send("DELETE", rec(w, "/M2"), { token });
+    expect(gone.body.deleted).toBe(true);
+    expect(gone.body.uid).toBe(b.body.uid);
+    // identical text returns the first row, with its uid
+    expect((await create(token, w, { type: "memory", summary: "edited" })).body.uid).toBe(a.body.uid);
+  });
+
   it("refuses a child under a closed parent", async () => {
     const { token, w } = await setup();
     await create(token, w, { type: "feature", title: "f" });

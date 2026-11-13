@@ -8,6 +8,7 @@ export interface Stored {
   seq: number;
   wiki: string;
   id: string;
+  uid: string;
   kind: Kind;
   created: string;
   updated: string;
@@ -35,6 +36,7 @@ function fromRow(r: Row): Stored {
     seq: r["seq"] as number,
     wiki: r["wiki"] as string,
     id: r["id"] as string,
+    uid: r["uid"] as string,
     kind: r["kind"] as Kind,
     created: r["created"] as string,
     updated: r["updated"] as string,
@@ -50,7 +52,7 @@ function fromRow(r: Row): Stored {
 
 export function toWire(s: Stored): RecordWire {
   return {
-    id: s.id, kind: s.kind, created: s.created, updated: s.updated, rev: s.rev,
+    id: s.id, uid: s.uid, kind: s.kind, created: s.created, updated: s.updated, rev: s.rev,
     deleted: s.deleted, device: s.device, data: s.data as RecordWire["data"],
     tags: s.tags, links: s.links as RecordWire["links"],
   };
@@ -153,15 +155,16 @@ export class Repo {
     return r ? (r["id"] as string) : null;
   }
 
-  /** Same wiki, kind and created time: the twin of a record that was stored under another id. */
-  byIdentity(wiki: string, kind: Kind, created: string): Stored[] {
-    return this.sql
-      .exec(`SELECT * FROM records WHERE wiki = ? AND kind = ? AND created = ?`, wiki, kind, created)
-      .toArray().map(fromRow);
+  /** The record with this uid, wherever it is stored (tombstones included). Notes have no uid. */
+  byUid(wiki: string, uid: string): Stored | null {
+    if (!uid) return null;
+    const r = this.sql.exec(`SELECT * FROM records WHERE wiki = ? AND uid = ?`, wiki, uid).toArray()[0];
+    return r ? fromRow(r) : null;
   }
 
-  /** Insert or replace a record body and give it the next global rev. */
+  /** Insert or replace a record body and give it the next global rev. A uid never changes. */
   save(wiki: string, n: Normalized, device: string, existing: Stored | null): Stored {
+    if (existing && existing.uid !== n.uid) throw new Error("a record uid is immutable");
     const rev = this.bumpRev();
     const data = JSON.stringify(n.data);
     const tags = JSON.stringify(n.tags);
@@ -175,13 +178,13 @@ export class Repo {
       );
     } else {
       seq = this.sql.exec(
-        `INSERT INTO records (wiki, id, kind, created, updated, rev, deleted, device, alias, data, tags, links)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING seq`,
-        wiki, n.id, n.kind, n.created, n.updated, rev, n.deleted ? 1 : 0, device, n.alias, data, tags, links,
+        `INSERT INTO records (wiki, id, uid, kind, created, updated, rev, deleted, device, alias, data, tags, links)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING seq`,
+        wiki, n.id, n.uid, n.kind, n.created, n.updated, rev, n.deleted ? 1 : 0, device, n.alias, data, tags, links,
       ).one()["seq"] as number;
     }
     const stored: Stored = {
-      seq, wiki, id: n.id, kind: n.kind, created: n.created, updated: n.updated, rev,
+      seq, wiki, id: n.id, uid: n.uid, kind: n.kind, created: n.created, updated: n.updated, rev,
       deleted: n.deleted, device, alias: n.alias, data: n.data, tags: n.tags, links: n.links,
     };
     this.reindex(stored);

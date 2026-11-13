@@ -13,7 +13,7 @@ const DDL: string[] = [
      PRIMARY KEY (wiki, kind)) WITHOUT ROWID`,
   `CREATE TABLE IF NOT EXISTS records (
      seq INTEGER PRIMARY KEY AUTOINCREMENT,
-     wiki TEXT NOT NULL, id TEXT NOT NULL, kind TEXT NOT NULL,
+     wiki TEXT NOT NULL, id TEXT NOT NULL, uid TEXT NOT NULL DEFAULT '', kind TEXT NOT NULL,
      created TEXT NOT NULL, updated TEXT NOT NULL,
      rev INTEGER NOT NULL, deleted INTEGER NOT NULL DEFAULT 0,
      device TEXT NOT NULL DEFAULT '', alias TEXT NOT NULL DEFAULT '',
@@ -21,7 +21,8 @@ const DDL: string[] = [
      UNIQUE (wiki, id))`,
   `CREATE INDEX IF NOT EXISTS records_rev ON records (wiki, rev)`,
   `CREATE INDEX IF NOT EXISTS records_kind ON records (wiki, kind, deleted)`,
-  `CREATE INDEX IF NOT EXISTS records_ident ON records (wiki, kind, created)`,
+  // A uid is the identity of a record and is stored under exactly one id per wiki (tombstones keep theirs).
+  `CREATE UNIQUE INDEX IF NOT EXISTS records_uid ON records (wiki, uid) WHERE uid != ''`,
   `CREATE UNIQUE INDEX IF NOT EXISTS records_alias ON records (wiki, alias) WHERE alias != '' AND deleted = 0`,
   `CREATE INDEX IF NOT EXISTS records_alias_any ON records (alias) WHERE alias != ''`,
   // Full-text index over live records only; rowid = records.seq. Columns: title/summary, body, tags, ids.

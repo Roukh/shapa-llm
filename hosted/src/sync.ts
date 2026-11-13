@@ -56,29 +56,28 @@ function applyPut(
   }
   if (n.deleted) {
     // A put that carries the tombstone flag is a delete and needs the delete scope.
-    return applyDel(repo, d, wiki, { op: "del", id: n.id, created: n.created, deleted_at: n.updated, base_rev: baseRev }, extras);
+    return applyDel(repo, d, wiki, { op: "del", id: n.id, uid: n.uid, deleted_at: n.updated, base_rev: baseRev }, extras);
   }
-  n = resolveAlias(repo, wiki, rewrite(n, renames));
-  const cur = repo.get(wiki, n.id);
+  n = rewrite(n, renames);
 
-  if (!cur) {
-    const saved = repo.save(wiki, n, d.name, null);
-    return { id: n.id, status: "accepted", rev: saved.rev };
-  }
+  // The record is identified by its uid (a note, which has none, by its path). If the uid is
+  // already stored, that record is the target, whatever id the client used for it.
+  const held = repo.get(wiki, n.id);
+  const byUid = repo.byUid(wiki, n.uid);
+  const target = byUid ?? (held && held.uid === n.uid ? held : null);
 
-  if (cur.created !== n.created) {
-    // The id is taken by another record. A replay of an earlier rename finds its twin; otherwise
-    // the record is stored under a fresh id and the client relabels.
-    const twin = repo.byIdentity(wiki, n.kind, n.created).find((t) => t.id !== n.id && sameContent(t, { ...n, id: t.id }));
-    if (twin) {
-      renames.set(n.id, twin.id);
-      return { id: n.id, status: "renamed", rev: twin.rev, new_id: twin.id };
+  if (!target) {
+    if (!held) {
+      const saved = repo.save(wiki, resolveAlias(repo, wiki, n), d.name, null);
+      return { id: n.id, status: "accepted", rev: saved.rev };
     }
+    // The id is held by a record with another uid (tombstones count): a label collision. The
+    // incoming record is stored under a fresh id and the client relabels; the stored one is untouched.
     let newId: string;
     try {
       newId = repo.allocId(wiki, n.kind);
     } catch (e) {
-      if (e instanceof ApiError) return { id: n.id, status: "rejected", rev: cur.rev, error: e.message };
+      if (e instanceof ApiError) return { id: n.id, status: "rejected", rev: held.rev, error: e.message };
       throw e;
     }
     const saved = repo.save(wiki, resolveAlias(repo, wiki, { ...n, id: newId }), d.name, null);
@@ -86,13 +85,18 @@ function applyPut(
     return { id: n.id, status: "renamed", rev: saved.rev, new_id: newId };
   }
 
-  if (sameContent(cur, n)) return { id: n.id, status: "noop", rev: cur.rev };
-  if (baseRev === cur.rev || n.updated > cur.updated) {
-    const saved = repo.save(wiki, n, d.name, cur);
-    return { id: n.id, status: "accepted", rev: saved.rev };
+  if (target.kind !== n.kind) {
+    return { id: n.id, status: "rejected", rev: target.rev, error: "uid belongs to a record of another kind" };
   }
-  extras.add(n.id);
-  return { id: n.id, status: "rejected", rev: cur.rev };
+  const result = (status: "accepted" | "noop" | "rejected", rev: number): SyncResultOut =>
+    target.id === n.id ? { id: n.id, status, rev } : { id: n.id, status, rev, new_id: target.id };
+  if (target.id !== n.id) renames.set(n.id, target.id);
+  // Same uid: the stored record keeps its id and uid; only its content can change.
+  const incoming = resolveAlias(repo, wiki, { ...n, id: target.id });
+  if (sameContent(target, incoming)) return result("noop", target.rev);
+  if (baseRev === target.rev || n.updated > target.updated) return result("accepted", repo.save(wiki, incoming, d.name, target).rev);
+  extras.add(target.id);
+  return result("rejected", target.rev);
 }
 
 function applyDel(
@@ -105,9 +109,9 @@ function applyDel(
   }
   if (!isTimestamp(op.deleted_at)) return { id: op.id, status: "rejected", rev: 0, error: "deleted_at must be YYYY-MM-DDTHH:MM:SSZ" };
   const cur = repo.get(wiki, op.id);
-  if (!cur || cur.deleted || cur.created !== op.created) return { id: op.id, status: "noop", rev: cur?.rev ?? 0 };
+  if (!cur || cur.deleted || cur.uid !== op.uid) return { id: op.id, status: "noop", rev: cur?.rev ?? 0 };
   if (op.base_rev === cur.rev || cur.updated <= op.deleted_at) {
-    const tomb: Normalized = { id: cur.id, kind: cur.kind, created: cur.created, updated: op.deleted_at, deleted: true, alias: "", data: {}, tags: [], links: [] };
+    const tomb: Normalized = { id: cur.id, uid: cur.uid, kind: cur.kind, created: cur.created, updated: op.deleted_at, deleted: true, alias: "", data: {}, tags: [], links: [] };
     return { id: op.id, status: "accepted", rev: repo.save(wiki, tomb, d.name, cur).rev };
   }
   extras.add(op.id);

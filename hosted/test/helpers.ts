@@ -64,23 +64,27 @@ export const TS = "2026-01-01T00:00:00Z";
 export const TS2 = "2026-01-02T00:00:00Z";
 export const TS3 = "2026-01-03T00:00:00Z";
 
+/** A deterministic uid for a test record: the same id and created time give the same uid. */
+export const uidOf = (id: string, created: string): string => `u${id}${created.replace(/\D/g, "")}`.padEnd(16, "x");
+
 export function row(id: string, summary: string, over: Record<string, unknown> = {}) {
   return {
-    id, kind: id[0], created: TS, updated: TS, deleted: false,
+    id, uid: uidOf(id, String(over["created"] ?? TS)), kind: id[0], created: TS, updated: TS, deleted: false,
     data: { summary, body: "", alias: null, source: "", session: "" }, tags: [], links: [], ...over,
   };
 }
 
 export function job(id: string, title: string, parent: string | null = null, over: Record<string, unknown> = {}) {
   return {
-    id, kind: id[0], created: TS, updated: TS, deleted: false,
+    id, uid: uidOf(id, String(over["created"] ?? TS)), kind: id[0], created: TS, updated: TS, deleted: false,
     data: { title, body: "", parent, verify: null, status: "open", closed_reason: null, git_ref: null, alias: null, claimed_by: null, closed: null },
     tags: [], links: [], ...over,
   };
 }
 
 export const put = (record: unknown, base_rev: number | null = null) => ({ op: "put", base_rev, record });
-export const del = (id: string, created: string, deleted_at: string, base_rev: number | null = null) => ({ op: "del", id, created, deleted_at, base_rev });
+/** A del op for the record that `row`/`job` made with this created time (or pass uid explicitly). */
+export const del = (id: string, created: string, deleted_at: string, base_rev: number | null = null, uid = uidOf(id, created)) => ({ op: "del", id, uid, deleted_at, base_rev });
 
 export function sync(token: string, wikiKey: string, req: { cursor?: number; ops?: unknown[]; want?: string[]; counters?: Record<string, number> }) {
   return send("POST", `/v1/wikis/${wikiKey}/sync`, { token, body: { cursor: 0, ops: [], want: [], counters: {}, ...req } });
