@@ -107,23 +107,24 @@ The server applies `ops` in order inside one transaction:
 | put, `uid` already stored under another id | that stored record is the target: the same-`uid` rows below apply, and the result also carries `new_id` (the stored id) |
 | put, same `uid`, content equal | `noop` |
 | put, same `uid`, `base_rev` equals current `rev` | replace: `accepted` |
+| put, note, `base_rev` null, a live note with another body is stored | `rejected`: the stored note wins (a file's mtime is not an edit time) |
 | put, same `uid`, otherwise | incoming `updated` strictly newer wins (`accepted`), else `rejected` |
-| del, record missing, already deleted, or other `uid` | `noop` |
+| del, no live record with that `uid` (found by `uid`, under any id) | `noop` |
 | del, `base_rev` equals `rev`, or record `updated` <= `deleted_at` | tombstone: `accepted` |
 | del, otherwise | `rejected` (a later edit beats a delete) |
 
 - `results[i]` is `{id, status, rev, new_id?, error?}` for `ops[i]`. Every accepted change takes the next `rev`. An alias another live record holds is dropped, not refused.
-- `changes`: every record with `rev` > request `cursor`, oldest first, plus the current record for each rejected op and each `want` id. `more: true` means call again with the returned cursor and no ops.
-- `counters`: next number per kind; each side keeps the maximum, which makes label collisions rare.
+- `changes`: every record with `rev` > request `cursor`, oldest first, plus the current record for each rejected op and each `want` id. A page holds at most 500 records and 8 MB; `more: true` means call again with the returned cursor and no ops.
+- `counters`: next number per kind; each side keeps the maximum. The server raises its own to the request's before applying any op, so one collision never shifts the labels after it.
 
 Client (`shapa remote sync`), per wiki, under a file lock:
 
 1. Snapshot local records. State (`sync/<sha1 of db path>.json` beside the credentials) holds `{key, cursor, base: {id: {rev, uid, updated, hash}}}`; `hash` is local-only.
-2. Classify against `base`: absent from base = new (put, `base_rev` null); hash differs = modified (put, `base_rev`), unless local `updated` is older than base's, then stale (`want`); in base but gone locally = deleted only when `tombstones` holds it (del), else missing (`want`). A database swapped by git therefore heals from the server instead of pushing deletes.
+2. Classify against `base`: absent from base = new (put, `base_rev` null); hash differs = modified (put, `base_rev`); in base but gone locally = deleted only when `tombstones` holds it (del), else missing (`want`). Every tombstone is sent, in base or not (`base_rev` null), until the server answers for it. The database carries a sync token (`meta.sync_token`), rotated in the apply transaction of every sync that pushed or applied anything and kept in the state. Token differs = the database was swapped (git): a differing record whose local `updated` is not newer than base's is stale (`want`), so the swap heals from the server. Token equal: clocks are never consulted.
 3. Send (parents first: F, J, T, then the rest), in batches.
 4. In one local write transaction: apply `renamed` (relabel id, child `parent`, tags, links; foreign keys deferred), then each change, skipping any record whose local content changed since step 1; raise counters; drop acknowledged tombstones; write state.
 
-Note files sync only while the wiki's primary checkout is on its default branch (a wiki outside git always). A remote delete removes a local note file only if it is unchanged since the last sync; a note deleted locally comes back (delete it through the API). Remote text is never executed and never chooses a path outside the note pattern.
+Note files sync only while the wiki's primary checkout is on its default branch (always, outside git). A remote delete removes a local note only if it is unchanged since the last sync; a note deleted locally comes back (delete it through the API). Remote text is never executed and never picks a path outside the note pattern.
 
 ## MCP (`/mcp`, streamable HTTP)
 
@@ -143,7 +144,7 @@ Server `instructions`: call `session_start` first. No delete tool.
 
 ## Session instructions
 
-For clients with no hooks. Composed per request, within `budget` characters (default 6000): what shapa is; the global wiki's `session-instructions` note if present; the operator style (global note `response-style`); global rules (id + summary); live features per wiki; then the write-back format for the client kind - when to write each type, and the exact `save` call (`mcp`) or `POST` body (`rest`). A client with no auto-inject is pointed at it by one line in its custom instructions.
+Composed per request within `budget` characters (default 6000, 2000-40000): what shapa is; the global note `session-instructions` if present; the operator style (global note `response-style`); global rules (id + summary); live features per wiki; then the write-back format for the client kind: when to write each type and the exact `save` call (`mcp`) or `POST` body (`rest`).
 
 ## Client commands
 
@@ -161,3 +162,4 @@ For clients with no hooks. Composed per request, within `budget` characters (def
 - No secret in the repo: account ids, URLs and keys stay in the deployer's environment and `~/.shapa`.
 - Local database schema 2 is additive (`docs`, `tombstones`, counter `D`); a schema-1 reader still works.
 - Hooks never block a session and never fail it.
+- On a wiki with sync state the after-merge sweep never deletes a memory for disuse: use counts are per device.

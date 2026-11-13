@@ -34,5 +34,5 @@ summary: shapa-llm as a diagram - six boxes (read path, write path, database, CL
 | read-path | database | ranks ledger items and M/R/I rows together with any remaining note files |
 | write-path | database | new M/I rows (`db.add_row`) |
 | database | read-path | rows backing the derived, gitignored `.shapa-index.db` |
-| cli-and-hooks | hosted | `shapa remote` dispatch; SessionStart, Stop and SessionEnd hooks run `shapa remote sync --hook` |
+| cli-and-hooks | hosted | `shapa remote` dispatch; `shapa remote sync --hook` at session start, stop and end, where a harness installer wires it (shapa's own `install.sh` does not) |
 | hosted | database | pulled records written through explicit-id upserts; local changes and tombstones read for the push |
