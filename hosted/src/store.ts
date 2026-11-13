@@ -7,6 +7,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { type Device, Devices, needWiki, validDeviceName, validScopes, validWikis, wikiAllowed } from "./devices.js";
 import { fail, run, type Out } from "./errors.js";
+import { composeInstructions, type ClientKind } from "./instructions.js";
 import * as ledger from "./ledger.js";
 import type { CreateIn, Kind, PatchIn, RecordWire, Scope, SyncResponseOut } from "./records.js";
 import { Repo } from "./repo.js";
@@ -94,6 +95,10 @@ export class ShapaStore extends DurableObject<Env> {
   }
 
   // --- read -----------------------------------------------------------------------------------
+
+  instructions(cred: Cred, opts: { client: ClientKind; wiki?: string; budget: number }): Out<{ text: string; version: string }> {
+    return this.tx(() => composeInstructions(this.repo, this.as(cred), opts));
+  }
 
   search(cred: Cred, q: { query: string; k: number; wiki?: string; types?: string[] }): Out<ReturnType<typeof search>> {
     return this.tx(() => search(this.repo, this.as(cred), q));

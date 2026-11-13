@@ -73,6 +73,35 @@ export function registerV1(app: App): void {
 
   app.openapi(
     createRoute({
+      method: "get", path: "/v1/instructions", tags: tag, security, summary: "Session defaults for a client with no hooks",
+      request: {
+        query: z.object({
+          client: z.enum(["mcp", "rest"]).default("rest"),
+          wiki: z.string().regex(WIKI_KEY_RE).optional(),
+          budget: intQuery(LIMITS.instructionsBudget.min, LIMITS.instructionsBudget.max, LIMITS.instructionsBudget.default),
+        }),
+      },
+      responses: {
+        200: {
+          description: "Text, within the budget (send Accept: text/plain for the text alone)",
+          content: {
+            "application/json": { schema: z.object({ text: z.string(), version: z.string() }) },
+            "text/plain": { schema: z.string() },
+          },
+        },
+        ...errors,
+      },
+    }),
+    async (c) => {
+      const q = c.req.valid("query");
+      const r = await unwrap(store(c.env).instructions(cred(c), { client: q.client, ...(q.wiki ? { wiki: q.wiki } : {}), budget: q.budget }));
+      if ((c.req.header("accept") ?? "").includes("text/plain")) return c.text(r.text, 200) as never;
+      return c.json(r, 200);
+    },
+  );
+
+  app.openapi(
+    createRoute({
       method: "get", path: "/v1/search", tags: tag, security, summary: "BM25 search over live records",
       request: {
         query: z.object({

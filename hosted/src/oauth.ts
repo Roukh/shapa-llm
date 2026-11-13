@@ -1,17 +1,22 @@
 // OAuth 2.1 through @cloudflare/workers-oauth-provider: the authorization server (discovery,
-// dynamic registration, PKCE, token endpoint) (the MCP resource server joins it with the MCP endpoint).
+// dynamic registration, PKCE, token endpoint) and, for the MCP endpoint, the resource server.
 // A token issued after the owner approves a client carries a device id; like a device token it is
 // resolved to a live device row on every request, so revoking the device refuses it at once.
 
-import { OAuthAuthorizationServer } from "@cloudflare/workers-oauth-provider";
+import { OAuthAuthorizationServer, OAuthResourceServer, type OAuthResourceContext } from "@cloudflare/workers-oauth-provider";
 import { resolveDeviceBearer, store } from "./auth.js";
 import { SCOPES } from "./records.js";
 import type { Cred } from "./store.js";
+
+export interface AuthProps extends Record<string, unknown> {
+  cred: Cred;
+}
 
 export interface OAuthKit {
   origin: string;
   mcpResource: string;
   server: OAuthAuthorizationServer<Env>;
+  mcp: OAuthResourceServer<Env, AuthProps>;
 }
 
 const kits = new Map<string, OAuthKit>();
@@ -23,7 +28,10 @@ export function originOf(request: Request): string {
 
 /** The OAuth role objects for an origin. The issuer and resource URL are absolute, so they are
  * built on first use (per origin) rather than at module load. */
-export function oauthKit(origin: string): OAuthKit {
+export function oauthKit(
+  origin: string,
+  mcpHandler: (request: Request, env: Env, ctx: OAuthResourceContext<AuthProps>) => Promise<Response>,
+): OAuthKit {
   const cached = kits.get(origin);
   if (cached) return cached;
   const mcpResource = `${origin}/mcp`;
@@ -35,8 +43,16 @@ export function oauthKit(origin: string): OAuthKit {
     clientRegistrationEndpoint: "/register",
     scopesSupported: [...SCOPES],
   });
+  const mcp = new OAuthResourceServer<Env, AuthProps>({
+    resourceMetadata: { resource: mcpResource, authorization_servers: [origin], resource_name: "shapa" },
+    validateToken: (env) => async (resource, token) => {
+      const cred = await resolveBearer(server, env, resource, token);
+      return cred ? { props: { cred }, audience: resource } : null;
+    },
+    handler: { fetch: (request, env, ctx) => mcpHandler(request, env, ctx) },
+  });
   if (kits.size >= 8) kits.clear();
-  const kit = { origin, mcpResource, server };
+  const kit = { origin, mcpResource, server, mcp };
   kits.set(origin, kit);
   return kit;
 }
