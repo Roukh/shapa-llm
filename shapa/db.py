@@ -1080,8 +1080,8 @@ def scrub(conn: sqlite3.Connection, terms) -> int:
         return 0
     pattern = re.compile("|".join(re.escape(t) for t in sorted(terms, key=len, reverse=True)), re.I)
     with write(conn):
-        for table, cols in (("mri", ("summary", "body", "source", "alias")),
-                            ("items", ("title", "body", "verify", "git_ref", "alias")),
+        for table, cols in (("mri", ("summary", "body", "source", "alias", "session")),
+                            ("items", ("title", "body", "verify", "git_ref", "alias", "claimed_by")),
                             ("docs", ("title", "body", "source", "alias"))):
             if not _has_table(conn, table):
                 continue

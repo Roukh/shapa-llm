@@ -40,6 +40,11 @@ This project follows [Semantic Versioning](https://semver.org/).
   token in `meta` tells); a record the server refuses is reported and not
   resent until it changes; and the after-merge sweep no longer drops memories
   for disuse on a wiki with sync state, since use counts are per device.
+  A repo with no git origin has no automatic wiki key: pass `--key KEY` once
+  (kept in the sync state, hooks included). A command to run (`verify`) never
+  leaves the machine, a remote `git_ref` is applied only when safe, harness
+  instruction files (`AGENTS.md`, `CLAUDE.md`, `GEMINI.md`) never sync, and
+  recall output can no longer forge `shapa-*` wrapper tags.
   Standard library only.
 
 ## [0.9.0] - 2026-10-08

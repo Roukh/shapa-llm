@@ -10,6 +10,7 @@ with the contract.
 import json
 import re
 import threading
+from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qs, urlsplit
 
 OWNER_KEY = "o" * 40
@@ -18,6 +19,18 @@ MAX_RECORD_BYTES = 1_000_000
 MAX_REQUEST_BYTES = 8 * 1024 * 1024
 MAX_WANT = 500
 PAGE_BYTES = 8_000_000
+RESERVED_NOTES = ("agents.md", "claude.md", "gemini.md", "placement.md")
+CLOCK_SKEW = timedelta(minutes=5)
+
+
+def now_iso():
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def clamp_future(stamp):
+    """A stamp more than five minutes ahead of the server clock is clamped to it."""
+    limit = (datetime.now(timezone.utc) + CLOCK_SKEW).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return now_iso() if stamp > limit else stamp
 
 
 class Wiki:
@@ -132,10 +145,8 @@ class HostedDouble:
         if wiki is None:
             self.wikis[key] = Wiki(key, req.get("name", ""), req.get("kind", "repo"),
                                    req.get("origin", ""))
-        elif req.get("origin") and wiki.origin and req["origin"] != wiki.origin:
+        elif (req.get("origin") or "") != wiki.origin:
             return 409, self.err("conflict", "origin differs")
-        elif req.get("origin"):
-            wiki.origin = req["origin"]
         return 200, {"key": key}
 
     # -- the sync op table -------------------------------------------------------------
@@ -197,6 +208,8 @@ class HostedDouble:
             data["parent"] = renames[data["parent"]]
         rec["links"] = [[renames.get(dst, dst), rel] for dst, rel in rec.get("links") or []]
         base_rev = op.get("base_rev")
+        if rec["kind"] == "N" and rec["id"].rsplit("/", 1)[-1].lower() in RESERVED_NOTES:
+            return {"id": orig, "status": "rejected", "rev": 0, "error": "reserved note name"}
         if self.refuse is not None and (msg := self.refuse(rec)):
             return {"id": orig, "status": "rejected", "rev": 0, "error": msg}
         if rec["kind"] == "N":  # a note path is its identity
@@ -237,10 +250,11 @@ class HostedDouble:
 
     def store(self, wiki, device, rec, status, orig):
         rev = wiki.next_rev()
+        data = {k: v for k, v in (rec.get("data") or {}).items() if k != "verify"}  # never stored
         stored = {"id": rec["id"], "uid": rec.get("uid", ""), "kind": rec["kind"],
                   "created": rec["created"],
-                  "updated": rec["updated"], "rev": rev, "deleted": False,
-                  "device": device["name"], "data": rec.get("data") or {},
+                  "updated": clamp_future(rec["updated"]), "rev": rev, "deleted": False,
+                  "device": device["name"], "data": data,
                   "tags": sorted(set(rec.get("tags") or [])),
                   "links": sorted(rec.get("links") or [])}
         wiki.records[rec["id"]] = stored

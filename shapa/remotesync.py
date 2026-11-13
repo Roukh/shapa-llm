@@ -30,8 +30,10 @@ _ORIGIN_RE = re.compile(r"^\s*url\s*=\s*(\S+)\s*$", re.M)
 
 
 def slug(name: str) -> str:
+    """The lowercase slug of *name*, or ``""`` when nothing usable is left (the
+    caller then asks for ``--key`` instead of guessing)."""
     out = _SLUG_RE.sub("-", name.lower()).strip("-._")[:64].rstrip("-._")
-    return out if KEY_RE.match(out) else "repo"
+    return out if KEY_RE.match(out) else ""
 
 
 def is_global(root) -> bool:
@@ -41,12 +43,23 @@ def is_global(root) -> bool:
         return False
 
 
-def wiki_key(root, override: str | None = None) -> str:
+def folder_name(root) -> str:
+    return db.db_path(root).parent.parent.name
+
+
+def wiki_key(root, override: str | None = None, rdir: Path | None = None) -> str | None:
+    """The server key of *root*: ``global``; the key passed with ``--key``; the key
+    kept from an earlier ``--key``; else the slug of the checkout folder, but only
+    when the repo has a git origin (two unrelated repos can share a folder name).
+    ``None`` means the user has to pass ``--key`` once."""
     if is_global(root):
         return "global"
     if override and KEY_RE.match(override):
         return override
-    return slug(db.db_path(root).parent.parent.name)
+    kept = syncstate.named_key(syncstate.state_path(rdir or syncstate.remote_dir(), db.db_path(root)))
+    if kept and KEY_RE.match(kept):
+        return kept
+    return slug(folder_name(root)) or None if git_origin(root) else None
 
 
 def git_origin(root) -> str:
@@ -94,12 +107,19 @@ def run_sync(client: Client, rdir: Path, roots: list[Path], *, key: str | None =
              ) -> list[sync.SyncResult]:
     results = []
     for root in roots:
-        k = wiki_key(root, key)
+        k = wiki_key(root, key, rdir)
+        if k is None:
+            results.append(sync.SyncResult(
+                key=folder_name(root), status="needs-key",
+                message="this repo has no git origin, so it has no automatic wiki key; "
+                        "run `shapa remote sync --key KEY` once (the key is kept)"))
+            continue
         try:
             res = sync.sync_wiki(root, client=client, rdir=rdir, key=k, name=k,
                                  kind="global" if is_global(root) else "repo",
                                  origin="" if is_global(root) else git_origin(root),
-                                 dry_run=dry_run, if_changed=if_changed, wait=wait)
+                                 dry_run=dry_run, if_changed=if_changed, wait=wait,
+                                 named=bool(key) and not is_global(root))
         except Exception as exc:  # one wiki's bug must not stop the others
             res = sync.SyncResult(key=k, status="error",
                                   message=f"unexpected {type(exc).__name__}")

@@ -64,6 +64,9 @@ class Wikis:
         self.global_wiki = self.tmp / "global"
         self.repo = self.tmp / "my-repo"
         (self.repo / ".git").mkdir(parents=True)
+        # a repo with an origin has an automatic wiki key (without one, sync needs --key)
+        (self.repo / ".git" / "config").write_text(
+            '[remote "origin"]\n\turl = https://git.example/owner/my-repo.git\n', encoding="utf-8")
         self.wiki = self.repo / ".shapa"
         for w in (self.global_wiki, self.wiki):
             w.mkdir(parents=True)
