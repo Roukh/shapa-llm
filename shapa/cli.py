@@ -113,6 +113,9 @@ commands:
                  edit, rm, link, tag, list
   doc ...        documents (D): add --scope (body from --body, --file or
                  stdin), edit, rm, list; `shapa get D<n>` prints one
+  remote ...     the opt-in hosted store: login URL, sync (two-way, every wiki
+                 in scope; --hook for a session hook), status, devices,
+                 logout, instructions
   correction     UserPromptSubmit hook: an operator correction ("no",
                  "wrong", "not like this") becomes an issue row
   serve [ROOT]   run the optional warm per-root daemon (latency only)
@@ -409,6 +412,11 @@ def main(argv: list[str] | None = None) -> None:
         from shapa import docs, ledger
 
         ledger.run(docs.run_doc, rest)
+        return
+    if cmd == "remote":
+        from shapa import remote
+
+        remote.main(rest)
         return
     if cmd in ("ledger", "row", "correction"):
         from shapa import ledger

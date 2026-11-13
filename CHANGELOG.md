@@ -19,6 +19,17 @@ This project follows [Semantic Versioning](https://semver.org/).
   `idea`, not a new kind.
 - Delete tombstones: every row, item or document removed (the after-feature
   sweep included) leaves an `(id, kind, created, deleted_at)` record.
+- `shapa remote`: an opt-in hosted store (a Cloudflare Worker you deploy,
+  under `hosted/`). `login URL` registers the machine as a device (owner
+  key from `$SHAPA_OWNER_KEY` or a hidden prompt, never argv), `sync`
+  two-way syncs every wiki in scope (ledger items, rows, documents and the
+  `arch/` and `research/` notes) by revision with last-write-wins,
+  `--hook` for a session hook (8 s budget, never fails), `--if-changed`,
+  `--dry-run`, `--all`, `status [--check]`, `devices [--revoke]`, `logout`
+  and `instructions`. HTTPS is required (plain HTTP only for localhost),
+  redirects are never followed, the server's answers are validated and
+  redacted before anything is written locally, and a database swapped by git
+  heals from the server instead of pushing deletes. Standard library only.
 
 ## [0.9.0] - 2026-10-08
 

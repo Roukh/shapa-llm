@@ -727,18 +727,29 @@ def delete(conn: sqlite3.Connection, ids, *, tombstone: bool = True) -> int:
     ids = [i for i in ids if i]
     if not ids:
         return 0
-    n, ts = 0, now_iso()
     with write(conn):
-        for i in ids:
-            for table in ("mri", "items", "docs"):
-                found = conn.execute(f"SELECT created FROM {table} WHERE id = ?", (i,)).fetchone()
-                if found is None:
-                    continue
-                if tombstone:
-                    conn.execute("INSERT OR REPLACE INTO tombstones(id, kind, created, deleted_at) "
-                                 "VALUES (?,?,?,?)", (i, i[:1], found[0], ts))
-                n += conn.execute(f"DELETE FROM {table} WHERE id = ?", (i,)).rowcount
-            conn.execute("DELETE FROM tags WHERE id = ?", (i,))
+        return remove(conn, ids, tombstone=tombstone)
+
+
+def remove(conn: sqlite3.Connection, ids, *, tombstone: bool = True,
+           keep_inbound: bool = False) -> int:
+    """:func:`delete` inside the caller's open transaction. ``keep_inbound``
+    leaves other records' links *to* the removed id alone (sync does: they
+    are other records' content)."""
+    n, ts = 0, now_iso()
+    for i in ids:
+        for table in ("mri", "items", "docs"):
+            found = conn.execute(f"SELECT created FROM {table} WHERE id = ?", (i,)).fetchone()
+            if found is None:
+                continue
+            if tombstone:
+                conn.execute("INSERT OR REPLACE INTO tombstones(id, kind, created, deleted_at) "
+                             "VALUES (?,?,?,?)", (i, i[:1], found[0], ts))
+            n += conn.execute(f"DELETE FROM {table} WHERE id = ?", (i,)).rowcount
+        conn.execute("DELETE FROM tags WHERE id = ?", (i,))
+        if keep_inbound:
+            conn.execute("DELETE FROM links WHERE src = ?", (i,))
+        else:
             conn.execute("DELETE FROM links WHERE src = ? OR dst = ?", (i, i))
     return n
 
