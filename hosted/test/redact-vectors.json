@@ -1,0 +1,395 @@
+[
+ {
+  "name": "pem",
+  "parts": [
+   "-----BEGIN RSA PRIV",
+   "ATE KEY-----\nMIIEabc\ndef\n-----END RSA PRIV",
+   "ATE KEY-----\nafter"
+  ],
+  "expected": "[REDACTED]\nafter",
+  "hits": 1
+ },
+ {
+  "name": "pem-unterminated",
+  "parts": [
+   "key: -----BEGIN PRIV",
+   "ATE KEY-----\nMIIEabc\nline2\n"
+  ],
+  "expected": "key: [REDACTED]\n",
+  "hits": 1
+ },
+ {
+  "name": "anthropic",
+  "parts": [
+   "use sk-an",
+   "t-api03-",
+   "A1b2C3d4E5f6G7h8I9j0",
+   " now"
+  ],
+  "expected": "use [REDACTED] now",
+  "hits": 1
+ },
+ {
+  "name": "openai",
+  "parts": [
+   "key=sk-",
+   "proj-",
+   "A1b2C3d4E5f6G7h8I9j0",
+   "x"
+  ],
+  "expected": "key=[REDACTED]",
+  "hits": 1
+ },
+ {
+  "name": "openai-plain",
+  "parts": [
+   "sk-",
+   "A1b2C3d4E5f6G7h8I9j0",
+   "ZZ"
+  ],
+  "expected": "[REDACTED]",
+  "hits": 1
+ },
+ {
+  "name": "stripe",
+  "parts": [
+   "sk_li",
+   "ve_",
+   "abcdefghij1234",
+   " and pk_te",
+   "st_abcdefghij5678"
+  ],
+  "expected": "[REDACTED] and [REDACTED]",
+  "hits": 2
+ },
+ {
+  "name": "stripe-webhook",
+  "parts": [
+   "wh",
+   "sec_",
+   "abcdefghij1234"
+  ],
+  "expected": "[REDACTED]",
+  "hits": 1
+ },
+ {
+  "name": "github-ghp",
+  "parts": [
+   "token ghp",
+   "_",
+   "A1b2C3d4E5f6G7h8I9j0",
+   "abcd"
+  ],
+  "expected": "token [REDACTED]",
+  "hits": 1
+ },
+ {
+  "name": "github-pat",
+  "parts": [
+   "github_",
+   "pat_",
+   "A1b2C3d4E5f6G7h8I9j0",
+   "xy"
+  ],
+  "expected": "[REDACTED]",
+  "hits": 1
+ },
+ {
+  "name": "gitlab",
+  "parts": [
+   "gl",
+   "pat-",
+   "A1b2C3d4E5f6G7h8I9j0",
+   "ab"
+  ],
+  "expected": "[REDACTED]",
+  "hits": 1
+ },
+ {
+  "name": "slack",
+  "parts": [
+   "xo",
+   "xb-",
+   "1234567890-abcdef"
+  ],
+  "expected": "[REDACTED]",
+  "hits": 1
+ },
+ {
+  "name": "aws",
+  "parts": [
+   "AK",
+   "IA",
+   "ABCDEFGHIJKLMNOP"
+  ],
+  "expected": "[REDACTED]",
+  "hits": 1
+ },
+ {
+  "name": "aws-too-long",
+  "parts": [
+   "AK",
+   "IA",
+   "ABCDEFGHIJKLMNOPQ"
+  ],
+  "expected": "A\u004bIAABCDEFGHIJKLMNOPQ",
+  "hits": 0
+ },
+ {
+  "name": "google",
+  "parts": [
+   "AI",
+   "za",
+   "SyAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+  ],
+  "expected": "[REDACTED]",
+  "hits": 1
+ },
+ {
+  "name": "huggingface",
+  "parts": [
+   "hf",
+   "_",
+   "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  ],
+  "expected": "[REDACTED]",
+  "hits": 1
+ },
+ {
+  "name": "npm",
+  "parts": [
+   "np",
+   "m_",
+   "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  ],
+  "expected": "[REDACTED]",
+  "hits": 1
+ },
+ {
+  "name": "supabase",
+  "parts": [
+   "sb",
+   "_secret_",
+   "abcdefghij12"
+  ],
+  "expected": "[REDACTED]",
+  "hits": 1
+ },
+ {
+  "name": "resend",
+  "parts": [
+   "re",
+   "_",
+   "abcdefghij1234567890"
+  ],
+  "expected": "[REDACTED]",
+  "hits": 1
+ },
+ {
+  "name": "jwt",
+  "parts": [
+   "ey",
+   "Jhbgc.",
+   "e\u0079JwYXlsb2Fk.",
+   "c2lnbmF0dXJl"
+  ],
+  "expected": "e\u0079Jhbgc.e\u0079JwYXlsb2Fk.c2lnbmF0dXJl",
+  "hits": 0
+ },
+ {
+  "name": "url-password",
+  "parts": [
+   "postgres://user:",
+   "hunter2secret",
+   "@db.example.com/app"
+  ],
+  "expected": "postgres://user:[REDACTED]@db.example.com/app",
+  "hits": 1
+ },
+ {
+  "name": "url-no-password",
+  "parts": [
+   "https://example.com/path:80/x"
+  ],
+  "expected": "https://example.com/path:80/x",
+  "hits": 0
+ },
+ {
+  "name": "bearer",
+  "parts": [
+   "Authorization: Bear",
+   "er abcdefghij.klmnop-qrs"
+  ],
+  "expected": "Authorization: Bearer [REDACTED]",
+  "hits": 1
+ },
+ {
+  "name": "basic",
+  "parts": [
+   "Basic dXNlcjpwYXNzd29yZDEyMzQ="
+  ],
+  "expected": "Basic [REDACTED]",
+  "hits": 1
+ },
+ {
+  "name": "assignment",
+  "parts": [
+   "API_KEY=",
+   "abcdefghij1234",
+   " and password: ",
+   "sup3rS3cretValue9"
+  ],
+  "expected": "API_KEY=[REDACTED] and password: [REDACTED]",
+  "hits": 2
+ },
+ {
+  "name": "assignment-json",
+  "parts": [
+   "{\"client_secret\": \"",
+   "abcdefghij1234",
+   "\"}"
+  ],
+  "expected": "{\"client_secret\": \"[REDACTED]\"}",
+  "hits": 1
+ },
+ {
+  "name": "assignment-prose",
+  "parts": [
+   "token: none of these apply here"
+  ],
+  "expected": "token: none of these apply here",
+  "hits": 0
+ },
+ {
+  "name": "assignment-short",
+  "parts": [
+   "password=short"
+  ],
+  "expected": "password=short",
+  "hits": 0
+ },
+ {
+  "name": "conn-string",
+  "parts": [
+   "Server=x;Pass",
+   "word=abcdef123;Db=y"
+  ],
+  "expected": "Server=x;Password=[REDACTED];Db=y",
+  "hits": 1
+ },
+ {
+  "name": "conn-string-pwd",
+  "parts": [
+   "pwd = ",
+   "abc123def"
+  ],
+  "expected": "pwd = [REDACTED]",
+  "hits": 1
+ },
+ {
+  "name": "split-prefix",
+  "parts": [
+   "sk-an",
+   "t-api03-ab\n",
+   "cdefghij1234567890"
+  ],
+  "expected": "[REDACTED]",
+  "hits": 1
+ },
+ {
+  "name": "split-prefix-ghp",
+  "parts": [
+   "gh",
+   "p_",
+   "abcdefghij",
+   "\n",
+   "klmnopqrstuvwxyz"
+  ],
+  "expected": "[REDACTED]",
+  "hits": 1
+ },
+ {
+  "name": "tail-absorb",
+  "parts": [
+   "sk-an",
+   "t-api03-",
+   "A1b2C3d4E5f6G7h8I9j0",
+   "\n",
+   "aaaa1111bbbb2222"
+  ],
+  "expected": "[REDACTED]",
+  "hits": 1
+ },
+ {
+  "name": "tail-no-digit-short",
+  "parts": [
+   "sk-an",
+   "t-api03-",
+   "A1b2C3d4E5f6G7h8I9j0",
+   " plainword"
+  ],
+  "expected": "[REDACTED] plainword",
+  "hits": 1
+ },
+ {
+  "name": "tail-long",
+  "parts": [
+   "sk-an",
+   "t-api03-",
+   "A1b2C3d4E5f6G7h8I9j0",
+   " ",
+   "xxxxxxxxxxxxxxxxxxxxxx"
+  ],
+  "expected": "[REDACTED]",
+  "hits": 1
+ },
+ {
+  "name": "plain",
+  "parts": [
+   "nothing secret here, just a sentence about tokens and keys."
+  ],
+  "expected": "nothing secret here, just a sentence about tokens and keys.",
+  "hits": 0
+ },
+ {
+  "name": "idempotent",
+  "parts": [
+   "[REDACTED] again [REDACTED]"
+  ],
+  "expected": "[REDACTED] again [REDACTED]",
+  "hits": 0
+ },
+ {
+  "name": "unicode-boundary",
+  "parts": [
+   "cafésk-an",
+   "t-api03-",
+   "A1b2C3d4E5f6G7h8I9j0"
+  ],
+  "expected": "cafés\u006b-ant-api03-A1b2C3d4E5f6G7h8I9j0",
+  "hits": 0
+ },
+ {
+  "name": "multiple",
+  "parts": [
+   "a sk-an",
+   "t-api03-",
+   "A1b2C3d4E5f6G7h8I9j0",
+   " b ",
+   "gh",
+   "o_",
+   "A1b2C3d4E5f6G7h8I9j0",
+   " c"
+  ],
+  "expected": "a [REDACTED] b [REDACTED] c",
+  "hits": 2
+ },
+ {
+  "name": "empty",
+  "parts": [
+   ""
+  ],
+  "expected": "",
+  "hits": 0
+ }
+]

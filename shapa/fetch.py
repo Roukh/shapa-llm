@@ -1070,11 +1070,12 @@ def render(selection: Selection) -> str:
     head = WRAPPER_HEAD + (" [bm25-only: no [semantic] extra]" if selection.mode == "bm25" else "")
     lines = [WRAPPER_OPEN, head]
     for node, text in selection.items:
-        lines.append(f"- {node.id}: {memlog.display_line(text)}")
+        lines.append(f"- {memlog.display_line(str(node.id))}: {memlog.display_line(text)}")
     if selection.no_match:
         lines.append(NO_MATCH_LINE)
     for nid in selection.collisions:
-        lines.append(f"(id {nid} exists in more than one wiki root - ambiguous, both shown)")
+        lines.append(f"(id {memlog.display_line(str(nid))} exists in more than one wiki root "
+                     "- ambiguous, both shown)")
     lines.append(WRAPPER_CLOSE)
     return "\n".join(lines)
 

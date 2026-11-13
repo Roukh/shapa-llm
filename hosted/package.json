@@ -1,0 +1,34 @@
+{
+  "name": "shapa-hosted",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Hosted shapa: the central store (Cloudflare Worker + Durable Object SQLite) behind REST and remote MCP.",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "types": "wrangler types",
+    "test": "vitest run",
+    "pretypecheck": "npm run types",
+    "typecheck": "tsc --noEmit",
+    "dev": "wrangler dev",
+    "deploy:dry": "wrangler deploy --dry-run --outdir .wrangler/dry"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@cloudflare/workers-oauth-provider": "1.2.4",
+    "@hono/zod-openapi": "1.6.3",
+    "@modelcontextprotocol/server": "2.4.0",
+    "agents": "0.33.0",
+    "hono": "4.13.18",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "1.8.1",
+    "@types/node": "22.15.17",
+    "typescript": "5.9.3",
+    "vitest": "4.1.12",
+    "wrangler": "4.161.0"
+  }
+}

@@ -40,3 +40,30 @@ jobs:
 
       - name: Run test suite
         run: python -m pytest -q
+
+  # The hosted Worker (hosted/): tests run inside the Workers runtime (workerd) via Vitest.
+  hosted:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: hosted
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: hosted/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Build check (no deploy)
+        run: npm run deploy:dry
