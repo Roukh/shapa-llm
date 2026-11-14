@@ -28,7 +28,8 @@ import os
 import sys
 from pathlib import Path
 
-from shapa import config, db, embed, focus, ledger, memlog, reconfigure, registry, serve
+from shapa import (codemap, config, db, embed, focus, ledger, memlog, partition, reconfigure,
+                   registry, serve)
 from shapa.config import WikiRoot
 from shapa.nodes import Node, load_nodes
 from shapa.score import score_meta
@@ -290,8 +291,14 @@ def build_focused(wiki_roots: list[WikiRoot], budget: int = DEFAULT_BUDGET) -> s
             conn = None
         if conn is None:
             continue
+        graph = None
         try:
             f = focus.load(conn)
+            if wr.kind == "repo" and any(f.fires):
+                try:
+                    graph = codemap.open_graph(wr.path)  # read-only; absent until `shapa map`
+                except Exception:
+                    graph = None
             if f.northstar:
                 norths.append(f"northstar [{label}]: {_clip(f.northstar, focus.NORTHSTAR_MAX)}")
             shown: list[dict] = []
@@ -319,6 +326,14 @@ def build_focused(wiki_roots: list[WikiRoot], budget: int = DEFAULT_BUDGET) -> s
                     boxes = ", ".join(_clip(x, 60) for x in t.boxes)
                     entry["order"].append((LEVEL_NAMES, n, "   names: " + "; ".join(x for x in (
                         named, f"arch {boxes}" if boxes else "") if x)))
+                    n += 1
+                if graph is not None:
+                    try:
+                        line = partition.session_line(partition.partition_fire(conn, graph, fire, i))
+                    except Exception:
+                        line = ""  # a broken map never blocks session start
+                    if line:
+                        entry["order"].append((LEVEL_NAMES, n, line))
                 shown.append(entry)
                 fire_no += 1
             if shown:
@@ -335,6 +350,8 @@ def build_focused(wiki_roots: list[WikiRoot], budget: int = DEFAULT_BUDGET) -> s
         except Exception:
             continue  # a broken database never blocks session start
         finally:
+            if graph is not None:
+                graph.close()
             conn.close()
     if not norths and not groups and not hints and not directive and not pointers:
         return ""

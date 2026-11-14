@@ -121,6 +121,15 @@ commands:
                  only the fires' own tree after them
   skill ...      skills as versioned records, global or per repo: list,
                  show, add, update (a new pending version), activate
+  map [--seconds N] [--rebuild] [--json]
+                 build or refresh the code map of this checkout: files,
+                 functions, imports and calls (Python by ast, JS/TS by
+                 regex), a derived gitignored .shapa-code.db; bounded
+                 and incremental
+  partition [F<n>|1|2|3] [--max-files N] [--max-bytes N] [--no-refresh] [--json]
+                 a fire's related files as one bounded partition (named
+                 files, recalled files, callers and importers) with why
+                 each is there; local only, session start shows the top
   remote ...     the opt-in hosted store: login URL, sync (two-way, every wiki
                  in scope; --hook for a session hook), status, devices,
                  logout, instructions
@@ -430,6 +439,11 @@ def main(argv: list[str] | None = None) -> None:
         from shapa import skills
 
         skills.main(rest)
+        return
+    if cmd in ("map", "partition"):
+        from shapa import partition
+
+        (partition.main_map if cmd == "map" else partition.main_partition)(rest)
         return
     if cmd == "remote":
         from shapa import remote

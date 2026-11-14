@@ -59,6 +59,14 @@ there instead.
 - Starts a session on what matters: the northstar, then the three big fires
   (`shapa focus`) and only their tree, not every row. Closing a fire's
   feature frees its slot and promotes the next candidate.
+- Partitions the code per fire. `shapa map` builds a graph of the checkout
+  (files, functions, imports and calls; Python by `ast`, JavaScript and
+  TypeScript by regex) into a derived, gitignored index; `shapa partition`
+  lists a fire's related files, bounded: the files its feature, jobs and
+  tasks name, the files recalled for their words, and the callers and
+  importers a change reaches, each with why it is there. Session start shows
+  each fire's top files. It is local: it needs the checkout, so the hosted
+  store neither holds nor serves it.
 - Injects relevant memory on every prompt, ranked by relevance.
 - Keeps skills as versioned records and one document per project; a
   correction that names a skill files a pending new version of it, never an
@@ -142,6 +150,8 @@ which is why shapa commits it only on the default branch.
 | `shapa bootstrap [--full]` | session start: the northstar, the three fires and only their tree (`--full`: every ranked row and the open ledger) |
 | `shapa focus show\|northstar\|fire\|unfire\|order\|rank\|candidates\|promote` | the northstar and the three ranked big fires of a wiki scope |
 | `shapa skill list\|show\|add\|update\|activate` | skills as versioned records, global or per repo |
+| `shapa map [--seconds N] [--rebuild] [--json]` | build or refresh this checkout's code map (a derived, gitignored `.shapa-code.db`) |
+| `shapa partition [F<n>\|1\|2\|3] [--max-files N] [--max-bytes N] [--no-refresh] [--json]` | a fire's related files as one bounded partition, each with why |
 | `shapa fetch` | rank and surface memory relevant to a prompt |
 | `shapa get ID` | print a row's or a note's full text |
 | `shapa save` | write one note or row (`--scope global\|repo\|external`) |
@@ -153,7 +163,7 @@ which is why shapa commits it only on the default branch.
 | `shapa maintain [--prune] [--dry-run]` | self-heal: merge duplicates, prune stale and orphaned rows |
 | `shapa validate` | check note and wiki frontmatter |
 | `shapa upgrade [--all] [--check]` | bring a wiki to the current format |
-| `shapa mcp` | run the MCP stdio server (`search`, `get`, `save`, `placement`, `focus`, `skill`) |
+| `shapa mcp` | run the MCP stdio server (`search`, `get`, `save`, `placement`, `focus`, `skill`, `partition`) |
 | `shapa serve` | run the optional warm per-wiki daemon |
 
 Run `shapa` with no arguments for the full, versioned usage text.
@@ -196,6 +206,7 @@ Everything shapa reads or writes stays on disk, in files you own:
   put it elsewhere.
 - `<repo>/.shapa/shapa.db`: that repo's wiki, tracked in git.
 - `<repo>/.shapa/.shapa-index.db`: the derived search index, gitignored.
+- `<repo>/.shapa/.shapa-code.db`: the derived code map (`shapa map`), gitignored.
 - `~/.shapa/remote.json`, `remote.token` (mode 0600) and `sync/`: only after
   `shapa remote login`.
 

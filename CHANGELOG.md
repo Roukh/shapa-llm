@@ -53,6 +53,25 @@ This project follows [Semantic Versioning](https://semver.org/).
   and updates (always pending), and neither the Worker's REST PATCH nor its MCP
   `update` touches a skill version; `shapa skill activate` does.
 
+- Code partitions per fire. `shapa map` builds a bounded, incremental code map
+  of the checkout into `.shapa/.shapa-code.db` (derived, gitignored, never
+  synced; `shapa upgrade` adds it to a wiki's `.gitignore`): files and the
+  functions and classes defined in them, import edges and call edges resolved
+  through the imports (Python by `ast`; JavaScript and TypeScript by regex, no
+  node dependency), and per file a short terms document searched by FTS5/BM25
+  and, with `[semantic]`, model2vec vectors. It skips hidden, vendored and
+  generated folders, nested checkouts, symlinks, files over 400 KB, generated
+  files, paths with control or markup characters and every credential file
+  (`.env*` but the templates, `.envrc`, `.dev.vars`, `remote.token*`, keys),
+  caps at 20,000 files, stops parsing after 30 seconds and resumes on the next
+  run, and replaces a corrupt index. `shapa partition [F<n>|1|2|3]` prints a
+  fire's partition, each file with why: named by a feature, job, task or linked
+  row (path or function), recalled for the item's words (a score), or reached by
+  impact (callers of a named function, importers, imports, callees, one decayed
+  hop), at most 24 files and 120 KB, never a file gone from disk. Session start
+  adds one `code map:` line per fire (when a map exists) inside its budget. The
+  MCP tool `partition` (`map` builds). The hosted Worker stores nothing of it.
+
 ### Changed
 
 - `shapa bootstrap` (the SessionStart hook) prints the northstar first, then

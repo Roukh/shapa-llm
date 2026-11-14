@@ -451,6 +451,34 @@ def tool_skill(args: dict[str, Any], cwd: str | None) -> dict[str, Any]:
         conn.close()
 
 
+def tool_partition(args: dict[str, Any], cwd: str | None) -> dict[str, Any]:
+    """A fire's related files (``partition``), or the code map's build (``map``). Both are local:
+    they read this checkout, so the hosted store neither holds nor serves them."""
+    from shapa import codemap, partition
+
+    action = str(args.get("action") or "partition").strip()
+    if action not in ("partition", "map"):
+        return {"error": f"action must be partition or map (got {action!r})"}
+    root = config.discover(args.get("root") or cwd)
+    if root is None:
+        return {"error": "no repo-local wiki here - run `shapa init`"}
+
+    def num(key: str, default: float, low: float, high: float) -> float:
+        try:
+            return min(high, max(low, float(args.get(key, default))))
+        except (TypeError, ValueError):
+            return default
+
+    if action == "map":
+        return codemap.build(root, seconds=num("seconds", partition.REFRESH_SECONDS, 0, 60)).as_dict()
+    target = args.get("target")
+    return partition.compute(
+        root, None if target in (None, "") else str(target), refresh=args.get("refresh", True) is not False,
+        max_files=int(num("max_files", partition.MAX_MEMBERS, 1, 200)),
+        max_bytes=int(num("max_bytes", partition.MAX_BYTES, 1, 4_000_000)),
+        seconds=num("seconds", partition.REFRESH_SECONDS, 0, 60))
+
+
 _HANDLERS: dict[str, Callable[[dict[str, Any], str | None], dict[str, Any]]] = {
     "search": tool_search,
     "get": tool_get,
@@ -458,6 +486,7 @@ _HANDLERS: dict[str, Callable[[dict[str, Any], str | None], dict[str, Any]]] = {
     "placement": tool_placement,
     "focus": tool_focus,
     "skill": tool_skill,
+    "partition": tool_partition,
 }
 
 TOOLS: list[dict[str, Any]] = [
@@ -595,6 +624,26 @@ TOOLS: list[dict[str, Any]] = [
                 "name": {"type": "string"}, "description": {"type": "string"},
                 "body": {"type": "string"}, "version": {"type": "integer"},
                 "root": {"type": "string"},
+            },
+        },
+    },
+    {
+        "name": "partition",
+        "description": (
+            "A big fire's related files as one bounded partition, without reading the rest of the "
+            "codebase: files the fire's feature, jobs, tasks and linked rows name, files recalled for "
+            "their words, and files impacted along the code graph (callers, importers), each with why "
+            "it is there. `target` is F<n>, a fire slot 1-3, or none for every fire. action `map` "
+            "(re)builds the code map, a derived local index; `partition` refreshes it first unless "
+            "refresh is false. Local only: it reads this checkout."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["partition", "map"]},
+                "target": {"type": "string"}, "refresh": {"type": "boolean"},
+                "max_files": {"type": "integer"}, "max_bytes": {"type": "integer"},
+                "seconds": {"type": "number"}, "root": {"type": "string"},
             },
         },
     },

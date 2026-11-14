@@ -75,6 +75,10 @@ None of these is a record kind or a schema change: each is a document (`D`) told
 - A memory, rule or issue that names a skill (tag `skill:NAME`; in Python also an `about` link to a version) files a new `pending` version: the skill's latest version (any status) plus a `## Lesson [ROWID]` section whose lines are all quoted (`> `), the body cut at 1500 characters, once per row. It never activates. Python does it in `add_row`, `tag` and `link`; the Worker in REST and MCP create and in PATCH of tags; a pulled record never re-files, so a lesson is filed once. Only a device with the write scope can file one.
 - Skill bodies never reach session start or session instructions.
 
+## Not hosted: the code map
+
+A fire's code partition (`shapa map`, `shapa partition`, MCP `partition` of the local server) is derived from a checkout (`shapa/codemap.py`, the gitignored `.shapa-code.db`), so it is local to the device that has the code. The Worker stores no graph, no partition and no file path of a map, has no `partition` tool or route, and no sync record carries one: a chat client without a checkout has nothing to partition. The fire itself (feature, jobs, the files and arch boxes their text names) still reaches it through `focus` and `instructions`.
+
 ## Wikis
 
 Key `global` for the global wiki; a repo wiki's key is the lowercase slug (`^[a-z0-9][a-z0-9._-]{0,63}$`) of its primary checkout's directory name, overridable with `--key`. `PUT /v1/wikis/{key}` `{name, kind, origin}` is idempotent; `origin` is `host/owner/repo` (never credentials). Same key with a different origin: 409. A repo with no git origin has no automatic key: it syncs after one `--key KEY`, which the sync state keeps.

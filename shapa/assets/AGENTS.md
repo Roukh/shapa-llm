@@ -26,6 +26,7 @@ feature cleans the database.
   temp/F<n>/             scrap notes of one feature (gitignored, gone at its merge)
   .shapa-format          the wiki format (4)
   .shapa-index.db        derived search index and vectors (gitignored, rebuilt)
+  .shapa-code.db         derived code map of the checkout: `shapa map` (gitignored, rebuilt)
 ```
 
 A repo wiki holds the work ledger and its own memories, rules and issues. The
