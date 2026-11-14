@@ -11,7 +11,12 @@ import {
 import { Repo, toWire, type Stored } from "./repo.js";
 import { wikiFor } from "./ledger.js";
 import { syncGate } from "./projects.js";
+import { backlinkProject, projectLinks } from "./projectapi.js";
 import { activationGate } from "./skills.js";
+import { budgetProblem, gateStage, kindProblem, mayBaseline, tagProblem } from "./gates.js";
+import { guardPrinted, storedNames } from "./reach.js";
+import { projectKeyOf } from "./tags.js";
+import { projectOf } from "./records.js";
 
 interface SyncIn {
   cursor: number;
@@ -57,6 +62,13 @@ function applyPut(
     return { id, status: "rejected", rev: 0, error: e.message };
   }
   n = { ...n, updated: clampFuture(n.updated) };
+  const wikiKind = repo.wiki(wiki)?.kind ?? "repo";
+  if (!n.deleted) {
+    // The tag and kind rules every writer meets (stages, one project, one task owner, the global wiki's tasks).
+    const rawTags = Array.isArray((raw as { tags?: unknown } | null)?.tags) ? ((raw as { tags: unknown[] }).tags) : [];
+    const bad = tagProblem({ kind: n.kind, tags: rawTags, wikiKind }) ?? kindProblem(wikiKind, n.kind, n.data["parent"]);
+    if (bad) return { id: n.id, status: "rejected", rev: 0, error: bad };
+  }
   if (n.deleted) {
     // A put that carries the tombstone flag is a delete and needs the delete scope.
     return applyDel(repo, d, wiki, { op: "del", id: n.id, uid: n.uid, deleted_at: n.updated, base_rev: baseRev }, extras);
@@ -69,6 +81,14 @@ function applyPut(
   const byUid = repo.byUid(wiki, n.uid);
   const target = byUid ?? (held && held.uid === n.uid ? held : null);
 
+  // The notes printed into every session text change only from a device token with the delete scope.
+  try {
+    guardPrinted(d, wiki, [n.id, n.alias, n.data["alias"], ...(target ? storedNames(target) : [])]);
+  } catch (e) {
+    if (e instanceof ApiError) return { id: n.id, status: "rejected", rev: target?.rev ?? 0, error: e.message };
+    throw e;
+  }
+
   // The focus and skill record shapes and the project key format. Documents already stored are
   // grandfathered: the one-document rule gates creation, never a put of a document a client holds.
   const refused = syncGate(repo, wiki, n, target, (raw as { tags?: unknown } | null)?.tags);
@@ -78,10 +98,38 @@ function applyPut(
   if (act?.error) return { id: n.id, status: "rejected", rev: target?.rev ?? 0, error: act.error };
   if (act?.put) n = act.put;
 
+  // Stage 0 is the operator's: only a delete-scope device token's put may add, remove or edit it. Anyone else's
+  // stage:0 is stored as stage-proposed:0, and an edit of a stored stage:0 record is rejected.
+  let note: string | undefined;
+  const live = target && !target.deleted ? target : null;
+  if (!(live && sameContent(live, n))) {
+    const privileged = mayBaseline(d, true);
+    const gated = gateStage({ stored: live ? live.tags : null, next: n.tags, privileged });
+    if ("error" in gated) return { id: n.id, status: "rejected", rev: target?.rev ?? 0, error: gated.error };
+    if (gated.notice) { n = { ...n, tags: gated.tags }; note = gated.notice; }
+    if (privileged) {
+      const over = budgetProblem(repo, wiki, n);
+      if (over) return { id: n.id, status: "rejected", rev: target?.rev ?? 0, error: over };
+    }
+  }
+  // The about link to the project's document follows the project tag (a document made later links them in `commit`).
+  if (n.kind === "T" || n.kind === "M" || n.kind === "R" || n.kind === "I" || (n.kind === "D" && n.tags.includes("skill"))) {
+    const key = projectKeyOf(n.tags);
+    const links = projectLinks(repo, wiki, n.links, key, live ? projectKeyOf(live.tags) : "");
+    if (links !== n.links) n = { ...n, links };
+  }
+  const commit = (rec: Normalized, was: Stored | null): Stored => {
+    const saved = repo.save(wiki, rec, d.name, was);
+    const key = rec.kind === "D" ? projectOf(rec.tags) : null;
+    if (key && (!was || was.deleted || projectOf(was.tags) !== key)) backlinkProject(repo, wiki, saved, d.name);
+    return saved;
+  };
+  const noted = <T extends SyncResultOut>(r: T): T => (note ? { ...r, note } : r);
+
   if (!target) {
     if (!held) {
-      const saved = repo.save(wiki, resolveAlias(repo, wiki, n), d.name, null);
-      return { id: n.id, status: "accepted", rev: saved.rev };
+      const saved = commit(resolveAlias(repo, wiki, n), null);
+      return noted({ id: n.id, status: "accepted", rev: saved.rev });
     }
     // The id is held by a record with another uid (tombstones count): a label collision. The
     // incoming record is stored under a fresh id and the client relabels; the stored one is untouched.
@@ -92,29 +140,29 @@ function applyPut(
       if (e instanceof ApiError) return { id: n.id, status: "rejected", rev: held.rev, error: e.message };
       throw e;
     }
-    const saved = repo.save(wiki, resolveAlias(repo, wiki, { ...n, id: newId }), d.name, null);
+    const saved = commit(resolveAlias(repo, wiki, { ...n, id: newId }), null);
     renames.set(n.id, newId);
-    return { id: n.id, status: "renamed", rev: saved.rev, new_id: newId };
+    return noted({ id: n.id, status: "renamed", rev: saved.rev, new_id: newId });
   }
 
   if (target.kind !== n.kind) {
     return { id: n.id, status: "rejected", rev: target.rev, error: "uid belongs to a record of another kind" };
   }
   const result = (status: "accepted" | "noop" | "rejected", rev: number): SyncResultOut =>
-    target.id === n.id ? { id: n.id, status, rev } : { id: n.id, status, rev, new_id: target.id };
+    noted(target.id === n.id ? { id: n.id, status, rev } : { id: n.id, status, rev, new_id: target.id });
   if (target.id !== n.id) renames.set(n.id, target.id);
   // Same uid: the stored record keeps its id and uid; only its content can change.
   const incoming = resolveAlias(repo, wiki, { ...n, id: target.id });
   if (n.kind === "N" && baseRev === null) {
     // A note the client believes is new never overwrites a stored one (a file's mtime is not an
     // edit time). Over a tombstone, or with nothing stored, it is simply accepted.
-    if (target.deleted) return result("accepted", repo.save(wiki, incoming, d.name, target).rev);
+    if (target.deleted) return result("accepted", commit(incoming, target).rev);
     if (target.data["body"] === incoming.data["body"]) return result("noop", target.rev);
     extras.add(target.id);
     return result("rejected", target.rev);
   }
   if (sameContent(target, incoming)) return result("noop", target.rev);
-  if (baseRev === target.rev || n.updated > target.updated) return result("accepted", repo.save(wiki, incoming, d.name, target).rev);
+  if (baseRev === target.rev || n.updated > target.updated) return result("accepted", commit(incoming, target).rev);
   extras.add(target.id);
   return result("rejected", target.rev);
 }
@@ -143,6 +191,7 @@ function applyDel(
 
 export function sync(repo: Repo, d: Device, wiki: string, req: SyncIn): SyncResponseOut {
   needScope(d, "write");
+  if (d.reach === "baseline") fail("forbidden", "this device does not sync: it reads stage 0 and writes notes, tasks, ideas, decisions and files through the API or MCP");
   wikiFor(repo, d, wiki);
   if (req.ops.length > LIMITS.opsPerSync) fail("too_large", `at most ${LIMITS.opsPerSync} ops per sync request`);
   const current = repo.rev();

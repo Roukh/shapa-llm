@@ -10,11 +10,12 @@
 import { type Device, needScope, needWiki } from "./devices.js";
 import { fail } from "./errors.js";
 import {
-  FIRE_TEXT_MAX, FOCUS_ALIAS, FOCUS_TAG, MAX_FIRES, NORTHSTAR_MAX, RANK_PREFIX, buildData, kindOfId, nowIso, oneLine,
+  FIRE_TEXT_MAX, FOCUS_ALIAS, FOCUS_TAG, MAX_FIRES, NORTHSTAR_MAX, buildData, kindOfId, nowIso, oneLine,
   type Normalized,
 } from "./records.js";
 import { redact } from "./redact.js";
 import { Repo, type Stored } from "./repo.js";
+import { rankOf } from "./tags.js";
 
 /** Every wiki's focus record has this one uid (shapa/focus.py FOCUS_UID), so two devices that each
  *  create it offline made the same record and sync merges them, last write wins. */
@@ -100,12 +101,7 @@ export function saveFocus(repo: Repo, wiki: string, device: string, f: FocusStat
 
 // --- features and candidates ----------------------------------------------------------------
 
-export function rankOf(tags: readonly string[]): number | null {
-  for (const t of tags) {
-    if (t.startsWith(RANK_PREFIX) && /^[1-9]\d{0,2}$/.test(t.slice(RANK_PREFIX.length))) return Number(t.slice(RANK_PREFIX.length));
-  }
-  return null;
-}
+export { rankOf };
 
 function openFeature(repo: Repo, wiki: string, ref: string): Stored {
   const s = repo.find(wiki, ref);

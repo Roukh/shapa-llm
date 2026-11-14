@@ -188,11 +188,11 @@ describe("skills: a lesson files a pending version, never an active one", () => 
     expect(r.body.results[0].status).toBe("accepted");
     expect((await send("GET", skillsPath(w, "/tdd"), { token })).status).toBe(404); // nothing active
     expect((await send("GET", skillsPath(w, "/tdd?version=1"), { token })).body.status).toBe("pending");
-    // an OAuth token never activates, whatever scopes it was granted
+    // an OAuth token never activates, whatever scopes it was granted: it does not sync at all (reach baseline)
     const oauth = await oauthLogin({ scopes: ["read", "write", "delete"], name: "Chat" });
     const o = await sync(oauth.access, w, { ops: [put(version("D2", "tdd", 2, "active", "oauth text"))] });
-    expect(o.body.results[0].status).toBe("accepted");
-    expect((await send("GET", skillsPath(w, "/tdd?version=2"), { token })).body.status).toBe("pending");
+    expect(o.status).toBe(403);
+    expect((await send("GET", skillsPath(w, "/tdd?version=2"), { token })).status).toBe(404);
     // the operator's device (read, write, delete) activates, and it keeps working
     const ok = await sync(token, w, { ops: [put({ ...version("D1", "tdd", 1, "active", "attacker text"), updated: "2026-02-01T00:00:00Z" })] });
     expect(ok.body.results[0].status).toBe("accepted");

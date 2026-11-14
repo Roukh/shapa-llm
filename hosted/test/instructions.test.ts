@@ -41,7 +41,7 @@ describe("session instructions", () => {
     expect(text).toContain(`${w}/F1 Ship hosted mode [claimed by tester] (1 open job)`);
     expect(text).not.toContain("Closed already");
     expect(text).toContain("HOW TO WRITE BACK (MCP tools)");
-    expect(r.body.version).toMatch(/^2\.\d+$/);
+    expect(r.body.version).toMatch(/^3\.\d+$/); // template version 3: precedence, baseline, topics, projects
   });
 
   it("gives the mcp flavor the save call and the rest flavor the exact POST body", async () => {
@@ -117,7 +117,7 @@ describe("session instructions", () => {
     await create(token, w, { type: "feature", title: "Visible to MCP" });
     const viaMcp = await tool(token, "session_start", { wiki: w, full: true });
     expect(viaMcp.isError).toBe(false);
-    const viaRest = (await get(`/v1/instructions?client=mcp&wiki=${w}&budget=6000&full=1`, token)).body.text as string;
+    const viaRest = (await get(`/v1/instructions?client=mcp&wiki=${w}&budget=14000&full=1`, token)).body.text as string;
     expect(viaMcp.text).toBe(viaRest);
     expect(viaMcp.text).toContain("Visible to MCP");
     const restFlavor = await tool(token, "session_start", { client: "rest" });

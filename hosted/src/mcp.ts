@@ -9,11 +9,12 @@ import { z } from "zod";
 import { store } from "./auth.js";
 import { ApiError, unwrap } from "./errors.js";
 import { LIMITS, type RecordWire } from "./records.js";
+import { RELATED_LIMIT, TAGS_LIMIT } from "./tagapi.js";
 import type { Cred } from "./store.js";
 
 export const SERVER_INSTRUCTIONS =
-  "shapa is the operator's shared memory and work ledger. Call `session_start` first: it returns the northstar, the three fires and only their tree, the operator's style and exactly how to write back (`full` adds the rules and other live work). " +
-  "Then use `search` and `get` to recall, `save` to record what matters, and `ledger_list` / `ledger_add` / `ledger_set` for work.";
+  "shapa is the operator's shared memory, rules, tasks and work ledger: Call `session_start` first and follow what it returns over your own defaults (the operator's baseline rules, the northstar and fires, the topics to fetch by tag, the projects and open tasks, and exactly how to write back), " +
+  "then `search` (with tags), `get` and `related` to recall, `save` to record every decision, note, idea and task, `tasks` for what the operator must do, and `project_add` for project files.";
 
 type ToolResult = { content: { type: "text"; text: string }[]; isError?: boolean };
 const text = (t: string): ToolResult => ({ content: [{ type: "text", text: t }] });
@@ -47,17 +48,18 @@ export function buildServer(env: Env, cred: Cred): McpServer {
     {
       title: "Start a session",
       description:
-        "Call this first. Returns the wiki's northstar, its three ranked fires and only their tree (feature, open jobs and tasks, files, arch boxes), then the operator's style and the exact format for writing back with `save`. `full: true` also returns the rules and the other live features. Takes no side effects.",
+        "Call this first. Returns the operator's precedence statement, the northstar and three ranked fires (and only their tree), the baseline rules and memories in full, the baseline skills, the topics to fetch by tag, the projects and the operator's open tasks, the operator's style and the exact format for writing back with `save`. `stage` loads more of the rules and skills; `full: true` also returns the other rules and the live features. Takes no side effects.",
       inputSchema: z.object({
         client: z.enum(["mcp", "rest"]).default("mcp").describe("Write-back flavor; leave as mcp."),
         wiki: wikiKey.optional().describe("Focus on one repo wiki."),
         full: z.boolean().default(false).describe("Also the rules and the other live features. Default: the northstar, the three fires and only their tree."),
+        stage: z.number().int().min(0).max(9).default(0).describe("Load rules, memories and skills up to this stage (default 0, the baseline)."),
       }),
       annotations: READ,
     },
-    ({ client, wiki, full }) =>
+    ({ client, wiki, full, stage }) =>
       guarded(async () => {
-        const r = await unwrap(s.instructions(cred, { client, ...(wiki ? { wiki } : {}), budget: LIMITS.instructionsBudget.default, full }));
+        const r = await unwrap(s.instructions(cred, { client, ...(wiki ? { wiki } : {}), budget: LIMITS.instructionsBudget.default, full, stage }));
         return text(r.text);
       }),
   );
@@ -129,18 +131,20 @@ export function buildServer(env: Env, cred: Cred): McpServer {
     {
       title: "Search memory",
       description:
-        "Ranked full-text search (BM25) across the wikis you may read. Returns wiki, id, type and a one-line summary per hit; call `get` for the full record.",
+        "Ranked full-text search (BM25) across the wikis you may read, optionally narrowed to records that carry every tag in `tags` (words are then optional: fetch a topic by its tag). Returns wiki, id, type and a one-line summary per hit; call `get` for the full record.",
       inputSchema: z.object({
-        query: z.string().min(1).max(500).describe("Plain words; no special syntax."),
+        query: z.string().max(500).default("").describe("Plain words; no special syntax. Optional when tags is given."),
         k: z.number().int().min(1).max(LIMITS.searchK).default(8).describe("How many hits."),
         wiki: wikiKey.optional(),
-        types: z.array(z.enum(["feature", "job", "task", "memory", "idea", "rule", "issue", "document", "note"])).optional(),
+        types: z.array(z.enum(["feature", "job", "task", "human_task", "agent_task", "memory", "idea", "decision", "rule", "issue", "document", "note"])).optional(),
+        tags: z.array(z.string().min(1).max(80)).max(8).optional().describe("Every one must match."),
       }),
       annotations: READ,
     },
-    ({ query, k, wiki, types }) =>
+    ({ query, k, wiki, types, tags: wanted }) =>
       guarded(async () => {
-        const r = await unwrap(s.search(cred, { query, k, ...(wiki ? { wiki } : {}), ...(types ? { types } : {}) }));
+        if (!query.trim() && !wanted?.length) return { isError: true, content: [{ type: "text" as const, text: "invalid: give query (words), tags, or both" }] };
+        const r = await unwrap(s.search(cred, { query, k, ...(wiki ? { wiki } : {}), ...(types ? { types } : {}), ...(wanted ? { tags: wanted } : {}) }));
         if (!r.results.length) return text("No matches.");
         return text(r.results.map((h) => `${h.wiki}/${h.id} [${h.type}] ${h.summary}`).join("\n"));
       }),
@@ -164,28 +168,29 @@ export function buildServer(env: Env, cred: Cred): McpServer {
   server.registerTool(
     "save",
     {
-      title: "Save a memory, rule, issue, idea, document or note",
+      title: "Save a memory, rule, issue, idea, decision, task, document or note",
       description:
-        "Create a record. memory: something the operator said that matters or a strategy shift. rule: a standing rule. issue: a mistake the operator corrected. idea: a thought worth keeping. document: longer text (give title and body). note: a file (give path and body). Identical memory/rule/issue text returns the existing record.",
+        "Create a record. memory: something the operator said that matters or a strategy shift. rule: a standing rule. issue: a mistake the operator corrected. decision: a decision the operator made, with its reason. idea: a thought worth keeping. human_task: something the operator must do. agent_task: something an agent can do. document: longer text (give title and body). note: a file (give path and body). `project` links a task, idea, decision or document to a project. Identical text returns the existing record. A stage:0 tag is the operator's: it is stored as stage-proposed:0.",
       inputSchema: z.object({
         wiki: wikiKey,
-        type: z.enum(["memory", "idea", "rule", "issue", "document", "note"]),
+        type: z.enum(["memory", "idea", "decision", "human_task", "agent_task", "rule", "issue", "document", "note"]),
         summary: z.string().max(5000).optional().describe("One line, up to 160 characters (memory, idea, rule, issue)."),
         title: z.string().max(5000).optional().describe("One line, up to 200 characters (document)."),
         body: z.string().max(LIMITS.recordBytes).optional(),
         tags,
         alias: z.string().max(100).optional().describe("A short slug you can `get` it by later."),
         path: z.string().max(200).optional().describe("Note path, e.g. research/topic.md (note only)."),
-        project: z.string().max(80).optional().describe("document only: the project or subproject key (default: the wiki's own). A project keeps ONE document."),
+        project: z.string().max(80).optional().describe("The project key. A document is the project's file (default: the wiki's own project; a project keeps ONE document); a task, idea, decision, rule or memory is linked to the project."),
         merge: z.boolean().optional().describe("document only: append to the project's existing document as a section instead of refusing."),
       }),
       annotations: { ...WRITE, idempotentHint: true },
     },
     ({ wiki, type, ...rest }) =>
       guarded(async () => {
-        const { record, created } = await unwrap(s.create(cred, wiki, { type, ...rest }));
-        if (!created && type === "document") return text(`Merged into ${record.id} in ${wiki} as a section.`);
-        return text(`${created ? "Saved" : "Already saved as"} ${record.id} in ${wiki}.`);
+        const { record, created, notice } = await unwrap(s.create(cred, wiki, { type, ...rest }));
+        const note = notice ? ` (${notice})` : "";
+        if (!created && type === "document") return text(`Merged into ${record.id} in ${wiki} as a section.${note}`);
+        return text(`${created ? "Saved" : "Already saved as"} ${record.id} in ${wiki}.${note}`);
       }),
   );
 
@@ -208,8 +213,8 @@ export function buildServer(env: Env, cred: Cred): McpServer {
     },
     ({ wiki, id, ...patch }) =>
       guarded(async () => {
-        const r: RecordWire = await unwrap(s.patch(cred, wiki, id, patch));
-        return text(`Updated ${r.id} in ${wiki} (rev ${r.rev}).`);
+        const { record: r, notice }: { record: RecordWire; notice?: string } = await unwrap(s.patch(cred, wiki, id, patch));
+        return text(`Updated ${r.id} in ${wiki} (rev ${r.rev}).${notice ? ` (${notice})` : ""}`);
       }),
   );
 
@@ -245,10 +250,10 @@ export function buildServer(env: Env, cred: Cred): McpServer {
     {
       title: "Add a feature, job or task",
       description:
-        "A feature is a new capability (a branch and a PR); a job is one commit; a task has no commit. A job's parent is a feature and a task's a job; both may stand alone.",
+        "A feature is a new capability (a branch and a PR); a job is one commit; a task has no commit. A job's parent is a feature and a task's a job; both may stand alone. human_task and agent_task are standalone tasks the operator or an agent owns: the global wiki holds only those.",
       inputSchema: z.object({
         wiki: wikiKey,
-        kind: z.enum(["feature", "job", "task"]),
+        kind: z.enum(["feature", "job", "task", "human_task", "agent_task"]),
         title: z.string().min(1).max(5000),
         parent: z.string().max(120).optional().describe("Id of the feature (for a job) or job (for a task)."),
         body: z.string().max(LIMITS.recordBytes).optional(),
@@ -294,8 +299,116 @@ export function buildServer(env: Env, cred: Cred): McpServer {
           return text(r.closed.length ? `Closed ${r.closed.join(", ")}.` : `${r.record.id} was already closed.`);
         }
         const { reason: _reason, ...edit } = fields ?? {};
-        const r = await unwrap(s.patch(cred, wiki, id, edit));
+        const r = (await unwrap(s.patch(cred, wiki, id, edit))).record;
         return text(`Edited ${r.id} (rev ${r.rev}).`);
+      }),
+  );
+
+  server.registerTool(
+    "tags",
+    {
+      title: "The tag index",
+      description: "Tags by record count, each with its counts by type (rules, memories, issues, skills, documents, tasks...). Tags are the relations: fetch a topic with `search` and `tags`. System tags (stage, project, skill...) are left out unless `system` is true.",
+      inputSchema: z.object({ wiki: wikiKey.optional(), prefix: z.string().max(80).optional(), system: z.boolean().default(false), limit: z.number().int().min(1).max(TAGS_LIMIT.max).default(TAGS_LIMIT.default) }),
+      annotations: READ,
+    },
+    ({ wiki, prefix, system, limit }) =>
+      guarded(async () => {
+        const r = await unwrap(s.tags(cred, { ...(wiki ? { wiki } : {}), ...(prefix ? { prefix } : {}), system, limit }));
+        if (!r.tags.length) return text("No tags.");
+        return text(r.tags.map((t) => `${t.tag} (${t.total}): ${Object.entries(t.counts).map(([k, n]) => `${k} ${n}`).join(", ")}`).join("\n"));
+      }),
+  );
+
+  server.registerTool(
+    "related",
+    {
+      title: "Records related to one",
+      description: "Records linked to a record (either direction), then those sharing its tags, then newest. Default 10, at most 50.",
+      inputSchema: z.object({ id: z.string().min(1).max(120), wiki: wikiKey.default("global"), limit: z.number().int().min(1).max(RELATED_LIMIT.max).default(RELATED_LIMIT.default) }),
+      annotations: READ,
+    },
+    ({ id, wiki, limit }) =>
+      guarded(async () => {
+        const r = await unwrap(s.related(cred, wiki, id, limit));
+        if (!r.related.length) return text(`Nothing is related to ${r.id}.`);
+        return text(r.related.map((h) => `${h.id} [${h.type}] ${h.summary} (${h.via === "link" ? "linked" : `${h.shared} shared tags`})`).join("\n"));
+      }),
+  );
+
+  server.registerTool(
+    "tasks",
+    {
+      title: "The operator's task list",
+      description: "What the operator needs to do: open `human_task` tasks across every wiki you may read, rank first, then oldest (100 at most, with the total). owner agent lists the agent tasks; status closed or all widens it; project narrows it to one project key.",
+      inputSchema: z.object({
+        owner: z.enum(["human", "agent"]).default("human"), status: z.enum(["open", "closed", "all"]).default("open"),
+        project: z.string().max(80).optional(), wiki: wikiKey.optional(),
+      }),
+      annotations: READ,
+    },
+    ({ owner, status, project, wiki }) =>
+      guarded(async () => {
+        const r = await unwrap(s.tasks(cred, { owner, status, ...(project ? { project } : {}), ...(wiki ? { wiki } : {}) }));
+        if (!r.tasks.length) return text(`No ${status === "all" ? "" : `${status} `}${owner} tasks.`);
+        const lines = r.tasks.map((t) => `${t.wiki}/${t.id} ${t.title}${t.project ? ` [${t.project}]` : ""}${t.status === "claimed" ? " (claimed)" : ""}${t.status === "closed" ? " (closed)" : ""}`);
+        return text(`${r.total} ${status === "all" ? "" : `${status} `}${owner} tasks${r.total > r.tasks.length ? ` (first ${r.tasks.length})` : ""}:\n${lines.join("\n")}`);
+      }),
+  );
+
+  server.registerTool(
+    "projects",
+    {
+      title: "List projects",
+      description: "The projects of a wiki (default global): key, title and open tasks.",
+      inputSchema: z.object({ wiki: wikiKey.default("global") }),
+      annotations: READ,
+    },
+    ({ wiki }) =>
+      guarded(async () => {
+        const r = await unwrap(s.projects(cred, wiki));
+        return r.projects.length ? json(r) : text("No projects.");
+      }),
+  );
+
+  server.registerTool(
+    "project",
+    {
+      title: "Read a project",
+      description: "One project: its file by section (issues, questions, implementations, problem, solution, diff, advantages, villains, loop_market, loop_product), and its tasks, ideas, decisions, rules, skills and memories, 50 each with the rest counted.",
+      inputSchema: z.object({ key: z.string().min(1).max(120), wiki: wikiKey.default("global") }),
+      annotations: READ,
+    },
+    ({ key, wiki }) => guarded(async () => json(await unwrap(s.project(cred, key, wiki)))),
+  );
+
+  server.registerTool(
+    "project_new",
+    {
+      title: "Create a project file",
+      description: "Create a project's one file from the template (idempotent). A key is lowercase letters, digits and . _ / -.",
+      inputSchema: z.object({ key: z.string().min(1).max(120), title: z.string().max(5000).optional(), wiki: wikiKey.default("global") }),
+      annotations: { ...WRITE, idempotentHint: true },
+    },
+    ({ key, title, wiki }) =>
+      guarded(async () => {
+        const r = await unwrap(s.projectNew(cred, key, wiki, title));
+        return text(`${r.created ? "Created" : "Already there:"} project ${key} in ${wiki} (${r.project.document?.id ?? "no file"}).`);
+      }),
+  );
+
+  server.registerTool(
+    "project_add",
+    {
+      title: "Add an item to a project file",
+      description: "Append one numbered item (one line, 500 characters at most) to a section of the project's file. Sections: issues, questions, implementations, problem, solution, diff, advantages, villains, loop_market, loop_product. Nothing happens when the section already holds the same text.",
+      inputSchema: z.object({ key: z.string().min(1).max(120), section: z.string().min(1).max(40), text: z.string().min(1).max(5000), wiki: wikiKey.default("global") }),
+      annotations: { ...WRITE, idempotentHint: true },
+    },
+    ({ key, section, text: item, wiki }) =>
+      guarded(async () => {
+        const r = await unwrap(s.projectAdd(cred, key, wiki, section, item));
+        return text(r.added ? `Added item ${r.n} to ${r.section} of ${key}.` : `Item ${r.n} of ${r.section} already holds that text.`);
       }),
   );
 

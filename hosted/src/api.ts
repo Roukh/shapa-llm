@@ -6,9 +6,13 @@ import { createRoute, z, type OpenAPIHono } from "@hono/zod-openapi";
 import { store } from "./auth.js";
 import { unwrap } from "./errors.js";
 import {
-  CloseBody, CreateBody, ErrorBody, FocusOut, FocusPromote, FocusPut, KINDS, LIMITS, PatchBody, RecordOut, RecordWithWiki,
-  SearchOut, SkillSummary, SkillVersionOut, SyncRequest, SyncResponse, WIKI_KEY_RE, WikiOut, WikiPut, type Kind,
+  CloseBody, CreateBody, ErrorBody, FocusOut, FocusPromote, FocusPut, KINDS, LIMITS, PatchBody, ProjectCardOut, ProjectItemBody, ProjectItemOut,
+  ProjectNewBody, ProjectOut, ProjectsOut, RecordOut, RecordWithWiki, RelatedOut, SearchOut, SkillSummary, SkillVersionOut, SyncRequest, SyncResponse,
+  TagsOut, TasksOut, WIKI_KEY_RE, WikiOut, WikiPut, type Kind,
 } from "./records.js";
+import { RELATED_LIMIT, TAGS_LIMIT } from "./tagapi.js";
+import { TASKS_LIMIT } from "./tasks.js";
+import { STAGE_MAX } from "./tags.js";
 import type { Cred } from "./store.js";
 
 export interface AppEnv {
@@ -40,13 +44,13 @@ export function registerV1(app: App): void {
     createRoute({
       method: "get", path: "/v1/whoami", tags: tag, security, summary: "The calling device",
       responses: {
-        200: body(z.object({ id: z.string(), name: z.string(), scopes: z.array(z.string()), wikis: z.array(z.string()).nullable() }), "The device"),
+        200: body(z.object({ id: z.string(), name: z.string(), scopes: z.array(z.string()), wikis: z.array(z.string()).nullable(), reach: z.enum(["full", "baseline"]) }), "The device"),
         ...errors,
       },
     }),
     async (c) => {
       const d = await unwrap(store(c.env).whoami(cred(c)));
-      return c.json({ id: d.id, name: d.name, scopes: d.scopes, wikis: d.wikis }, 200);
+      return c.json({ id: d.id, name: d.name, scopes: d.scopes, wikis: d.wikis, reach: d.reach }, 200);
     },
   );
 
@@ -80,6 +84,7 @@ export function registerV1(app: App): void {
           wiki: z.string().regex(WIKI_KEY_RE).optional(),
           budget: intQuery(LIMITS.instructionsBudget.min, LIMITS.instructionsBudget.max, LIMITS.instructionsBudget.default),
           full: z.enum(["0", "1", "true", "false"]).optional().openapi({ description: "1 adds the rules and the other live features to the focus." }),
+          stage: z.coerce.number().int().min(0).max(STAGE_MAX).default(0).openapi({ description: "Load the rules, memories and skills up to this stage (default 0: the baseline). A baseline-reach device always gets 0." }),
         }),
       },
       responses: {
@@ -96,7 +101,7 @@ export function registerV1(app: App): void {
     async (c) => {
       const q = c.req.valid("query");
       const full = q.full === "1" || q.full === "true";
-      const r = await unwrap(store(c.env).instructions(cred(c), { client: q.client, ...(q.wiki ? { wiki: q.wiki } : {}), budget: q.budget, full }));
+      const r = await unwrap(store(c.env).instructions(cred(c), { client: q.client, ...(q.wiki ? { wiki: q.wiki } : {}), budget: q.budget, full, stage: q.stage }));
       if ((c.req.header("accept") ?? "").includes("text/plain")) return c.text(r.text, 200) as never;
       return c.json(r, 200);
     },
@@ -160,13 +165,14 @@ export function registerV1(app: App): void {
 
   app.openapi(
     createRoute({
-      method: "get", path: "/v1/search", tags: tag, security, summary: "BM25 search over live records",
+      method: "get", path: "/v1/search", tags: tag, security, summary: "BM25 search over live records, and by tag",
       request: {
         query: z.object({
-          q: z.string().min(1).max(500),
+          q: z.string().max(500).optional().openapi({ description: "Words. Optional when tags is given." }),
           k: intQuery(1, LIMITS.searchK, 8),
           wiki: z.string().regex(WIKI_KEY_RE).optional(),
           types: z.string().max(200).optional().openapi({ description: "Comma-separated type names." }),
+          tags: z.string().max(700).optional().openapi({ description: "Comma-separated tags, at most 8; every one must match. A lower stage ranks first on a tie." }),
         }),
       },
       responses: { 200: body(SearchOut, "Hits"), ...errors },
@@ -174,9 +180,122 @@ export function registerV1(app: App): void {
     async (c) => {
       const q = c.req.valid("query");
       const types = q.types ? q.types.split(",").map((t) => t.trim()).filter(Boolean) : undefined;
-      const r = await unwrap(store(c.env).search(cred(c), { query: q.q, k: q.k, ...(q.wiki ? { wiki: q.wiki } : {}), ...(types ? { types } : {}) }));
+      const tags = q.tags ? q.tags.split(",").map((t) => t.trim()).filter(Boolean) : undefined;
+      if (!q.q?.trim() && !tags?.length) return c.json({ error: { code: "invalid", message: "give q (words), tags, or both" } }, 400) as never;
+      const r = await unwrap(store(c.env).search(cred(c), {
+        query: q.q ?? "", k: q.k, ...(q.wiki ? { wiki: q.wiki } : {}), ...(types ? { types } : {}), ...(tags ? { tags } : {}),
+      }));
       return c.json(r, 200);
     },
+  );
+
+  app.openapi(
+    createRoute({
+      method: "get", path: "/v1/tags", tags: tag, security,
+      summary: "The tag index: tags by record count, each with its counts by type (system tags left out unless asked)",
+      request: {
+        query: z.object({
+          wiki: z.string().regex(WIKI_KEY_RE).optional().openapi({ description: "One wiki (default: every wiki this device may read)." }),
+          prefix: z.string().max(80).optional(),
+          system: z.enum(["0", "1", "true", "false"]).optional().openapi({ description: "1 lists stage:*, project:*, skill:* and the other system tags too." }),
+          limit: intQuery(1, TAGS_LIMIT.max, TAGS_LIMIT.default),
+        }),
+      },
+      responses: { 200: body(TagsOut, "The tags"), 404: err("No such wiki"), ...errors },
+    }),
+    async (c) => {
+      const q = c.req.valid("query");
+      return c.json(await unwrap(store(c.env).tags(cred(c), {
+        ...(q.wiki ? { wiki: q.wiki } : {}), ...(q.prefix ? { prefix: q.prefix } : {}), system: q.system === "1" || q.system === "true", limit: q.limit,
+      })), 200);
+    },
+  );
+
+  app.openapi(
+    createRoute({
+      method: "get", path: "/v1/wikis/{wiki}/records/{id}/related", tags: tag, security,
+      summary: "Records related to one: linked to it (either direction), then by shared tags, then newest",
+      request: { params: z.object({ wiki: wikiParam, id: idParam }), query: z.object({ limit: intQuery(1, RELATED_LIMIT.max, RELATED_LIMIT.default) }) },
+      responses: { 200: body(RelatedOut, "The related records"), 404: err("Not found"), ...errors },
+    }),
+    async (c) => {
+      const { wiki, id } = c.req.valid("param");
+      return c.json(await unwrap(store(c.env).related(cred(c), wiki, id, c.req.valid("query").limit)), 200);
+    },
+  );
+
+  app.openapi(
+    createRoute({
+      method: "get", path: "/v1/tasks", tags: tag, security,
+      summary: "The operator's task list: open tasks of an owner (default human) in every wiki this device may read, rank first, then oldest",
+      request: {
+        query: z.object({
+          owner: z.enum(["human", "agent"]).default("human"),
+          status: z.enum(["open", "closed", "all"]).default("open"),
+          project: z.string().max(80).optional().openapi({ description: "Only tasks of this project key." }),
+          wiki: z.string().regex(WIKI_KEY_RE).optional(),
+          limit: intQuery(1, TASKS_LIMIT, TASKS_LIMIT),
+        }),
+      },
+      responses: { 200: body(TasksOut, "Tasks and how many match in all"), 404: err("No such wiki"), ...errors },
+    }),
+    async (c) => {
+      const q = c.req.valid("query");
+      return c.json(await unwrap(store(c.env).tasks(cred(c), {
+        owner: q.owner, status: q.status, limit: q.limit, ...(q.project ? { project: q.project } : {}), ...(q.wiki ? { wiki: q.wiki } : {}),
+      })), 200);
+    },
+  );
+
+  const projectKeyParam = z.string().min(1).max(120).openapi({ param: { name: "key", in: "path" }, description: "Project key: lowercase letters, digits and . _ / - (URL-encode a slash)." });
+  const projectWiki = z.string().regex(WIKI_KEY_RE).default("global").openapi({ description: "The wiki holding the project (default: global)." });
+
+  app.openapi(
+    createRoute({
+      method: "get", path: "/v1/projects", tags: tag, security, summary: "The projects of a wiki: key, title, open tasks",
+      request: { query: z.object({ wiki: projectWiki }) },
+      responses: { 200: body(ProjectsOut, "Projects, the busiest first"), 404: err("No such wiki"), ...errors },
+    }),
+    async (c) => c.json(await unwrap(store(c.env).projects(cred(c), c.req.valid("query").wiki)), 200),
+  );
+
+  app.openapi(
+    createRoute({
+      method: "put", path: "/v1/projects/{key}", tags: tag, security, summary: "Create a project's file from the template (idempotent)",
+      request: { params: z.object({ key: projectKeyParam }), body: { content: { "application/json": { schema: ProjectNewBody } }, required: false } },
+      responses: { 200: body(ProjectCardOut, "Already there"), 201: body(ProjectCardOut, "Created"), 404: err("No such wiki"), ...errors },
+    }),
+    async (c) => {
+      const { key } = c.req.valid("param");
+      const b = c.req.valid("json") ?? {};
+      const r = await unwrap(store(c.env).projectNew(cred(c), key, b.wiki ?? "global", b.title));
+      return c.json(r.project, r.created ? 201 : 200);
+    },
+  );
+
+  app.openapi(
+    createRoute({
+      method: "post", path: "/v1/projects/{key}/items", tags: tag, security,
+      summary: "Append one numbered item to a section of the project's file (no-op when it is already there)",
+      request: { params: z.object({ key: projectKeyParam }), body: { content: { "application/json": { schema: ProjectItemBody } }, required: true } },
+      responses: { 200: body(ProjectItemOut, "Already there"), 201: body(ProjectItemOut, "Added"), 404: err("No such project"), 413: err("The file would pass 1 MB"), ...errors },
+    }),
+    async (c) => {
+      const { key } = c.req.valid("param");
+      const b = c.req.valid("json");
+      const r = await unwrap(store(c.env).projectAdd(cred(c), key, b.wiki ?? "global", b.section, b.text));
+      return c.json(r, r.added ? 201 : 200) as never;
+    },
+  );
+
+  app.openapi(
+    createRoute({
+      method: "get", path: "/v1/projects/{key}", tags: tag, security,
+      summary: "One project: its file by section, and every task, idea, decision, rule, skill and memory that carries project:KEY (50 each, with the rest counted)",
+      request: { params: z.object({ key: projectKeyParam }), query: z.object({ wiki: projectWiki }) },
+      responses: { 200: body(ProjectOut, "The project"), 404: err("No such project"), ...errors },
+    }),
+    async (c) => c.json(await unwrap(store(c.env).project(cred(c), c.req.valid("param").key, c.req.valid("query").wiki)) as never, 200),
   );
 
   app.openapi(
@@ -233,6 +352,7 @@ export function registerV1(app: App): void {
     }),
     async (c) => {
       const r = await unwrap(store(c.env).create(cred(c), c.req.valid("param").wiki, c.req.valid("json")));
+      if (r.notice) c.header("X-Shapa-Notice", r.notice);
       return c.json(r.record, r.created ? 201 : 200);
     },
   );
@@ -245,7 +365,9 @@ export function registerV1(app: App): void {
     }),
     async (c) => {
       const { wiki, id } = c.req.valid("param");
-      return c.json(await unwrap(store(c.env).patch(cred(c), wiki, id, c.req.valid("json"))), 200);
+      const r = await unwrap(store(c.env).patch(cred(c), wiki, id, c.req.valid("json")));
+      if (r.notice) c.header("X-Shapa-Notice", r.notice);
+      return c.json(r.record, 200);
     },
   );
 

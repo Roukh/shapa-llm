@@ -18,6 +18,11 @@ function info(repo: Repo, key: string): WikiInfo {
   return { key: w.key, name: w.name, kind: w.kind, origin: w.origin, created: w.created, counts: repo.wikiCounts(key) };
 }
 
+/** The keys of the wikis a device may use (every registered wiki when it has no list). */
+export function readableWikis(repo: Repo, d: Device): string[] {
+  return repo.wikis().filter((w) => wikiAllowed(d, w.key)).map((w) => w.key);
+}
+
 export function listWikis(repo: Repo, d: Device): WikiInfo[] {
   needScope(d, "read");
   return repo.wikis().filter((w) => wikiAllowed(d, w.key)).map((w) => info(repo, w.key));

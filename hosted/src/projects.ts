@@ -10,6 +10,20 @@ import { NAME_RE } from "./skills.js";
 
 /** The id of the live project document of `key` in `wiki`, ignoring the record with `exceptUid`. */
 export function projectHolder(repo: Repo, wiki: string, key: string, exceptUid = ""): { id: string; title: string } | null {
+  if (key !== "") {
+    // A named project is found by its tag in the relation index: the cost never grows with the wiki.
+    const rows = repo.sql
+      .exec(
+        `SELECT r.id AS id, r.uid AS uid, json_extract(r.data, '$.title') AS title, r.tags AS tags FROM record_tags t
+           JOIN records r ON r.wiki = t.wiki AND r.id = t.id
+          WHERE t.wiki = ? AND t.tag = ? AND t.kind = 'D'${repo.vis("t.vis")} ORDER BY r.seq LIMIT 8`,
+        wiki, PROJECT_PREFIX + key,
+      ).toArray();
+    for (const r of rows) {
+      if (r["uid"] !== exceptUid && projectOf(JSON.parse(r["tags"] as string) as string[]) === key) return { id: r["id"] as string, title: String(r["title"] ?? "") };
+    }
+    return null;
+  }
   for (const d of repo.docsLight(wiki)) {
     if (d.uid !== exceptUid && projectOf(d.tags) === key) return { id: d.id, title: d.title };
   }
