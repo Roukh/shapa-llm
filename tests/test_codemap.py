@@ -289,7 +289,8 @@ def test_import_followed_by_long_whitespace_is_linear_in_one_extract(gap):
     text = ("import" + " " * gap) * (400_000 // (6 + gap))
     t0 = time.monotonic()
     codemap.extract("ts", text)
-    assert time.monotonic() - t0 < 1.0
+    # The backtracking pattern took 55 s on this input; 5 s leaves room for slow CI runners.
+    assert time.monotonic() - t0 < 5.0
 
 
 def test_a_file_over_its_time_bound_is_an_error_not_a_stall(monkeypatch):
@@ -432,6 +433,7 @@ def test_tokens_split_identifiers_and_drop_noise():
 
 
 def test_vectors_are_stored_and_ranked_when_a_model_is_available(repo, monkeypatch):
+    pytest.importorskip("numpy")
     from shapa import embed
 
     def fake(texts):
