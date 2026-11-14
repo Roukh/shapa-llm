@@ -9,6 +9,7 @@ CLI::
 
     shapa doc add TITLE --scope global|repo [--body TEXT | --file PATH | stdin]
                         [--alias A] [--tag T ...] [--mime TYPE]
+                        [--project KEY] [--merge]
     shapa doc edit ID [--title T] [--body TEXT | --file PATH] [--alias A] [--mime TYPE]
     shapa doc rm ID...
     shapa doc list [--scope global|repo]
@@ -87,6 +88,12 @@ def run_doc(argv: list[str]) -> int:
     a.add_argument("--alias")
     a.add_argument("--tag", action="append", default=[])
     a.add_argument("--source", default="agent")
+    a.add_argument("--project", default=None,
+                   help="the project or subproject this document belongs to (default: this wiki's "
+                        "own); a project keeps one document")
+    a.add_argument("--merge", action="store_true",
+                   help="when the project already has its document, append this one to it as a "
+                        "section instead of refusing")
     _add_body_flags(a)
     ed = add("edit")
     ed.add_argument("id")
@@ -97,6 +104,11 @@ def run_doc(argv: list[str]) -> int:
     rm = add("rm")
     rm.add_argument("ids", nargs="+")
     rm.add_argument("--scope", choices=["repo", "global"], default=None)
+    mg = add("merge", help="fold a duplicate project document into the project's one document "
+                           "(a second device raced it): SRC is appended to DST as a section, then removed")
+    mg.add_argument("src")
+    mg.add_argument("dst")
+    mg.add_argument("--scope", choices=["repo", "global"], default=None)
     args = p.parse_args(argv)
     cmd = args.cmd or "list"
 
@@ -111,6 +123,10 @@ def run_doc(argv: list[str]) -> int:
                 for d in db.documents(conn):
                     alias = f" [{d.alias}]" if d.alias else ""
                     print(f"{d.id}{alias} {d.title}")
+                for key, ids in db.project_overages(conn).items():
+                    what = f"project {key!r}" if key else "this wiki's project"
+                    print(f"! {what} is over the limit: {len(ids)} documents ({', '.join(ids)}), "
+                          f"a project keeps one - fold them with `shapa doc merge {ids[-1]} {ids[0]}`")
             finally:
                 conn.close()
         return 0
@@ -120,17 +136,23 @@ def run_doc(argv: list[str]) -> int:
             raise CommandError("a body is required: --body, --file, or piped stdin")
         conn = _connect(scoped_root(args.scope, args.cwd), create=True)
         try:
-            print(db.add_doc(conn, args.title, body, tags=args.tag, alias=args.alias,
-                             mime=args.mime, source=args.source))
+            known = {d.id for d in db.documents(conn)}
+            new_id = db.add_doc(conn, args.title, body, tags=args.tag, alias=args.alias,
+                                mime=args.mime, source=args.source, project=args.project,
+                                merge=args.merge)
+            print(new_id if new_id not in known else f"{new_id} (merged as a section)")
         finally:
             conn.close()
         return 0
-    root = _root_holding(args.id if cmd == "edit" else args.ids[0], args.scope, args.cwd)
+    root = _root_holding(args.id if cmd == "edit" else args.src if cmd == "merge" else args.ids[0],
+                         args.scope, args.cwd)
     conn = _connect(root)
     try:
-        if cmd == "edit":
+        if cmd == "merge":
+            print(db.merge_docs(conn, args.src, args.dst))
+        elif cmd == "edit":
             d = db.update_doc(conn, args.id, title=args.title, body=_body_from(args, allow_stdin=False),
-                              alias=args.alias, mime=args.mime)
+                              alias=args.alias, mime=args.mime, privileged=True)
             print(f"{d.id} {d.title}")
         else:
             print(f"removed {db.delete(conn, [i for i in args.ids if db.get_doc(conn, i)])}")

@@ -71,6 +71,7 @@ button{padding:.5rem 1rem;font:inherit;margin-right:.5rem}.err{color:#b00020;fon
 <p>${origin} Access will be sent to <strong>${escapeHtml(view.redirectHost)}</strong>.</p>
 ${view.redirectIsLoopback ? '<p class="warn"><strong>This sends access to an app on your computer.</strong> Continue only if you just started signing in from it.</p>' : ""}
 ${error ? `<p class="err" role="alert">${escapeHtml(error)}</p>` : ""}
+<p>A chat app reads your stage-0 baseline, notes, tasks, ideas and project files, and writes notes, tasks, ideas, decisions and files. It never syncs, edits rules or the focus, or deletes.</p>
 <form method="post">
 <input type="hidden" name="handle" value="${escapeHtml(handle)}">
 <input type="hidden" name="csrf" value="${escapeHtml(csrf)}">

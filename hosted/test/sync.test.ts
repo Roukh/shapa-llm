@@ -520,7 +520,7 @@ describe("sync: unacknowledged deletes, counters, first-time notes, byte-capped 
     const text = "lorem ipsum ".repeat(70_000); // about 840 KB
     const ids: string[] = [];
     for (let i = 0; i < 40; i++) {
-      const r = await send("POST", rec(w), { token, body: { type: "document", title: `big ${i}`, body: text } });
+      const r = await send("POST", rec(w), { token, body: { type: "document", title: `big ${i}`, body: text, project: `big-${i}` } });
       expect(r.status).toBe(201);
       ids.push(r.body.id);
     }

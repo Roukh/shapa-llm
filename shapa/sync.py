@@ -53,6 +53,7 @@ class SyncResult:
     message: str = ""
     dry_run: bool = False
     refused: list = field(default_factory=list)  # (id, message): the server refused the record
+    notes: list = field(default_factory=list)  # (id, message): the server accepted it with a remark
     oversized: list = field(default_factory=list)  # ids skipped: over the server limit for a record
     notes_skipped: bool = False  # the checkout is off its default branch: no note files synced
 
@@ -171,9 +172,11 @@ def _check_results(ops: list, results) -> list[dict]:
         if new_id is not None and (op["op"] != "put" or kind == "N"
                                    or not syncrec.id_matches_kind(new_id, kind)):
             raise RemoteError("the server sent an invalid rename")
-        error = res.get("error")
+        error, note = res.get("error"), res.get("note")
         out.append({"status": res["status"], "rev": rev, "new_id": new_id,
-                    "error": clean_text(error, 160) if isinstance(error, str) and error else ""})
+                    "error": clean_text(error, 160) if isinstance(error, str) and error else "",
+                    # the server's one-line remark (it sets one when it downgrades a stage:0)
+                    "note": clean_text(note, 200) if isinstance(note, str) and note else ""})
     return out
 
 

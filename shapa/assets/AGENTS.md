@@ -26,6 +26,7 @@ feature cleans the database.
   temp/F<n>/             scrap notes of one feature (gitignored, gone at its merge)
   .shapa-format          the wiki format (4)
   .shapa-index.db        derived search index and vectors (gitignored, rebuilt)
+  .shapa-code.db         derived code map of the checkout: `shapa map` (gitignored, rebuilt)
 ```
 
 A repo wiki holds the work ledger and its own memories, rules and issues. The
@@ -87,6 +88,44 @@ of a new row: [[placement]].
 - Reads (`bootstrap`, `fetch`, MCP `search`/`get`) rank rows and any
   remaining note files together.
 - An idea is a memory tagged `idea` (`shapa save --type idea`), not a kind.
+  A decision is a memory tagged `decision` (`--type decision`). Neither is
+  swept for disuse.
+- A rule tagged `principle` is written by `shapa learn apply` from the
+  operator's corrections: its summary is the statement, its body the evidence.
+  The tags the learning loop keeps on it and on corrections (`principle`,
+  `violations:N`, `serves:...`, `repeat-of:...`, `learned` and the like) are
+  the engine's: `shapa row add|tag`, `shapa save` and the MCP `save` refuse
+  them. Edit a principle's wording through `shapa learn apply --into`, never
+  by hand.
+
+## The global wiki as the one brain
+
+- Tasks: `shapa save --type human_task|agent_task` (or `shapa ledger add`)
+  files a `T` item tagged with its owner, standing alone, with no feature.
+  `shapa tasks` lists the operator's open `human_task` items (`--all` for
+  every wiki); open text identical to a stored task is stored once.
+- Stages: the tag `stage:N` (one digit, one per record) on a rule, memory or
+  skill version. `stage:0` is the baseline, printed in full at every session
+  start within 6,000 characters. Only `shapa stage set|clear|list|pending` at
+  the terminal sets it; an agent that asks for `stage:0` leaves a
+  `stage-proposed:0` tag, and the operator reviews it with `shapa stage
+  pending`. `shapa bootstrap --stage N` prints stages up to N.
+- A skill a repo needs everywhere moves to the global wiki with
+  `shapa skill uproot NAME` (run in the repo); `shapa skill list` names where
+  each skill lives and flags a repo skill that shadows a global one.
+- Stage 0 belongs to the global wiki: a repo wiki takes stages 1-9 only.
+- Tags are the relations: `shapa tags` lists them with counts,
+  `shapa fetch --tag NAME` (MCP `search` with `tags`) returns what carries a
+  tag, `shapa related ID` returns what shares tags or links with it. The tag
+  `project:KEY` marks a record as part of project KEY and keeps an `about`
+  link to that project's document.
+- Project files: `shapa project new KEY`, `show`, `list`, `add KEY SECTION
+  TEXT`. A project is one document built from `assets/project-template.md`;
+  `add` appends one line under a section (`issues`, `questions`,
+  `implementations`, `problem`, `solution`, `diff`, `advantages`, `villains`,
+  `loop_market`, `loop_product`).
+- Write each record back as it happens: decisions, ideas, tasks, and a
+  project item for anything that belongs to a project.
 
 ## Documents
 

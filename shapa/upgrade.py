@@ -37,7 +37,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from shapa import (__version__, config, db, embed, frontmatter, maintain, memlog,
+from shapa import (__version__, codemap, config, db, embed, frontmatter, maintain, memlog,
                    memri_import, migrate4, registry, store, validate)
 from shapa.nodes import is_excluded_path
 from shapa.score import _parse_ts
@@ -57,6 +57,8 @@ CACHE_IGNORES = (
     f"{store.INDEX_FILENAME}-shm",
     store.CORRUPT_FILENAME,
     embed.CACHE_FILENAME,
+    codemap.INDEX_FILENAME,
+    f"{codemap.INDEX_FILENAME}-journal",
     f"{db.DB_FILENAME}-journal",
     f"{db.DB_FILENAME}-wal",
     f"{db.DB_FILENAME}-shm",

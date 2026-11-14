@@ -112,6 +112,8 @@ class TestScore(unittest.TestCase):
         for f in assets.rglob("*.md"):
             if f.relative_to(assets).parts[0] in ("skills", "prompts"):
                 continue
+            if f.name == "project-template.md":
+                continue  # the body of a project document, kept byte for byte: it has no frontmatter
             result = validate_node(f)
             self.assertEqual(result.errors, [], f"{f}: {result.errors}")
             checked += 1

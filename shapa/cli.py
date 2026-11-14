@@ -112,7 +112,60 @@ commands:
   row ...        memory (M), rule (R) and issue (I) rows: add --scope,
                  edit, rm, link, tag, list
   doc ...        documents (D): add --scope (body from --body, --file or
-                 stdin), edit, rm, list; `shapa get D<n>` prints one
+                 stdin), edit, rm, list; `shapa get D<n>` prints one. A
+                 project keeps ONE document: a second is refused (naming
+                 the first) or, with --merge, appended to it as a section
+  focus ...      the northstar and the three ranked big fires of a wiki
+                 scope: show, northstar, fire, unfire, order, rank,
+                 candidates, promote. Session start prints these first and
+                 only the fires' own tree after them
+  skill ...      skills as versioned records, global or per repo: list,
+                 show, add, update (a new pending version), activate,
+                 uproot (move a repo's skill to the global wiki)
+  learn ...    close the loop on corrections: pending [--json] lists the
+                 corrections not yet generalized with their nearest rules,
+                 skills and issues and whether each is a repeat (and the
+                 skill versions awaiting `shapa skill activate`); apply ISSUE
+                 --principle TEXT (--into R<n>|skill:NAME | --new) files the
+                 principle (global by default, --scope repo needs --why):
+                 you choose merge or new, and with candidates and no choice
+                 it exits 2 listing them (--distinct-from R<n> claims a
+                 different subject from a nearby churned principle); merge
+                 SRC DST folds two principles (60 at most a wiki); unchurn
+                 R<n> clears churn once enforcement exists; dismiss ISSUE
+                 drops a correction or removes a soft candidate
+  metrics [--since DATE] [--json] [--snapshot] [--all] [--repo KEY]
+                 whether the wiki is working: fetch latency, corrections and
+                 repeats per session, learned vs pending, skill use, feature
+                 lead time, work on the fires vs off them, frustration, with
+                 a 7-day trend; --snapshot stores today's row, --all rolls
+                 up every repo; `metrics record skill-use NAME --session ID`
+  stage ...    which rules, memories and skills every session starts with:
+                 set ID N (0 = baseline, served in full, capped at 6,000
+                 characters; only this CLI sets it), clear, list, pending
+                 (records agents proposed for stage 0)
+  tags [--wiki KEY] [--json]
+                 every tag with its record counts; tags relate rules,
+                 memories, skills, tasks and projects. `fetch --tag T`
+                 reads the records carrying a tag
+  related ID [--limit N] [--json]
+                 records linked to ID, then those sharing tags, then newest
+  tasks [--owner human|agent] [--project KEY] [--status open|closed|all] [--all] [--json]
+                 the operator's open tasks (human_task) across every wiki in
+                 scope: "what do I need to do". Add one: `shapa save --type
+                 human_task` or `shapa ledger add human_task TITLE --scope global`
+  project ...    new KEY | add KEY SECTION TEXT | show KEY | list: a project's
+                 one document (issues, questions, implementations, problem,
+                 solution, diff, ...) and what is tied to it (project:KEY)
+  map [--seconds N] [--rebuild] [--json]
+                 build or refresh the code map of this checkout: files,
+                 functions, imports and calls (Python by ast, JS/TS by
+                 regex), a derived gitignored .shapa-code.db; bounded
+                 and incremental
+  partition [F<n>|1|2|3] [--max-files N] [--max-bytes N] [--no-refresh] [--json]
+                 a fire's related files as one bounded partition (named
+                 files, recalled files, callers and importers) with why
+                 each is there; local only, session start shows the top
   remote ...     the opt-in hosted store: login URL, sync (two-way, every wiki
                  in scope; --hook for a session hook), status, devices,
                  logout, instructions
@@ -412,6 +465,31 @@ def main(argv: list[str] | None = None) -> None:
         from shapa import docs, ledger
 
         ledger.run(docs.run_doc, rest)
+        return
+    if cmd == "focus":
+        from shapa import focus
+
+        focus.main(rest)
+        return
+    if cmd == "skill":
+        from shapa import skills
+
+        skills.main(rest)
+        return
+    if cmd in ("learn", "metrics"):
+        mod = importlib.import_module(f"shapa.{cmd}")
+        mod.main(rest)
+        return
+    if cmd in ("stage", "tags", "related", "project", "tasks"):
+        from shapa import projectfile, relate, stages, tasks
+
+        {"stage": stages.main, "tags": relate.main_tags, "related": relate.main_related,
+         "project": projectfile.main, "tasks": tasks.main}[cmd](rest)
+        return
+    if cmd in ("map", "partition"):
+        from shapa import partition
+
+        (partition.main_map if cmd == "map" else partition.main_partition)(rest)
         return
     if cmd == "remote":
         from shapa import remote

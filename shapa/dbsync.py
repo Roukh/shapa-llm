@@ -183,6 +183,12 @@ def upsert(conn: sqlite3.Connection, rec: dict) -> None:
         conn.execute("INSERT OR IGNORE INTO tags(id, tag) VALUES (?, ?)", (rid, tag))
     for dst, rel in rec["links"]:
         conn.execute("INSERT OR IGNORE INTO links(src, dst, rel) VALUES (?, ?, ?)", (rid, dst, rel))
+    # the project tag and its `about` link are one relation: keep them in step for a pulled record
+    key = db.project_of(rec["tags"]) if kind == db.DOC_KIND else None
+    if key:
+        db._link_project_members(conn, rid, key)
+    else:
+        db.sync_project_link(conn, rid)
     raise_counter(conn, kind, int(rid[1:]) + 1)
 
 

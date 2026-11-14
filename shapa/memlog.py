@@ -174,7 +174,12 @@ def one_line(text: str) -> str:
     return _WS_RE.sub(" ", text or "").strip()
 
 
-_CTRL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+# Control characters and the invisible format characters (soft hyphen, zero-width and joiner marks,
+# bidi embeddings, overrides and isolates, line and paragraph separators, word joiners, the byte
+# order mark, interlinear annotation and the tag characters): none may reach a session start, where
+# they could hide or reorder text.
+_CTRL_RE = re.compile("[\x00-\x1f\x7f-\x9f­؜᠎​-‏ -‮⁠-⁯"
+                      "﻿￹-￻\U000e0000-\U000e007f]")
 _WRAPPER_TAG_RE = re.compile(r"<(\s*/?\s*shapa-[\w-]*)", re.I)
 
 
@@ -352,7 +357,8 @@ def _db_records(root) -> list[Record]:
         scope = "repo"
     return [Record(id=r.id, created=r.created, session=r.session, repo=None, scope=scope,
                    kind=db.KIND_NAMES[r.kind], summary=r.summary, body=r.body,
-                   tags=list(r.tags)[:MAX_TAGS], source=r.source or DB_SOURCE,
+                   tags=sorted(r.tags, key=lambda t: (not t.startswith(db.STAGE_PREFIX), t))[:MAX_TAGS],
+                   source=r.source or DB_SOURCE,
                    supersedes=None, hash=r.hash)
             for r in db.read_rows(root)]
 
@@ -858,8 +864,23 @@ def sync(root, conn: sqlite3.Connection, *, embed_vectors: bool = False) -> Sync
         _bump_generation(conn)
     if embed_vectors and _vectors_due(conn):
         stats.embedded = _embed_missing(conn)
+    _store_corpus_totals(conn)
     conn.commit()
     return stats
+
+
+def _store_corpus_totals(conn: sqlite3.Connection) -> None:
+    """Record ``generation:rows:tokens`` when they are not already recorded for this generation."""
+    try:
+        gen = generation(conn)
+        row = conn.execute("SELECT value FROM memory_meta WHERE key = 'corpus'").fetchone()
+        if row and row[0].startswith(gen + ":"):
+            return
+        n, tokens = conn.execute("SELECT count(*), coalesce(sum(ntok), 0) FROM memories").fetchone()
+        conn.execute("INSERT OR REPLACE INTO memory_meta(key, value) VALUES ('corpus', ?)",
+                     (f"{gen}:{n}:{tokens}",))
+    except sqlite3.Error:
+        pass
 
 
 def _vectors_due(conn: sqlite3.Connection) -> bool:
@@ -1047,13 +1068,28 @@ def term_stats(text: str, terms) -> tuple[dict[str, int], int]:
     return tf, len(toks)
 
 
+def _corpus_totals(conn: sqlite3.Connection) -> tuple[int, int]:
+    """``(rows, tokens)`` of the index. Kept in ``memory_meta`` by :func:`sync` (at its current
+    generation), so a search does not scan every row to learn them; a scan answers for an index
+    that does not have them yet."""
+    try:
+        row = conn.execute("SELECT value FROM memory_meta WHERE key = 'corpus'").fetchone()
+        if row and row[0].startswith(generation(conn) + ":"):
+            _, n, tokens = row[0].split(":")
+            return int(n), int(tokens)
+    except (sqlite3.Error, ValueError):
+        pass
+    n, tokens = conn.execute("SELECT count(*), coalesce(sum(ntok), 0) FROM memories").fetchone()
+    return int(n), int(tokens)
+
+
 def corpus_stats(conn: sqlite3.Connection, terms) -> dict:
     """The memory corpus' share of BM25's global statistics: row count,
     total tokens, and per-term document frequency (from the FTS5 vocab
     table; a Python pass when FTS5 is unavailable). Every indexed row
     counts, live or not - the same population FTS5's own bm25() uses."""
     terms = sorted(set(terms))
-    n, tokens = conn.execute("SELECT count(*), coalesce(sum(ntok), 0) FROM memories").fetchone()
+    n, tokens = _corpus_totals(conn)
     df: dict[str, int] = {}
     if terms and _has_table_or_vtab(conn, "memories_vocab"):
         try:

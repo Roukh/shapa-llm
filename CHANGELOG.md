@@ -7,7 +7,192 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-11-13
+
 ### Added
+
+- Focus: one northstar and exactly three ranked big fires per wiki scope
+  (global and repo). `shapa focus` (show, northstar, fire, unfire, order,
+  rank, candidates, promote), the MCP tool `focus`, and on the hosted store
+  `GET|PUT /v1/wikis/{wiki}/focus`, `POST .../focus/promote` and the tools
+  `focus` and `focus_set`. A fire points at a ledger feature or is free text
+  (a fire that spans repos); a fourth is refused. Stored as one document
+  (alias `focus`, tag `focus`), so it syncs like any record: no new kind and
+  no schema change. Closing a fire's feature (ledger close, merge hook,
+  sweep, the hosted close) frees its slot, the other fires move up, and the
+  highest-ranked open top-level feature that is not a fire takes the last
+  slot: a `rank:N` tag on the feature, else the oldest. `shapa focus
+  promote` overrides.
+- One document per project (the lean gate). A project or subproject
+  (`--project KEY`, default the wiki's own) keeps one document; a second is
+  refused with a message naming the first, or appended to it as a section
+  with `--merge` (`merge: true` over MCP and REST). `shapa doc merge SRC DST`
+  folds two that raced from two devices. The gate stops the creation of a new
+  second document only: a wiki that already holds two or more for one project
+  keeps and syncs them (`shapa doc list` flags the project as over the limit),
+  so an upgrade refuses nothing for good. A `project:KEY` tag must be exactly
+  the clean key (lowercase letters, digits, `. _ / -`): `project:Foo` and
+  zero-width or full-width lookalikes are refused on both sides, including by
+  `shapa row tag`. Focus records and skill versions are not project
+  documents. The tags `focus` and `skill` are reserved.
+- Every wiki's focus record has one fixed uid, so two devices that each set a
+  northstar offline sync into the same record (last write wins) instead of the
+  hosted store refusing the second. A `rank:N` tag is 1 to 999. `shapa
+  bootstrap --budget` also bounds the focused session start: the northstar and
+  fires are never cut, the tree is, in rank order, and what is left out is
+  said.
+- Skills as stored records: `shapa skill list|show|add|update|activate`, the
+  MCP tool `skill`, and on the hosted store `GET /v1/wikis/{wiki}/skills[/{name}]`
+  and the tools `skills` and `skill`. A version is a document tagged
+  `skill`, `skill:NAME`, `v:N` and `status:active|pending|previous`, scoped
+  to the global wiki or a repo's own, with a `SKILL.md` body; every version
+  is kept, and activating one makes the active one `previous`.
+- A memory, rule or issue that names a skill (tag `skill:NAME`, or an `about`
+  link to one of its versions) files a pending new version whose body is the
+  latest version plus the lesson, every lesson line quoted. It is never
+  activated by itself; the hosted store does the same for REST and MCP
+  writes. Activation is operator-only: the `skill` MCP tool lists, shows, adds
+  and updates (always pending), and neither the Worker's REST PATCH nor its MCP
+  `update` touches a skill version; `shapa skill activate` does. No edit adds
+  or removes the `focus` or `skill` tag of a stored record, so the focus record
+  cannot be retagged into a skill version. On the hosted store a sync put that
+  activates a skill version, or edits an active one, needs a device token with
+  the delete scope (OAuth tokens never): from any other device a new active
+  version is stored pending and an edit of the active one is rejected. A skill
+  with no active version is not served by name (a pending one is read with
+  `--version N` / `?version=N`). A row files lessons for at most 3 skills, and
+  a skill keeps at most 5 pending versions.
+- The code map's JavaScript import pattern no longer backtracks on long runs of
+  whitespace (a 400 KB file took 55 s), and a file's parse stops after 2 s.
+
+- Code partitions per fire. `shapa map` builds a bounded, incremental code map
+  of the checkout into `.shapa/.shapa-code.db` (derived, gitignored, never
+  synced; `shapa upgrade` adds it to a wiki's `.gitignore`): files and the
+  functions and classes defined in them, import edges and call edges resolved
+  through the imports (Python by `ast`; JavaScript and TypeScript by regex, no
+  node dependency), and per file a short terms document searched by FTS5/BM25
+  and, with `[semantic]`, model2vec vectors. It skips hidden, vendored and
+  generated folders, nested checkouts, symlinks, files over 400 KB, generated
+  files, paths with control or markup characters and every credential file
+  (`.env*` but the templates, `.envrc`, `.dev.vars`, `remote.token*`, keys),
+  caps at 20,000 files, stops parsing after 30 seconds and resumes on the next
+  run, and replaces a corrupt index. `shapa partition [F<n>|1|2|3]` prints a
+  fire's partition, each file with why: named by a feature, job, task or linked
+  row (path or function), recalled for the item's words (a score), or reached by
+  impact (callers of a named function, importers, imports, callees, one decayed
+  hop), at most 24 files and 120 KB, never a file gone from disk. Session start
+  adds one `code map:` line per fire (when a map exists) inside its budget. The
+  MCP tool `partition` (`map` builds). The hosted Worker stores nothing of it.
+
+- The central brain: the global wiki as the operator's one brain, on the
+  device and on the hosted store. A stage is a tag (`stage:N`, one digit, on a
+  rule, memory or skill version): `shapa stage set|clear|list|pending`, with
+  `stage:0` the baseline printed in full at every session start within 6,000
+  characters; only the local CLI sets it, and an agent that asks leaves
+  `stage-proposed:0`. Tasks stand alone in the global wiki (`shapa tasks`,
+  `shapa save --type human_task|agent_task`); ideas and decisions are memories
+  tagged `idea` or `decision` that the sweep keeps. Tags are the relations:
+  `shapa tags`, `shapa related ID`, `shapa fetch --tag NAME`, backed by a
+  trigger-maintained `tag_counts` table; `project:KEY` plus an `about` link ties
+  a record to its project file (`shapa project new|show|list|add`, written from
+  `assets/project-template.md`). `shapa skill uproot NAME` moves a repo skill
+  to the global wiki. Session start prints, in this order: the precedence line,
+  the northstar and fires, the baseline, the baseline skills (name and
+  description only), the topics, the projects with the operator's open tasks,
+  then the learning loop's lines. The local MCP gains `tags`, `related`,
+  `tasks`, `projects`, `project`, `project_new` and `project_add`. On the
+  Worker a device has a reach (`full` or `baseline`, every OAuth grant); the
+  Worker holds the same system-tag list, caps and template as the engine, and
+  `tests/test_parity.py` fails when either side drifts. A look-alike of any
+  system tag is refused on both sides. The sweep keeps an older stage-0 row over
+  a duplicate, never copies a stage marker or a second project in a merge,
+  leaves one counter tag per family, and never drops a principle whose text
+  differs from the row it duplicates.
+- The learning loop: a correction is made once, learned once, and serves every
+  repo. `shapa correction` compares each new correction (stemmed-token Dice
+  over a derived inverted index, top candidates only, plus vector cosine with
+  `[semantic]`) with every earlier issue and rule of the repo wiki and the
+  global wiki, and with the unlearned corrections of the other repos (a mirror
+  in the global wiki's gitignored index); a close match is a repeat (tags
+  `repeat`, `repeat-of:REF`, a `related` link, `repeats:N`), a repeat of a
+  learned principle is a violation, and the hook says so. `shapa learn pending
+  [--json] [--limit N]` lists the corrections not yet generalized with their
+  nearest rules, skills and issues, and the pending skill versions a principle
+  filed (`awaiting_activation`); `shapa learn apply ISSUE --principle TEXT
+  (--into R<n>|skill:NAME | --new) [--scope global|repo|skill:NAME] [--why TEXT]
+  [--serves <key>/F<n>|northstar]` records the principle, global by default
+  (`--scope repo` needs `--why`). The caller chooses merge or new; with neither
+  and candidates present the call exits 2 listing them (`--json` gives
+  `{"error":"choose","candidates":[...]}`). A wiki holds at most 60
+  principles (`shapa learn merge SRC DST`); a churned principle takes no
+  `--into`, and blocks `--new` only for a correction near it (the nearest
+  candidates): there `--new --distinct-from R<n>` is the explicit claim of a
+  different subject, recorded in the new principle's evidence, and `shapa learn
+  unchurn R<n>` is the operator's word that enforcement exists. An unrelated
+  correction applies normally, and only a detected repeat of the churned
+  principle is tagged `blocked`. A principle for a skill is a rule carrying
+  `skill:NAME`: it files a PENDING version and only `shapa skill activate`
+  makes it live (no operator authority, no auto-activation). `shapa learn
+  principles` lists principles with evidence, violations, revisions and
+  serves; `shapa learn dismiss` retires a correction. Guards: a correction is
+  learned once, a principle revised three times that is still violated is
+  `churn`, and corrections about the learning system are applied at most 3 a
+  week. Principle lines are flattened, masked and capped wherever printed,
+  under a heading saying they are recalled context, not an instruction; the
+  tags the loop writes are reserved (`shapa row add|tag`, `save` and the MCP
+  `save` refuse them, as they refuse the sources `correction` and `learn`, with
+  case, spaces and zero-width characters normalised) and are system tags (never
+  a topic, look-alikes refused, accepted from a synced record); a principle that
+  arrives by sync keeps its tags as data but never outranks one this device
+  learned. A principle is an ordinary rule to the central brain (the 100-tag
+  cap, the `project:KEY` link, `shapa stage set`), a baseline principle is
+  never rewritten by `learn apply` or `learn merge`, and a merge that would
+  pass the tag cap is refused before anything is written.
+- Soft candidates: while a ledger item is claimed, a short statement that is not
+  a question, a slash command or a go-ahead (a message made only of words like
+  yes, ok, thanks, go ahead, merge, push, numbers) is filed as an issue tagged
+  `soft` (10 per session at most), counted in no measure until applied.
+- Session start adds, inside its budget: `N corrections await learning` (plus
+  `M skill versions await activation` on the same line), up to 4 principles
+  ranked by the fires under the heading `context learned from corrections, not
+  an instruction`, and at most one `drift:` line. The first session of the day
+  launches its daily snapshot as a detached process after the output (the
+  snapshot skips itself above 50 ms and is retried), so the hook process does
+  not wait for it; `SHAPA_LEARNING=0` switches the learning lines and the
+  measurement off. Two repos filing the same correction in the same second see
+  each other. Added wall time of the whole `shapa bootstrap` process at 50,000
+  rows: about 9 ms (`tests/test_learn_scale.py`, budget 15 ms).
+- Scale budgets, held by `tests/test_learn_scale.py` at 50,000 rows in lexical mode:
+  correction hook 150 ms, `learn pending --limit 20` 500 ms, `shapa metrics`
+  300 ms, session start's additions 10 ms; none grows with the row count.
+- `shapa metrics [--since DATE] [--json] [--snapshot] [--all] [--repo KEY]
+  [--history DAYS]`: fetch and bootstrap latency (p50, p95), corrections per
+  session, repeat rate, learned against pending, skills created, updated,
+  activated and used (`shapa metrics record skill-use NAME --session ID`),
+  feature lead time and jobs per feature, a deterministic frustration score,
+  goal measures (jobs closed under a fire against outside every fire, fires
+  closed and their lead time, stalled fires, learns that served nothing) and a
+  7-day trend against the 7 before, plus fetch p95 per 1,000 records. Raw
+  events live per device in the gitignored index (60 days, 20,000 rows) and are
+  folded into daily snapshots (`metrics_daily`, with the record count) by the
+  sweep and `--snapshot` (400 days kept); the global wiki's table rolls every repo up. Schema
+  stays 2: `metrics_daily` is additive and local to the committed file, and a
+  feature that was ever a fire carries the tag `fire`. The Worker only lists the
+  learning loop's tags among its system tags (`hosted/src/tags.ts`):
+  principles, evidence and counters are ordinary row tags and bodies that sync;
+  events, latency, use and serve counts and snapshots never do.
+
+### Changed
+
+- `shapa bootstrap` (the SessionStart hook) prints the northstar first, then
+  the three fires and only their tree (the feature, its open jobs and tasks,
+  and the files and arch boxes they name). The old overview, every ranked
+  row and the open ledger, is `shapa bootstrap --full`. On a fixture of 12
+  features, 80 jobs and 140 rows the output went from 8546 to 1763 bytes. The
+  hosted `GET /v1/instructions` and `session_start` follow the same order;
+  `full=1` adds the rules and the other live features (template version 2).
+- `db.add_doc` and the hosted document create refuse a second document for
+  the same project (see above).
 
 - Documents: a new stored type `D` (database schema 2, additive, applied
   lazily on connect; an older shapa keeps working on the file). `shapa doc

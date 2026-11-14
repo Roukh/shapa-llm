@@ -30,7 +30,7 @@ describe("session instructions", () => {
     await send("POST", rec(w, "/F2/close"), { token, body: { reason: "agent" } });
     await send("POST", rec(w, "/F1/claim"), { token });
 
-    const r = await get(`/v1/instructions?client=mcp&wiki=${w}`, token);
+    const r = await get(`/v1/instructions?client=mcp&wiki=${w}&full=1`, token);
     expect(r.status).toBe(200);
     const text: string = r.body.text;
     expect(text).toContain("shapa is this operator's shared memory");
@@ -41,7 +41,7 @@ describe("session instructions", () => {
     expect(text).toContain(`${w}/F1 Ship hosted mode [claimed by tester] (1 open job)`);
     expect(text).not.toContain("Closed already");
     expect(text).toContain("HOW TO WRITE BACK (MCP tools)");
-    expect(r.body.version).toMatch(/^1\.\d+$/);
+    expect(r.body.version).toMatch(/^3\.\d+$/); // template version 3: precedence, baseline, topics, projects
   });
 
   it("gives the mcp flavor the save call and the rest flavor the exact POST body", async () => {
@@ -70,17 +70,17 @@ describe("session instructions", () => {
     for (let i = 0; i < 40; i++) await create(token, w, { type: "feature", title: `Feature ${i} with a reasonably long descriptive title for the budget` });
     for (const budget of [2000, 2500, 6000, 12000, 40000]) {
       for (const client of ["mcp", "rest"]) {
-        const r = await get(`/v1/instructions?client=${client}&budget=${budget}`, token);
+        const r = await get(`/v1/instructions?client=${client}&budget=${budget}&full=1`, token);
         expect(r.status).toBe(200);
         expect(r.body.text.length, `${client} ${budget}`).toBeLessThanOrEqual(budget);
         expect(r.body.text, `${client} ${budget}`).toContain(client === "mcp" ? "HOW TO WRITE BACK (MCP tools)" : "HOW TO WRITE BACK (HTTP");
         expect(r.body.text).toContain("shapa is this operator's");
       }
     }
-    const tight = (await get("/v1/instructions?client=mcp&budget=2500", token)).body.text as string;
+    const tight = (await get("/v1/instructions?client=mcp&budget=2500&full=1", token)).body.text as string;
     expect(tight).toMatch(/…and \d+ more/);
     // a larger budget carries more
-    const roomy = (await get("/v1/instructions?client=mcp&budget=30000", token)).body.text as string;
+    const roomy = (await get("/v1/instructions?client=mcp&budget=30000&full=1", token)).body.text as string;
     expect(roomy.length).toBeGreaterThan(tight.length);
     expect((await get("/v1/instructions?budget=1999", token)).status).toBe(400);
     expect((await get("/v1/instructions?budget=40001", token)).status).toBe(400);
@@ -115,9 +115,9 @@ describe("session instructions", () => {
     const { token, w } = await setup();
     await seedGlobal(token);
     await create(token, w, { type: "feature", title: "Visible to MCP" });
-    const viaMcp = await tool(token, "session_start", { wiki: w });
+    const viaMcp = await tool(token, "session_start", { wiki: w, full: true });
     expect(viaMcp.isError).toBe(false);
-    const viaRest = (await get(`/v1/instructions?client=mcp&wiki=${w}&budget=6000`, token)).body.text as string;
+    const viaRest = (await get(`/v1/instructions?client=mcp&wiki=${w}&budget=14000&full=1`, token)).body.text as string;
     expect(viaMcp.text).toBe(viaRest);
     expect(viaMcp.text).toContain("Visible to MCP");
     const restFlavor = await tool(token, "session_start", { client: "rest" });
@@ -149,7 +149,7 @@ describe("session instructions", () => {
     await create(a.token, hidden, { type: "feature", title: "Hidden feature" });
     await create(a.token, hidden, { type: "rule", summary: "Hidden rule" });
     const lim = await mint("limited", ["read"], [a.w]);
-    const text = (await get("/v1/instructions", lim.token)).body.text as string;
+    const text = (await get("/v1/instructions?full=1", lim.token)).body.text as string;
     expect(text).toContain("Allowed feature");
     expect(text).not.toContain("Hidden feature");
     expect(text).not.toContain("Hidden rule");

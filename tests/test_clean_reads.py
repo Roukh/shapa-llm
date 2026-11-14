@@ -94,7 +94,7 @@ class TestReadsNeverWriteNotes(unittest.TestCase):
         self.assertEqual(self._porcelain(), "", "fixture must start clean")
 
         # Tier 1: SessionStart.
-        text = bootstrap.build_context(start=str(self.repo))
+        text = bootstrap.build_context(start=str(self.repo), full=True)
         self.assertIn("r-meta", text)
 
         # Tier 2: the UserPromptSubmit hook, record=True (the live default) -
@@ -135,7 +135,7 @@ class TestReadsNeverWriteNotes(unittest.TestCase):
         # tree on a second pass either.
         fetch.fetch_context("git workflow", root=self.wiki, record=True)
         fetch.fetch_context("git workflow", root=self.wiki, record=True)
-        bootstrap.build_context(start=str(self.repo))
+        bootstrap.build_context(start=str(self.repo), full=True)
         mcp.tool_search({"query": "git workflow"}, cwd=str(self.repo))
         self.assertEqual(self._porcelain(), "")
 

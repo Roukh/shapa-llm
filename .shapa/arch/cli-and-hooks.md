@@ -16,7 +16,10 @@ automatically instead of a human typing it.
 ## Owns
 
 - `shapa/cli.py` - subcommand dispatch (`bootstrap`, `fetch`, `capture`, `save`, `maintain`, `heartbeat`, `score`, `validate`, `serve`, `mcp`, `upgrade`, `get`, `status`, plus `ledger`/`row`/`correction`/`doc`).
-- `shapa/docs.py` - `shapa doc add|edit|rm|list` (documents, kind D); MCP `save` and `shapa save --type` take `document` and `idea`.
+- `shapa/docs.py` - `shapa doc add|edit|rm|list|merge` (documents, kind D; `add` takes `--project` and `--merge`: one document per project); MCP `save` and `shapa save --type` take `document` and `idea`.
+- `shapa/focus.py`, `shapa/skills.py` - `shapa focus ...` and `shapa skill ...`; MCP tools `focus` and `skill` in `shapa/mcp.py`. `shapa bootstrap` prints the focus by default and `--full` the old overview.
+- `shapa/learn.py`, `shapa/metrics.py` - `shapa learn pending|apply|dismiss|merge|principles` and `shapa metrics [--snapshot|--all|--repo|--history]`, `shapa metrics record skill-use NAME --session ID` (for a skill-use hook). CLI only: no MCP tool applies a principle or activates a skill. The `fetch` and `bootstrap` hooks record their own latency after printing; `correction` records every operator message's frustration signal; the sweep archives closed work and prunes events.
+- `shapa/partition.py` - `shapa map` and `shapa partition` (CLI), and the MCP tool `partition`; the engine is `codemap.py` (read-path box).
 - `shapa/maintain.py` - prune orphans/stale, auto-merge near-duplicates, resolve contradicting rules (`claude -p`, on demand), lean-shape reporting, legacy-counter backfill.
 - `shapa/heartbeat.py`, `shapa/score.py` - the maintenance walk and the value-ranking formula it and the read path both use.
 - `shapa/validate.py`, `shapa/frontmatter.py`, `shapa/nodes.py` - frontmatter/lean-shape checks for the files that remain (`arch/`, `research/`).

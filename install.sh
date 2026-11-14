@@ -8,7 +8,7 @@
 # $SHAPA_MEMORY or ~/.shapa/memory - private notes never live in the repo.
 #
 # Hooks installed (idempotent, --harness claude|all only):
-#   SessionStart     -> shapa bootstrap         (read: metadata-only overview, once/session)
+#   SessionStart     -> shapa bootstrap         (read: northstar, three fires and their tree, once/session)
 #   UserPromptSubmit -> shapa fetch             (read: relevant memory)
 #   Stop             -> shapa capture           (write: distil the session)
 #   Stop             -> shapa maintain --prune   (prune orphans/stale + merge dupes)

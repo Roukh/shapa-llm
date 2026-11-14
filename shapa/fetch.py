@@ -27,6 +27,7 @@ import argparse
 import json
 import re
 import sys
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -200,12 +201,21 @@ def is_memory(node: Node) -> bool:
     return bool(node.meta.get("_v3"))
 
 
+def _stage_of_tags(tags) -> int | None:
+    """The stage in a record's tags: only a ``stage:N`` tag (a one-digit number) is a stage."""
+    for t in tags or ():
+        if isinstance(t, str) and len(t) == 7 and t.startswith("stage:") and t[6] in "0123456789":
+            return int(t[6])
+    return None
+
+
 def _memory_node(root: Path, rec: memlog.Record) -> Node:
     return Node(
         id=rec.id, type="memory", path=memlog.log_dir(root),
         meta={"_v3": True, "id": rec.id, "kind": rec.kind, "summary": rec.summary,
               "created": rec.created, "scope": rec.scope, "repo": rec.repo,
               "tags": list(rec.tags), "source": rec.source,
+              "stage": _stage_of_tags(rec.tags),
               "locus": memlog.KIND_LOCUS.get(rec.kind, "output")},
     )
 
@@ -726,9 +736,21 @@ class Selection:
     features: dict = field(default_factory=dict)
 
 
+def _stage_rank(node: Node) -> int:
+    """Where a record's stage ranks on a relevance tie: lower first, no stage last."""
+    from shapa import db
+
+    stage = node.meta.get("stage")  # set once, where a memory record becomes a node
+    if "stage" not in node.meta:
+        tags = node.meta.get("tags") or []
+        stage = db.stage_of([t for t in tags if isinstance(t, str)]) if isinstance(tags, list) else None
+    return db.STAGE_MAX + 1 if stage is None else stage
+
+
 def select_multi(query: str, start=None, roots: list[WikiRoot] | None = None,
                   k: int = DEFAULT_K, budget: int = DEFAULT_BUDGET,
-                  *, read_only: bool = False) -> Selection:
+                  *, read_only: bool = False,
+                  only: dict[str, set[str]] | None = None) -> Selection:
     """Rank and merge notes across every wiki in scope (§4.1).
 
     *roots* overrides discovery (mainly for tests); by default the roots are
@@ -893,9 +915,13 @@ def select_multi(query: str, start=None, roots: list[WikiRoot] | None = None,
     for wr in wiki_roots:
         data = per_root[wr]
         candidates = list(data.nodes)
+        if only is not None:  # a tag filter: only the records carrying every tag compete
+            allowed = only.get(str(wr.path), set())
+            candidates = [nid for nid in candidates if nid in allowed]
         if mode == "relevance":
             candidates = [nid for nid in candidates if data.rel.get(nid, 0.0) >= threshold]
-            candidates.sort(key=lambda nid: (-data.rel[nid], -data.value[nid], nid))
+            candidates.sort(key=lambda nid: (-data.rel[nid], _stage_rank(data.nodes[nid]),
+                                             -data.value[nid], nid))
         else:  # mode == "value"
             candidates.sort(key=lambda nid: (-data.value[nid], nid))
         rest_by_root[wr] = candidates
@@ -918,8 +944,8 @@ def select_multi(query: str, start=None, roots: list[WikiRoot] | None = None,
             (wr, nid) for wr in wiki_roots for nid in rest_by_root[wr]
         ]
         ranked.sort(key=lambda p: (
-            -per_root[p[0]].rel[p[1]], -per_root[p[0]].value[p[1]],
-            wiki_roots.index(p[0]), p[1],
+            -per_root[p[0]].rel[p[1]], _stage_rank(per_root[p[0]].nodes[p[1]]),
+            -per_root[p[0]].value[p[1]], wiki_roots.index(p[0]), p[1],
         ))
 
         included: list[tuple[WikiRoot, str]] = []
@@ -1033,6 +1059,60 @@ def select_multi(query: str, start=None, roots: list[WikiRoot] | None = None,
                      mode=run_mode, features=features)
 
 
+def tag_selection(tags, query: str = "", start=None, roots: list[WikiRoot] | None = None,
+                  k: int = DEFAULT_K, *, read_only: bool = True) -> list[dict]:
+    """Records of every wiki in scope that carry ALL of *tags* (the tag is the relation), as
+    ``[{id, type, summary, root, root_kind, stage}]``. With a *query* the ones the index finds
+    relevant lead (a lower stage first on a tie), then the other matches, lowest stage first and
+    newest first. Reads the database's tag index, so it costs the matches, not the wiki."""
+    from shapa import db, relate
+
+    wanted = relate.clean_query_tags(tags)
+    wiki_roots = list(roots) if roots is not None else config.wiki_roots(start)
+    found: dict[tuple[str, str], dict] = {}
+    only: dict[str, set[str]] = {}
+    for wr in wiki_roots:
+        if wr.kind not in ("global", "repo") or not db.exists(wr.path):
+            continue
+        conn = db.connect(wr.path)
+        if conn is None:
+            continue
+        try:
+            ids = relate.ids_with_tags(conn, wanted)
+            meta = relate.describe(conn, ids)
+            stages = relate.stages_of(conn, meta)
+            focus = {r[0] for r in conn.execute("SELECT id FROM tags WHERE tag = ?", (db.FOCUS_TAG,))}
+        finally:
+            conn.close()
+        only[str(wr.path)] = {i for i in meta if i not in focus}
+        for i, m in meta.items():
+            if i not in focus:
+                found[(str(wr.path), i)] = {"id": i, "type": m["type"], "summary": m["summary"],
+                                            "root": str(wr.path), "root_kind": wr.kind,
+                                            "stage": stages.get(i), "updated": m["updated"]}
+    ordered: list[tuple[str, str]] = []
+    if query.strip() and found:
+        sel = select_multi(query, roots=wiki_roots, k=k, read_only=read_only, only=only)
+        for node, _ in sel.items:
+            key = (str(sel.item_roots.get(node.id)), node.id)
+            if key in found and key not in ordered:
+                ordered.append(key)
+    rest = sorted(found, key=lambda key: (found[key]["root_kind"] != "repo", key[1]))
+    rest.sort(key=lambda key: found[key]["updated"], reverse=True)
+    rest.sort(key=lambda key: relate.stage_key(found[key]["stage"]))
+    ordered += [key for key in rest if key not in ordered]
+    return [{kk: v for kk, v in found[key].items() if kk != "updated"} for key in ordered[:max(1, k)]]
+
+
+def render_tag_selection(items: list[dict]) -> str:
+    lines = [WRAPPER_OPEN, WRAPPER_HEAD]
+    for it in items:
+        stage = f" [stage {it['stage']}]" if it["stage"] is not None else ""
+        lines.append(f"- {memlog.display_line(str(it['id']))}: {memlog.display_line(it['summary'])}{stage}")
+    lines.append(WRAPPER_CLOSE)
+    return "\n".join(lines)
+
+
 def fetch_context(query: str, root=None, start=None, roots: list[WikiRoot] | None = None,
                   k: int = DEFAULT_K, budget: int = DEFAULT_BUDGET, record: bool = True) -> str:
     """Build the context block for *query* and (optionally) record a use of
@@ -1106,7 +1186,21 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--root", default=None, help="Memory directory (default: $SHAPA_MEMORY or ~/.shapa/memory).")
     parser.add_argument("--k", type=int, default=DEFAULT_K, help="Max notes to surface.")
     parser.add_argument("--no-record", action="store_true", help="Do not bump uses.")
+    parser.add_argument("--tag", action="append", default=None, metavar="TAG",
+                        help="Only records carrying this tag (repeat, or comma-separate, for "
+                             "several: all must match). The query is then optional.")
+    parser.add_argument("--cwd", default=None, help="Directory to resolve wikis from (with --tag).")
     args = parser.parse_args(argv)
+
+    if args.tag:
+        tag_list = [t.strip() for raw in args.tag for t in raw.split(",") if t.strip()]
+        try:
+            items = tag_selection(tag_list, args.query or "", start=args.cwd, k=args.k)
+        except Exception as exc:  # a bad tag list is the caller's to see; nothing else blocks
+            print(f"shapa fetch: {exc}", file=sys.stderr)
+            sys.exit(2)
+        print(render_tag_selection(items) if items else f"(no record carries {', '.join(tag_list)})")
+        sys.exit(0)
 
     query = args.query
     if query is None:
@@ -1117,10 +1211,12 @@ def main(argv: list[str] | None = None) -> None:
         except (json.JSONDecodeError, ValueError):
             query = ""
 
+    t0 = time.perf_counter()
     try:
         block = fetch_context(query, root=args.root, k=args.k, record=not args.no_record)
     except Exception:
         block = ""  # never block the prompt
+    elapsed_ms = (time.perf_counter() - t0) * 1000
 
     try:
         seen = config.wiki_roots() if args.root is None else [config.resolve(args.root)]
@@ -1129,7 +1225,14 @@ def main(argv: list[str] | None = None) -> None:
         pass  # bookkeeping only; never block the prompt
 
     if block:
-        print(block)
+        print(block, flush=True)
+    if not args.no_record:
+        try:  # latency of the read path itself (interpreter start excluded), kept per device
+            from shapa import metrics
+
+            metrics.record_latency(args.root, "fetch", elapsed_ms)
+        except Exception:
+            pass
     sys.exit(0)
 
 

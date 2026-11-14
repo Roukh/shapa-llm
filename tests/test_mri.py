@@ -228,7 +228,7 @@ class TestReadSurfaces(WikiCase):
         gconn.close()
 
     def test_bootstrap_shows_the_ledger_and_rows(self):
-        ctx = bootstrap.build_context(start=self.repo)
+        ctx = bootstrap.build_context(start=self.repo, full=True)
         self.assertIn("ledger repo: 1 features, 1 jobs, 0 tasks open", ctx)
         self.assertIn("- F1 sqlite ledger (1 open jobs)", ctx)
         self.assertIn("R1 (rule): Run the linter before every commit", ctx)

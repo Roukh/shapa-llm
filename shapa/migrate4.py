@@ -89,7 +89,7 @@ def _migrate_notes(conn, root: Path, removed: list[str]) -> None:
         if not summary:
             first = next((ln.strip("# ").strip() for ln in body.splitlines() if ln.strip()), alias)
             summary = first
-        tags = [str(t) for t in (parsed.meta.get("tags") or []) if str(t).strip()]
+        tags = db.legacy_tags(str(t) for t in (parsed.meta.get("tags") or []))
         rid, _ = db.add_row(conn, ROW_KIND[ntype], _plain(summary), body, tags=tags,
                             alias=alias if not db.get_row(conn, alias) else None,
                             source=f"note:{alias}", now=None)
@@ -163,7 +163,7 @@ def _migrate_memlog(conn, root: Path, removed: list[str]) -> None:
         if not rec.source.startswith(("capture:request", "upgrade:memory-session")):
             continue
         kind = "I" if ledger.is_correction(f"{rec.summary} {rec.body}") else "M"
-        db.add_row(conn, kind, rec.summary, rec.body, tags=rec.tags, source=rec.source,
+        db.add_row(conn, kind, rec.summary, rec.body, tags=db.legacy_tags(rec.tags), source=rec.source,
                    session=rec.session)
     shutil.rmtree(memlog.log_dir(root), ignore_errors=True)
     removed.append(f"{memlog.MEMORY_DIRNAME}/")
