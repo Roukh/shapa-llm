@@ -11,7 +11,7 @@ OpenCode.
 
 ## Install
 
-Once shapa is on PyPI:
+shapa is on [PyPI](https://pypi.org/project/shapa/):
 
 ```bash
 uv tool install 'shapa[semantic,mcp]'
@@ -19,7 +19,11 @@ uv tool install 'shapa[semantic,mcp]'
 pipx install shapa
 ```
 
-Until then, install straight from GitHub:
+Upgrade with `uv tool upgrade shapa` (or `pipx upgrade shapa`), then run
+`shapa upgrade --all --check`. The core has no dependencies; `[semantic]`
+adds fused vector recall and `[mcp]` the MCP server library.
+
+To install and wire Claude Code's hooks in one step:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Roukh/shapa-llm/main/bootstrap.sh | sh
