@@ -56,8 +56,13 @@ there instead.
 
 ## What it does
 
-- Surfaces relevant memory at session start and injects more on every
-  prompt, ranked by relevance.
+- Starts a session on what matters: the northstar, then the three big fires
+  (`shapa focus`) and only their tree, not every row. Closing a fire's
+  feature frees its slot and promotes the next candidate.
+- Injects relevant memory on every prompt, ranked by relevance.
+- Keeps skills as versioned records and one document per project; a
+  correction that names a skill files a pending new version of it, never an
+  active one.
 - Turns an operator's correction ("no", "wrong", "not like this") into an
   attributed issue row, not a buried chat line.
 - Tracks work as a three-level ledger: a feature (`F`, a new capability
@@ -134,19 +139,21 @@ which is why shapa commits it only on the default branch.
 | `shapa doctor` | check the whole install; exits 1 with a fix command per problem |
 | `shapa status` | the same report as `doctor`, without the exit code |
 | `shapa commit [--hook] [--dry-run] [--json] [--scrub TERM]` | commit `.shapa/` on the default branch |
-| `shapa bootstrap` | session-start overview of every wiki in scope |
+| `shapa bootstrap [--full]` | session start: the northstar, the three fires and only their tree (`--full`: every ranked row and the open ledger) |
+| `shapa focus show\|northstar\|fire\|unfire\|order\|rank\|candidates\|promote` | the northstar and the three ranked big fires of a wiki scope |
+| `shapa skill list\|show\|add\|update\|activate` | skills as versioned records, global or per repo |
 | `shapa fetch` | rank and surface memory relevant to a prompt |
 | `shapa get ID` | print a row's or a note's full text |
 | `shapa save` | write one note or row (`--scope global\|repo\|external`) |
 | `shapa row add\|edit\|rm\|link\|tag\|list` | manage memory, rule and issue rows |
-| `shapa doc add\|edit\|rm\|list` | manage documents (a titled body kept whole; `shapa get D<n>` prints one) |
+| `shapa doc add\|edit\|rm\|list\|merge` | manage documents (a titled body kept whole; `shapa get D<n>` prints one); a project keeps one, a second is refused naming it or appended with `--merge` |
 | `shapa remote login\|sync\|status\|devices\|logout\|instructions` | the opt-in hosted store (see Hosted) |
 | `shapa ledger add\|claim\|close\|tree\|issues` | manage the work ledger |
 | `shapa correction` | record an operator correction as an issue row |
 | `shapa maintain [--prune] [--dry-run]` | self-heal: merge duplicates, prune stale and orphaned rows |
 | `shapa validate` | check note and wiki frontmatter |
 | `shapa upgrade [--all] [--check]` | bring a wiki to the current format |
-| `shapa mcp` | run the MCP stdio server (`search`, `get`, `save`, `placement`) |
+| `shapa mcp` | run the MCP stdio server (`search`, `get`, `save`, `placement`, `focus`, `skill`) |
 | `shapa serve` | run the optional warm per-wiki daemon |
 
 Run `shapa` with no arguments for the full, versioned usage text.

@@ -9,6 +9,49 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Focus: one northstar and exactly three ranked big fires per wiki scope
+  (global and repo). `shapa focus` (show, northstar, fire, unfire, order,
+  rank, candidates, promote), the MCP tool `focus`, and on the hosted store
+  `GET|PUT /v1/wikis/{wiki}/focus`, `POST .../focus/promote` and the tools
+  `focus` and `focus_set`. A fire points at a ledger feature or is free text
+  (a fire that spans repos); a fourth is refused. Stored as one document
+  (alias `focus`, tag `focus`), so it syncs like any record: no new kind and
+  no schema change. Closing a fire's feature (ledger close, merge hook,
+  sweep, the hosted close) frees its slot, the other fires move up, and the
+  highest-ranked open top-level feature that is not a fire takes the last
+  slot: a `rank:N` tag on the feature, else the oldest. `shapa focus
+  promote` overrides.
+- One document per project (the lean gate). A project or subproject
+  (`--project KEY`, default the wiki's own) keeps one document; a second is
+  refused with a message naming the first, or appended to it as a section
+  with `--merge` (`merge: true` over MCP and REST). `shapa doc merge SRC DST`
+  folds two that raced from two devices; the hosted store refuses the second
+  on a sync put, naming the first. Focus records and skill versions are not
+  project documents. The tags `focus` and `skill` are reserved.
+- Skills as stored records: `shapa skill list|show|add|update|activate`, the
+  MCP tool `skill`, and on the hosted store `GET /v1/wikis/{wiki}/skills[/{name}]`
+  and the tools `skills` and `skill`. A version is a document tagged
+  `skill`, `skill:NAME`, `v:N` and `status:active|pending|previous`, scoped
+  to the global wiki or a repo's own, with a `SKILL.md` body; every version
+  is kept, and activating one makes the active one `previous`.
+- A memory, rule or issue that names a skill (tag `skill:NAME`, or an `about`
+  link to one of its versions) files a pending new version whose body is the
+  latest version plus the lesson, every lesson line quoted. It is never
+  activated by itself; the hosted store does the same for REST and MCP
+  writes.
+
+### Changed
+
+- `shapa bootstrap` (the SessionStart hook) prints the northstar first, then
+  the three fires and only their tree (the feature, its open jobs and tasks,
+  and the files and arch boxes they name). The old overview, every ranked
+  row and the open ledger, is `shapa bootstrap --full`. On a fixture of 12
+  features, 80 jobs and 140 rows the output went from 8546 to 1763 bytes. The
+  hosted `GET /v1/instructions` and `session_start` follow the same order;
+  `full=1` adds the rules and the other live features (template version 2).
+- `db.add_doc` and the hosted document create refuse a second document for
+  the same project (see above).
+
 - Documents: a new stored type `D` (database schema 2, additive, applied
   lazily on connect; an older shapa keeps working on the file). `shapa doc
   add|edit|rm|list` (body from `--body`, `--file` or stdin), `shapa get D<n>`

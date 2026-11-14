@@ -27,6 +27,14 @@ def now_iso():
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def project_of(tags):
+    """The project key of a document's tags, ``None`` for a focus record or a skill
+    version (the contract's lean gate, ``hosted.md``)."""
+    if "focus" in tags or "skill" in tags:
+        return None
+    return next((t[len("project:"):] for t in sorted(tags) if t.startswith("project:")), "")
+
+
 def clamp_future(stamp):
     """A stamp more than five minutes ahead of the server clock is clamped to it."""
     limit = (datetime.now(timezone.utc) + CLOCK_SKEW).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -222,6 +230,10 @@ class HostedDouble:
                 res["new_id"] = twin["id"]
                 renames[orig] = twin["id"]
             return {**res, "id": orig}
+        held = self.project_holder(wiki, rec)
+        if held is not None:  # the lean gate: a project keeps one document
+            return {"id": orig, "status": "rejected", "rev": 0,
+                    "error": f"project {project_of(rec['tags'])!r} already has document {held}"}
         cur = wiki.records.get(orig)
         if cur is None:
             return self.store(wiki, device, rec, "accepted", orig)
@@ -231,6 +243,18 @@ class HostedDouble:
         res = self.store(wiki, device, rec, "renamed", orig)
         res["new_id"] = new
         return res
+
+    @staticmethod
+    def project_holder(wiki, rec):
+        """The id of the live document already holding *rec*'s project, if any."""
+        if rec["kind"] != "D" or project_of(rec.get("tags") or []) is None:
+            return None
+        key = project_of(rec["tags"])
+        for other in wiki.records.values():
+            if (other["kind"] == "D" and not other["deleted"] and other["uid"] != rec["uid"]
+                    and project_of(other.get("tags") or []) == key):
+                return other["id"]
+        return None
 
     def same_uid(self, wiki, device, cur, rec, base_rev):
         rec = {**rec, "id": cur["id"]}

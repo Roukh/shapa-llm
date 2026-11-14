@@ -276,6 +276,14 @@ export class Repo {
     return r ? fromRow(r) : null;
   }
 
+  /** Live documents without their bodies (a body may be 1 MB): id, uid, title, tags. */
+  docsLight(wiki: string): { id: string; uid: string; title: string; tags: string[] }[] {
+    return this.sql
+      .exec(`SELECT id, uid, json_extract(data, '$.title') AS title, tags FROM records WHERE wiki = ? AND kind = 'D' AND deleted = 0 ORDER BY seq`, wiki)
+      .toArray()
+      .map((r) => ({ id: r["id"] as string, uid: r["uid"] as string, title: String(r["title"] ?? ""), tags: JSON.parse(r["tags"] as string) as string[] }));
+  }
+
   /** Cross-wiki lookup by id or alias (live records only). */
   across(ref: string, wikis: string[] | null, only?: string): Stored[] {
     const rows = this.sql

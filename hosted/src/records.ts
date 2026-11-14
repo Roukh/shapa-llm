@@ -441,6 +441,8 @@ export const CreateBody = z.object({
   parent: z.string().max(120).optional(),
   path: z.string().max(200).optional().describe("Note path, for type note."),
   mime: z.string().max(100).optional(),
+  project: z.string().max(80).optional().describe("Document only: the project or subproject key (default: the wiki's own). A project keeps one document."),
+  merge: z.boolean().optional().describe("Document only: append to the project's existing document as a section instead of refusing (409)."),
 }).openapi("CreateRecord");
 
 export const PatchBody = z.object({
@@ -461,6 +463,73 @@ export const CloseBody = z.object({
   reason: z.enum(["agent", "operator"]),
   git_ref: z.string().max(200).optional(),
 }).openapi("CloseRecord");
+
+// Focus and skills -------------------------------------------------------------------------------
+// Neither is a record kind: both are documents told apart by tags (hosted.md, "Focus and skills").
+
+export const MAX_FIRES = 3;
+export const FOCUS_ALIAS = "focus";
+export const FOCUS_TAG = "focus";
+export const SKILL_TAG = "skill";
+export const RESERVED_DOC_TAGS: readonly string[] = [FOCUS_TAG, SKILL_TAG];
+export const PROJECT_PREFIX = "project:";
+export const RANK_PREFIX = "rank:";
+export const NORTHSTAR_MAX = 600;
+export const FIRE_TEXT_MAX = 200;
+export const DOC_BODY_MAX = 1_000_000;
+const PROJECT_RE = /^[a-z0-9][a-z0-9._/-]{0,79}$/;
+
+/** The project key of a document's tags: `project:KEY`, "" (the wiki's own project) without
+ *  one, null for a focus record or a skill version (not project documents, never gated). */
+export function projectOf(tags: readonly string[]): string | null {
+  if (tags.some((t) => RESERVED_DOC_TAGS.includes(t))) return null;
+  const t = [...tags].sort(cmp).find((x) => x.startsWith(PROJECT_PREFIX));
+  return t === undefined ? "" : t.slice(PROJECT_PREFIX.length);
+}
+
+export function cleanProject(project: unknown): string {
+  const key = String(project ?? "").trim().toLowerCase();
+  if (key && !PROJECT_RE.test(key)) throw new Invalid(`invalid project ${JSON.stringify(String(project))}: lowercase letters, digits and . _ / - only`);
+  return key;
+}
+
+export const FireIn = z.object({
+  feature: z.string().max(120).optional(),
+  text: z.string().max(5000).optional(),
+}).openapi("FireIn");
+
+export const FocusPut = z.object({
+  northstar: z.string().max(5000).optional(),
+  fires: z.array(FireIn.nullable()).max(MAX_FIRES, "there are three fires").optional()
+    .describe("Replaces the fires: up to three, in rank order; null leaves a slot free."),
+}).openapi("FocusPut");
+
+export const FocusPromote = z.object({
+  feature: z.string().max(120).optional(),
+  slot: z.number().int().min(1).max(MAX_FIRES).optional(),
+}).openapi("FocusPromote");
+
+export const FireOut = z.object({
+  slot: z.number().int(), feature: z.string(), text: z.string(), title: z.string(), status: z.string(),
+  jobs: z.array(z.object({
+    id: z.string(), title: z.string(), status: z.string(),
+    tasks: z.array(z.object({ id: z.string(), title: z.string(), status: z.string() })),
+  })),
+  files: z.array(z.string()), boxes: z.array(z.string()),
+}).openapi("Fire");
+export const FocusOut = z.object({
+  wiki: z.string(), northstar: z.string(), fires: z.array(FireOut.nullable()),
+  candidates: z.array(z.object({ id: z.string(), title: z.string(), rank: z.number().int().nullable() })),
+}).openapi("Focus");
+
+export const SkillSummary = z.object({
+  name: z.string(), description: z.string(), active: z.number().int().nullable(),
+  pending: z.array(z.number().int()), versions: z.number().int(),
+}).openapi("SkillSummary");
+export const SkillVersionOut = z.object({
+  name: z.string(), version: z.number().int(), status: z.enum(["active", "pending", "previous"]),
+  description: z.string(), id: z.string(), body: z.string(),
+}).openapi("SkillVersion");
 
 export const SearchHit = z.object({
   wiki: z.string(), id: z.string(), type: z.string(), summary: z.string(), updated: z.string(),

@@ -18,6 +18,7 @@ and memory/rule/issue rows, in one sqlite file tracked in git.
 - `shapa/db.py` - schema, row/item CRUD, worktree-to-primary-checkout resolution, the after-merge sweep.
 - `shapa/ledger.py` - `shapa ledger`/`row`/`correction`, plus the git and harness trigger functions (`on_commit`, `pre_commit`, `reconcile`, `on_merge`, `hook_posttool`).
 - `shapa/migrate4.py` - format 3 to 4 migration (notes/checklist/ideas/memory-log into rows and ledger items).
+- `shapa/focus.py` (`shapa focus`) and `shapa/skills.py` (`shapa skill`) - the northstar, the three fires and the skill versions, kept in documents.
 
 ## Interfaces in
 
@@ -39,6 +40,7 @@ and memory/rule/issue rows, in one sqlite file tracked in git.
 
 - Tables: `items` (F/J/T, `parent` hierarchy, `status`, `verify`, `git_ref`, `alias`), `mri` (M/R/I, `alias`, `summary`, `body`, `hash`), `tags`, `links` (`about`/`supersedes`/`conflicts`/`related`).
 - Schema 2 (additive, applied lazily on connect; a read-only open tolerates schema 1; an older shapa ignores the new tables): `docs` (D, `title`, `body`, `mime`, `alias`, never swept for staleness) and `tombstones` (`id`, `kind`, `created`, `deleted_at`, written by `db.delete()` for every row, item or document it removes, the sweep included). `read_rows` also yields documents as `D` rows (title = summary) so the derived index, `fetch` and `bootstrap` see them. `uids` (`id` -> `uid`) is the record identity the hosted sync matches on: random (`secrets.token_hex(8)`) at insert, or for a record with none the legacy uid (first 16 hex of SHA-256 over `id + newline + created`), backfilled on migration and again at sync; it is a side table, not a column, because an older shapa builds its dataclasses from `SELECT *`. Tombstones carry the uid. An idea is an M row tagged `idea`.
+- No schema change carries focus, skills or the lean gate (schema stays 2): a wiki's focus is one document (alias and tag `focus`, JSON body), a skill version a document tagged `skill`, `skill:NAME`, `v:N`, `status:...`, and a project's document the one without those tags (`project:KEY` tag, else the wiki's own). `db.add_doc` refuses a second document for a project (`DocExists` names the first) or merges it as a section; `db.merge_docs` folds two; `db.retag` changes tags and stamps the record so sync sees it; `db.close` of a feature calls `focus.on_feature_closed`; `db.add_row`/`tag`/`link` call `skills.lesson_from_row`. The tags `focus` and `skill` are reserved to `focus.py` and `skills.py` (`add_doc(system=True)`).
 - An ID is a kind letter plus a per-wiki counter, never reused; the hierarchy lives in `parent`, not the ID.
 - Every worktree of a repo resolves to the primary checkout's one file (`db_path` walks `.git` -> `commondir`); a feature branch never has its own copy.
 - Committed only on the default branch; `shapa ledger pre-commit` refuses the commit anywhere else.

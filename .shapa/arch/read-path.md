@@ -16,7 +16,7 @@ never blocks.
 
 ## Owns
 
-- `shapa/bootstrap.py` - SessionStart hook, Tier 1.
+- `shapa/bootstrap.py` - SessionStart hook, Tier 1. Default: the northstar of each wiki in scope (global first), then each wiki's three fires and only their tree (feature, open jobs and tasks, files and arch boxes their text names), from `shapa/focus.py`; `--full` is the old overview (every ranked row and the open ledger).
 - `shapa/fetch.py` - UserPromptSubmit hook, Tier 2.
 - `shapa/get.py` - `shapa get ID`, Tier 3.
 - `shapa/rank.py`, `shapa/bm25.py`, `shapa/embed.py` - fusion ranking (RRF/min-max over BM25 + model2vec vectors).
@@ -41,7 +41,8 @@ never blocks.
 
 ## Invariants
 
-- Tier 1 (bootstrap) loads metadata only (`id/type/summary/tags/consequence/locus`), never a body.
+- Tier 1 (bootstrap) loads metadata only (`id/type/summary/tags/consequence/locus`), never a body. By default it loads no row at all: only the focus record and the fires' tree, each text one masked line (a record cannot add a heading, a wrapper tag or a line). A fire on a closed feature is skipped. No skill body ever reaches it. Measured on a fixture of 12 features, 80 jobs and 140 rows: 8546 bytes with `--full`, 1763 by default.
+- Focus records and skill versions are documents but are left out of the derived recall index (`db.doc_rows`).
 - Tier 2 (fetch) is summary-only, snippet-capped and budget-capped; a confidence floor drops below-floor results rather than padding to a fixed `k`.
 - Tier 3 (get, MCP) returns full bodies; agent-invoked only, never injected automatically.
 - Reads fan out across every wiki root in scope (this repo's own wiki, then the global wiki); an id that exists in more than one root is reported ambiguous, never silently picked.

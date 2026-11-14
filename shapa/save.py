@@ -83,28 +83,37 @@ def infer_scope(start: str | Path | None, applies_to: str | None) -> str:
     return "repo" if config.discover(start) is not None else "global"
 
 
-def save_row(root, scope: str, note_type: str, summary: str, body: str, tags, alias=None) -> dict:
+def save_row(root, scope: str, note_type: str, summary: str, body: str, tags, alias=None,
+             project: str | None = None, merge: bool = False) -> dict:
     """Format 4: a memory/rule/issue is a row in the wiki's database, never a
-    note file. *alias* keeps a caller-supplied slug findable by ``get``."""
+    note file. *alias* keeps a caller-supplied slug findable by ``get``. A
+    document obeys the lean gate: one per *project* (see :func:`db.add_doc`)."""
     from shapa import db
 
     conn = db.connect(root)
-    created = True
+    created, merged = True, False
     try:
         if note_type == "document":
-            rid = db.add_doc(conn, summary, body, tags=tags or [], alias=alias or None, source="save")
+            known = {d.id for d in db.documents(conn)}
+            rid = db.add_doc(conn, summary, body, tags=tags or [], alias=alias or None, source="save",
+                             project=project, merge=merge)
+            merged = rid in known
         else:
             # An idea is a memory tagged `idea`, never a kind of its own.
             kind = {"memory": "M", "idea": "M", "rule": "R", "issue": "I"}[note_type]
             all_tags = list(tags or []) + (["idea"] if note_type == "idea" else [])
             rid, created = db.add_row(conn, kind, summary, body, tags=all_tags,
                                       alias=alias or None, source="save")
+    except db.DocExists as exc:
+        return {"error": str(exc), "existing": exc.existing}
     except db.LedgerError as exc:
         return {"error": str(exc)}
     finally:
         conn.close()
     out = {"id": rid, "path": str(db.db_path(root)), "scope": scope}
-    if not created:
+    if merged:
+        out["warnings"] = [f"merged into the project's one document {rid} as a section"]
+    elif not created:
         out["warnings"] = [f"identical text already stored as {rid}"]
     return out
 

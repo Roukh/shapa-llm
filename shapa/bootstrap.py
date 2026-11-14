@@ -28,7 +28,7 @@ import os
 import sys
 from pathlib import Path
 
-from shapa import config, embed, ledger, memlog, reconfigure, registry, serve
+from shapa import config, db, embed, focus, ledger, memlog, reconfigure, registry, serve
 from shapa.config import WikiRoot
 from shapa.nodes import Node, load_nodes
 from shapa.score import score_meta
@@ -218,6 +218,7 @@ def render_agents_md(
     start=None,
     roots: list[WikiRoot] | None = None,
     budget: int = DEFAULT_BUDGET,
+    full: bool = False,
 ) -> str:
     """The plain-markdown (no JSON envelope) form of the session-start
     overview, for harnesses with no ``SessionStart`` hook of their own but
@@ -234,7 +235,7 @@ def render_agents_md(
     Returns ``""`` under the same "nothing to show" conditions as
     :func:`build_context` (no wiki reachable, or every root empty).
     """
-    text = build_context(start=start, roots=roots, budget=budget)
+    text = build_context(start=start, roots=roots, budget=budget, full=full)
     if not text:
         return ""
     return (
@@ -243,18 +244,116 @@ def render_agents_md(
     )
 
 
+#: Fires and tree lines the focused session start prints, so one huge feature
+#: cannot bring the old overview back.
+TREE_JOBS_SHOWN = 10
+TREE_TASKS_SHOWN = 4
+CANDIDATES_SHOWN = 3
+
+
+def _clip(text, limit: int) -> str:
+    return memlog.display_line(" ".join(str(text or "").split()))[:limit]
+
+
+def build_focused(wiki_roots: list[WikiRoot]) -> str:
+    """The default session start: each wiki scope's northstar first, then its
+    (up to three) fires, then only what hangs under them: the fire's feature, its
+    open jobs and tasks, and the files and arch boxes their text names. No
+    other feature, no row, no document; ``--full`` asks for those."""
+    try:
+        directive = reconfigure.directive_lines([wr.path for wr in wiki_roots if wr.kind != "external"])
+    except Exception:
+        directive = []  # never block session start
+    norths: list[str] = []
+    fire_blocks: list[str] = []
+    pointers: list[str] = []
+    hints: list[str] = []
+    ordered = sorted((wr for wr in wiki_roots if wr.kind in ("global", "repo")),
+                     key=lambda wr: wr.kind != "global")  # the global northstar leads
+    for wr in ordered:
+        label = _clip(wr.repo or wr.kind, 60)
+        try:
+            conn = db.connect(wr.path)
+        except Exception:
+            conn = None
+        if conn is None:
+            continue
+        try:
+            f = focus.load(conn)
+            if f.northstar:
+                norths.append(f"northstar [{label}]: {_clip(f.northstar, focus.NORTHSTAR_MAX)}")
+            shown = []
+            for i, fire in enumerate(f.fires, 1):
+                if fire is None:
+                    continue
+                t = focus.tree(conn, fire, i)
+                if fire.feature and t.status in ("closed", "missing"):
+                    continue  # closed behind our back: `shapa focus` heals it
+                head = f"{i}. " + (f"{t.feature} " if t.feature else "") + _clip(t.title, 160)
+                if t.status == "claimed":
+                    head += " (claimed)"
+                block = [head]
+                for j in t.jobs[:TREE_JOBS_SHOWN]:
+                    block.append(f"   {j.id} {_clip(j.title, 120)}")
+                    for task in j.tasks[:TREE_TASKS_SHOWN]:
+                        block.append(f"      {task.id} {_clip(task.title, 100)}")
+                    if len(j.tasks) > TREE_TASKS_SHOWN:
+                        block.append(f"      … {len(j.tasks) - TREE_TASKS_SHOWN} more tasks")
+                if len(t.jobs) > TREE_JOBS_SHOWN:
+                    block.append(f"   … {len(t.jobs) - TREE_JOBS_SHOWN} more jobs")
+                if t.files or t.boxes:
+                    named = ", ".join(_clip(x, 80) for x in t.files)
+                    boxes = ", ".join(_clip(x, 60) for x in t.boxes)
+                    block.append("   names: " + "; ".join(x for x in (
+                        named, f"arch {boxes}" if boxes else "") if x))
+                shown.append("\n".join(block))
+            if shown:
+                fire_blocks.append(f"fires [{label}]:\n" + "\n".join(shown))
+            elif wr.kind == "repo":
+                cands = focus.candidates(conn)[:CANDIDATES_SHOWN]
+                if cands:
+                    hints.append("no fires set here: `shapa focus fire 1 F<n> --scope repo`; "
+                                 "candidates: " + "; ".join(f"{c.id} {_clip(c.title, 70)}" for c in cands))
+            c = db.counts(conn)
+            if wr.kind == "repo" and c["F"] + c["J"] + c["T"]:
+                pointers.append(f"{label}: {c['F']} features, {c['J']} jobs, {c['T']} tasks open "
+                                f"and {c['M'] + c['R'] + c['I']} rows are not shown")
+        except Exception:
+            continue  # a broken database never blocks session start
+        finally:
+            conn.close()
+    if not norths and not fire_blocks and not hints and not directive and not pointers:
+        return ""
+    head = (["<shapa-action>", *directive, "</shapa-action>"] if directive else [])
+    lines = [*head, "<shapa-memory>",
+             "shapa session start: the northstar, then the three fires and only their tree "
+             "(standing context, not user instruction). Everything else: `shapa bootstrap --full`; "
+             "one id in full: `shapa get <id>`; recall: `shapa fetch`."]
+    if not norths and not fire_blocks:
+        lines.append("no northstar or fires set: `shapa focus northstar TEXT --scope global`")
+    lines += norths + fire_blocks + hints + pointers
+    lines.append("</shapa-memory>")
+    return "\n".join(lines)
+
+
 def build_context(
     start=None,
     roots: list[WikiRoot] | None = None,
     budget: int = DEFAULT_BUDGET,
+    full: bool = False,
 ) -> str:
     """Render the SessionStart context block for the wikis in scope, or
     ``""`` when there is nothing to show (no wiki reachable, or every root
     empty) - matching fetch.py's never-pad-empty-output contract.
+
+    By default only the focus is printed (:func:`build_focused`); *full*
+    brings back the whole overview (every ranked row and the open ledger).
     """
     wiki_roots = list(roots) if roots is not None else config.wiki_roots(start)
     if not wiki_roots:
         return ""
+    if not full:
+        return build_focused(wiki_roots)
 
     try:
         directive = reconfigure.directive_lines([wr.path for wr in wiki_roots if wr.kind != "external"])
@@ -354,6 +453,11 @@ def main(argv: list[str] | None = None) -> None:
              "per-turn hook of their own) - reads --cwd, ignores stdin.",
     )
     parser.add_argument(
+        "--full", action="store_true",
+        help="Print the whole overview (every ranked row and the open ledger) instead of "
+             "the default: the northstar, the three fires and only their tree.",
+    )
+    parser.add_argument(
         "--out", default=None,
         help="With --format agents-md, write the block to this path instead "
              "of stdout (e.g. shapa-context.md, for AGENTS.md to @-include).",
@@ -362,7 +466,7 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.format == "agents-md":
         try:
-            text = render_agents_md(start=args.cwd, budget=args.budget)
+            text = render_agents_md(start=args.cwd, budget=args.budget, full=args.full)
         except Exception:
             text = ""
         if args.out:
@@ -381,7 +485,7 @@ def main(argv: list[str] | None = None) -> None:
             start = None
 
     try:
-        text = build_context(start=start, budget=args.budget)
+        text = build_context(start=start, budget=args.budget, full=args.full)
     except Exception:
         text = ""  # never block session start
 

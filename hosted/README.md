@@ -22,7 +22,8 @@ The contract (record model, sync protocol, REST, MCP, auth) is `.shapa/arch/host
 | `src/repo.ts`, `src/schema.ts` | SQL access and schema |
 | `src/records.ts` | Wire schemas, limits, normalization (single source of the types) |
 | `src/ledger.ts`, `src/sync.ts`, `src/search.ts`, `src/wikis.ts` | Operations |
-| `src/instructions.ts` | Session instructions composer |
+| `src/instructions.ts` | Session instructions composer (northstar, fires and their tree; `full` adds the rest) |
+| `src/focus.ts`, `src/skills.ts`, `src/projects.ts` | The northstar and three fires, versioned skills, and the one-document-per-project gate (all documents told apart by tags; no schema change) |
 | `src/mcp.ts` | MCP tools |
 | `src/auth.ts`, `src/consent.ts`, `src/devices.ts`, `src/kit.ts` | Credentials, consent page, device rows, OAuth wiring |
 | `src/redact.ts` | Port of `shapa/redact.py` |

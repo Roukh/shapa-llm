@@ -66,6 +66,14 @@ LINK_RELS = ("about", "supersedes", "conflicts", "related")
 ID_RE = re.compile(r"^([FJTMRID])([1-9][0-9]*)$")
 DEFAULT_MIME = "text/markdown"
 TITLE_MAX = 200
+DOC_BODY_MAX = 1_000_000  # the hosted contract's record limit
+#: Documents that are not project documents: the focus record and skill
+#: versions. The lean gate (one document per project) never counts them.
+FOCUS_TAG = "focus"
+SKILL_TAG = "skill"
+RESERVED_DOC_TAGS = (FOCUS_TAG, SKILL_TAG)
+PROJECT_PREFIX = "project:"
+_PROJECT_RE = re.compile(r"^[a-z0-9][a-z0-9._/-]{0,79}$")
 _MIME_RE = re.compile(r"^[a-z0-9][a-z0-9.+-]{0,60}/[a-z0-9][a-z0-9.+-]{0,60}$")
 
 _SCHEMA = """
@@ -149,6 +157,18 @@ CREATE INDEX IF NOT EXISTS uids_uid ON uids(uid);
 
 class LedgerError(ValueError):
     """A ledger operation the data does not allow (unknown id, wrong kind)."""
+
+
+class DocExists(LedgerError):
+    """The project already has its one document (the lean gate); ``existing``
+    is that document's id."""
+
+    def __init__(self, existing: str, title: str, project: str):
+        self.existing = existing
+        what = f"project {project!r}" if project else "this wiki's project"
+        super().__init__(f"{what} already has document {existing} ({title}): edit it "
+                         f"(`shapa doc edit {existing}`) or add with --merge to append a section; "
+                         "a project keeps one document")
 
 
 def now_iso(now: datetime | None = None) -> str:
@@ -541,7 +561,20 @@ def close(conn: sqlite3.Connection, item_id: str, reason: str, *, git_ref: str |
                                (ts, ts, child))
             if cur.rowcount:
                 closed.append(child)
+    if item.kind == "F":
+        _after_feature_closed(conn, item.id)
     return closed
+
+
+def _after_feature_closed(conn: sqlite3.Connection, feature_id: str) -> None:
+    """A closed feature frees its fire slot and the next candidate takes the
+    place. Never lets the focus record break a close."""
+    try:
+        from shapa import focus
+
+        focus.on_feature_closed(conn, feature_id)
+    except Exception:
+        pass
 
 
 def items(conn: sqlite3.Connection, *, status: str | None = None, kind: str | None = None,
@@ -674,7 +707,20 @@ def add_row(conn: sqlite3.Connection, kind: str, summary: str, body: str = "", *
             if target and target != row_id:
                 conn.execute("INSERT OR IGNORE INTO links(src, dst, rel) VALUES (?, ?, 'about')",
                              (row_id, target))
+    _after_row_named_skill(conn, row_id)
     return row_id, created
+
+
+def _after_row_named_skill(conn: sqlite3.Connection, row_id: str) -> None:
+    """A memory, rule or issue that names a skill (a ``skill:NAME`` tag, or an
+    ``about`` link to a skill version) files a pending new version of it.
+    Never activates, and never lets the skill record break a row write."""
+    try:
+        from shapa import skills
+
+        skills.lesson_from_row(conn, row_id)
+    except Exception:
+        pass
 
 
 def update_row(conn: sqlite3.Connection, row_id: str, *, summary: str | None = None,
@@ -735,7 +781,36 @@ def doc_rows(conn: sqlite3.Connection) -> list["Row"]:
     duplicate and staleness rules cannot reach them."""
     return [Row(id=d.id, kind=DOC_KIND, alias=d.alias, summary=one_line(d.title), body=d.body,
                 source=d.source, session="", hash=d.hash, created=d.created, updated=d.updated,
-                tags=d.tags) for d in documents(conn)]
+                tags=d.tags) for d in documents(conn) if project_of(d.tags) is not None]
+
+
+def project_of(tags) -> str | None:
+    """The project key a document belongs to: the ``project:KEY`` tag, ``""``
+    (the wiki's own project) without one, ``None`` for a focus record or a
+    skill version, which are not project documents and never count."""
+    tags = list(tags)
+    if any(t in RESERVED_DOC_TAGS for t in tags):
+        return None
+    for t in sorted(tags):
+        if t.startswith(PROJECT_PREFIX):
+            return t[len(PROJECT_PREFIX):]
+    return ""
+
+
+def clean_project(project: str | None) -> str:
+    """A project (or subproject) key: lowercase ``a-z 0-9 . _ / -``, up to 80."""
+    key = (project or "").strip().lower()
+    if key and not _PROJECT_RE.match(key):
+        raise LedgerError(f"invalid project {project!r}: lowercase letters, digits and . _ / - only")
+    return key
+
+
+def project_doc(conn: sqlite3.Connection, key: str) -> Doc | None:
+    """The live project document of *key* (``""`` = the wiki's own), if any."""
+    for d in documents(conn):
+        if project_of(d.tags) == key:
+            return d
+    return None
 
 
 def _clean_mime(mime: str | None) -> str:
@@ -746,15 +821,45 @@ def _clean_mime(mime: str | None) -> str:
 
 
 def add_doc(conn: sqlite3.Connection, title: str, body: str = "", *, tags=(), alias: str | None = None,
-            mime: str | None = None, source: str = "", now: datetime | None = None) -> str:
-    """Write one document (kind ``D``); returns its id."""
+            mime: str | None = None, source: str = "", now: datetime | None = None,
+            project: str | None = None, merge: bool = False, system: bool = False) -> str:
+    """Write one document (kind ``D``); returns its id.
+
+    The lean gate: a project (``project`` or a ``project:KEY`` tag; none means
+    the wiki's own project) keeps one document. A second one is refused with
+    :class:`DocExists` naming the first, or with ``merge`` appended to it as a
+    section (its id is returned). Focus records and skill versions are not
+    project documents and are never gated."""
     title = one_line(redact(title), TITLE_MAX)
     if not title:
         raise LedgerError("title is required")
     body = redact(str(body or "").strip())
+    if len(body.encode("utf-8")) > DOC_BODY_MAX:
+        raise LedgerError(f"a document is at most {DOC_BODY_MAX} bytes")
     mime = _clean_mime(mime)
+    tags = [t for t in (_clean_tag(x) for x in tags) if t]
+    if not system and any(t in RESERVED_DOC_TAGS for t in tags):
+        raise LedgerError(f"the tags {', '.join(RESERVED_DOC_TAGS)} are reserved: "
+                          "use `shapa focus` and `shapa skill`")
+    key = clean_project(project)
+    if key:
+        tags = [t for t in tags if not t.startswith(PROJECT_PREFIX)] + [PROJECT_PREFIX + key]
     ts = now_iso(now)
     with write(conn):
+        gate = project_of(tags)
+        if gate is not None:
+            if clean_project(gate) != gate:
+                raise LedgerError(f"invalid project tag {PROJECT_PREFIX}{gate}")
+            held = project_doc(conn, gate)
+            if held is not None:
+                if not merge:
+                    raise DocExists(held.id, held.title, gate)
+                section = f"{held.body}\n\n## {title}\n\n{body}".strip()
+                if len(section.encode("utf-8")) > DOC_BODY_MAX:
+                    raise LedgerError(f"merging would make {held.id} larger than {DOC_BODY_MAX} bytes")
+                conn.execute("UPDATE docs SET body = ?, hash = ?, updated = ? WHERE id = ?",
+                             (section, content_hash(held.title, section), ts, held.id))
+                return held.id
         if alias and conn.execute("SELECT 1 FROM docs WHERE alias = ? OR id = ?",
                                   (alias, alias)).fetchone():
             raise LedgerError(f"alias {alias!r} already names a document")
@@ -769,6 +874,25 @@ def add_doc(conn: sqlite3.Connection, title: str, body: str = "", *, tags=(), al
             if t:
                 conn.execute("INSERT OR IGNORE INTO tags(id, tag) VALUES (?, ?)", (doc_id, t))
     return doc_id
+
+
+def merge_docs(conn: sqlite3.Connection, src_id: str, dst_id: str) -> str:
+    """Append document *src_id* to *dst_id* as a section and remove it (the
+    way two project documents that raced from two devices become one).
+    Returns the destination id."""
+    with write(conn):
+        src, dst = get_doc(conn, src_id), get_doc(conn, dst_id)
+        if src is None or dst is None or src.id == dst.id:
+            raise LedgerError("merge needs two different documents")
+        if project_of(src.tags) is None or project_of(dst.tags) is None:
+            raise LedgerError("only project documents merge, not a focus record or a skill version")
+        section = f"{dst.body}\n\n## {src.title}\n\n{src.body}".strip()
+        if len(section.encode("utf-8")) > DOC_BODY_MAX:
+            raise LedgerError(f"merging would make {dst.id} larger than {DOC_BODY_MAX} bytes")
+        conn.execute("UPDATE docs SET body = ?, hash = ?, updated = ? WHERE id = ?",
+                     (section, content_hash(dst.title, section), now_iso(), dst.id))
+        remove(conn, [src.id])
+    return dst.id
 
 
 def update_doc(conn: sqlite3.Connection, doc_id: str, *, title: str | None = None,
@@ -833,11 +957,34 @@ def remove(conn: sqlite3.Connection, ids, *, tombstone: bool = True,
 
 
 def tag(conn: sqlite3.Connection, target: str, tags) -> None:
+    if kind_of(target) == DOC_KIND and any(_clean_tag(t) in RESERVED_DOC_TAGS for t in tags):
+        raise LedgerError(f"the tags {', '.join(RESERVED_DOC_TAGS)} are reserved: "
+                          "use `shapa focus` and `shapa skill`")
     with write(conn):
         for t in tags:
             t = _clean_tag(t)
             if t:
                 conn.execute("INSERT OR IGNORE INTO tags(id, tag) VALUES (?, ?)", (target, t))
+    if kind_of(target) in MRI_KINDS:
+        _after_row_named_skill(conn, target)
+
+
+def retag(conn: sqlite3.Connection, target: str, *, add=(), drop_prefix: str | None = None,
+          drop=()) -> None:
+    """Replace some of a record's tags (every tag starting with *drop_prefix*,
+    and each of *drop*), add *add*, and stamp the record updated so a sync
+    sees the change. Used for state kept in tags (a skill's status, a
+    feature's rank)."""
+    with write(conn):
+        for (t,) in conn.execute("SELECT tag FROM tags WHERE id = ?", (target,)).fetchall():
+            if t in drop or (drop_prefix and t.startswith(drop_prefix)):
+                conn.execute("DELETE FROM tags WHERE id = ? AND tag = ?", (target, t))
+        for t in add:
+            t = _clean_tag(t)
+            if t:
+                conn.execute("INSERT OR IGNORE INTO tags(id, tag) VALUES (?, ?)", (target, t))
+        table = {"F": "items", "J": "items", "T": "items", "D": "docs"}.get(target[:1], "mri")
+        conn.execute(f"UPDATE {table} SET updated = ? WHERE id = ?", (now_iso(), target))
 
 
 def link(conn: sqlite3.Connection, src: str, dst: str, rel: str) -> None:
@@ -845,6 +992,8 @@ def link(conn: sqlite3.Connection, src: str, dst: str, rel: str) -> None:
         raise LedgerError(f"rel must be one of {LINK_RELS}")
     with write(conn):
         conn.execute("INSERT OR IGNORE INTO links(src, dst, rel) VALUES (?, ?, ?)", (src, dst, rel))
+    if rel == "about" and kind_of(src) in MRI_KINDS:
+        _after_row_named_skill(conn, src)
 
 
 def links_of(conn: sqlite3.Connection, node_id: str) -> list[tuple[str, str, str]]:

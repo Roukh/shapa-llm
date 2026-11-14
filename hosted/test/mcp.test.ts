@@ -3,7 +3,7 @@ import { BASE, call, get, mint, mintAll, rec, send, setup, wiki } from "./helper
 import { INIT, rpc, tool } from "./mcp-helpers.js";
 import { oauthLogin } from "./oauth-helpers.js";
 
-const TOOLS = ["session_start", "search", "get", "save", "update", "ledger_list", "ledger_add", "ledger_set", "wikis"];
+const TOOLS = ["session_start", "search", "get", "save", "update", "ledger_list", "ledger_add", "ledger_set", "wikis", "focus", "focus_set", "skills", "skill"];
 
 describe("MCP: discovery", () => {
   it("publishes the protected resource and challenges an unauthenticated caller", async () => {
@@ -34,8 +34,8 @@ describe("MCP: protocol surface", () => {
     expect(tools.map((t) => t.name).sort()).toEqual([...TOOLS].sort());
     expect(tools.some((t) => /delete|remove|forget/i.test(t.name))).toBe(false);
     const by = Object.fromEntries(tools.map((t) => [t.name, t]));
-    for (const ro of ["session_start", "search", "get", "ledger_list", "wikis"]) expect(by[ro]!.annotations?.readOnlyHint, ro).toBe(true);
-    for (const rw of ["save", "update", "ledger_add", "ledger_set"]) expect(by[rw]!.annotations?.readOnlyHint, rw).toBe(false);
+    for (const ro of ["session_start", "search", "get", "ledger_list", "wikis", "focus", "skills", "skill"]) expect(by[ro]!.annotations?.readOnlyHint, ro).toBe(true);
+    for (const rw of ["save", "update", "ledger_add", "ledger_set", "focus_set"]) expect(by[rw]!.annotations?.readOnlyHint, rw).toBe(false);
     expect(by["update"]!.annotations?.destructiveHint).toBe(true);
     for (const t of tools) {
       expect(t.description.length, t.name).toBeGreaterThan(20);

@@ -51,14 +51,77 @@ export function buildServer(env: Env, cred: Cred): McpServer {
       inputSchema: z.object({
         client: z.enum(["mcp", "rest"]).default("mcp").describe("Write-back flavor; leave as mcp."),
         wiki: wikiKey.optional().describe("Focus on one repo wiki."),
+        full: z.boolean().default(false).describe("Also the rules and the other live features. Default: the northstar, the three fires and only their tree."),
       }),
       annotations: READ,
     },
-    ({ client, wiki }) =>
+    ({ client, wiki, full }) =>
       guarded(async () => {
-        const r = await unwrap(s.instructions(cred, { client, ...(wiki ? { wiki } : {}), budget: LIMITS.instructionsBudget.default }));
+        const r = await unwrap(s.instructions(cred, { client, ...(wiki ? { wiki } : {}), budget: LIMITS.instructionsBudget.default, full }));
         return text(r.text);
       }),
+  );
+
+  server.registerTool(
+    "focus",
+    {
+      title: "Read the focus",
+      description:
+        "The northstar and the three ranked big fires of a wiki (`global`, or a repo's key), each fire with its open jobs and tasks, plus the candidates for a free slot. Omit wiki for the global one.",
+      inputSchema: z.object({ wiki: wikiKey.default("global") }),
+      annotations: READ,
+    },
+    ({ wiki }) => guarded(async () => json(await unwrap(s.focus(cred, wiki)))),
+  );
+
+  server.registerTool(
+    "focus_set",
+    {
+      title: "Set the northstar and the fires",
+      description:
+        "Set a wiki's northstar and/or replace its fires (at most three, in rank order; each a ledger feature id, or free text in the global wiki), or `promote` a feature (default: the best candidate) into a slot (default: the first free one). Closing a fire's feature frees its slot and promotes the next candidate by itself.",
+      inputSchema: z.object({
+        wiki: wikiKey,
+        northstar: z.string().max(5000).optional(),
+        fires: z.array(z.object({ feature: z.string().max(120).optional(), text: z.string().max(5000).optional() }).nullable()).max(3, "there are three fires").optional(),
+        promote: z.object({ feature: z.string().max(120).optional(), slot: z.number().int().min(1).max(3).optional() }).optional(),
+      }),
+      annotations: { ...WRITE, idempotentHint: true },
+    },
+    ({ wiki, northstar, fires, promote }) =>
+      guarded(async () => {
+        if (promote !== undefined && (northstar !== undefined || fires !== undefined)) return { isError: true, content: [{ type: "text" as const, text: "invalid: promote cannot be combined with northstar or fires" }] };
+        const v = promote !== undefined
+          ? await unwrap(s.promoteFocus(cred, wiki, promote))
+          : await unwrap(s.setFocus(cred, wiki, { ...(northstar !== undefined ? { northstar } : {}), ...(fires !== undefined ? { fires } : {}) }));
+        return json(v);
+      }),
+  );
+
+  server.registerTool(
+    "skills",
+    {
+      title: "List skills",
+      description: "The skills stored in a wiki (default `global`): name, description, the active version and the pending ones.",
+      inputSchema: z.object({ wiki: wikiKey.default("global") }),
+      annotations: READ,
+    },
+    ({ wiki }) =>
+      guarded(async () => {
+        const list = await unwrap(s.skills(cred, wiki));
+        return list.length ? json(list) : text("No skills.");
+      }),
+  );
+
+  server.registerTool(
+    "skill",
+    {
+      title: "Read a skill",
+      description: "One skill's body: its active version, or `version` N (a pending one included).",
+      inputSchema: z.object({ name: z.string().min(1).max(64), wiki: wikiKey.default("global"), version: z.number().int().min(1).max(999_999).optional() }),
+      annotations: READ,
+    },
+    ({ name, wiki, version }) => guarded(async () => json(await unwrap(s.skill(cred, wiki, name, version)))),
   );
 
   server.registerTool(
@@ -113,12 +176,15 @@ export function buildServer(env: Env, cred: Cred): McpServer {
         tags,
         alias: z.string().max(100).optional().describe("A short slug you can `get` it by later."),
         path: z.string().max(200).optional().describe("Note path, e.g. research/topic.md (note only)."),
+        project: z.string().max(80).optional().describe("document only: the project or subproject key (default: the wiki's own). A project keeps ONE document."),
+        merge: z.boolean().optional().describe("document only: append to the project's existing document as a section instead of refusing."),
       }),
       annotations: { ...WRITE, idempotentHint: true },
     },
     ({ wiki, type, ...rest }) =>
       guarded(async () => {
         const { record, created } = await unwrap(s.create(cred, wiki, { type, ...rest }));
+        if (!created && type === "document") return text(`Merged into ${record.id} in ${wiki} as a section.`);
         return text(`${created ? "Saved" : "Already saved as"} ${record.id} in ${wiki}.`);
       }),
   );

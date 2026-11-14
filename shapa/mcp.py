@@ -265,7 +265,9 @@ def tool_save(args: dict[str, Any], cwd: str | None) -> dict[str, Any]:
 
     if db.exists(root):
         return save_mod.save_row(root, scope, note_type, summary, body, tags,
-                                 alias=str(args.get("id") or "").strip())
+                                 alias=str(args.get("id") or "").strip(),
+                                 project=str(args.get("project") or "").strip() or None,
+                                 merge=bool(args.get("merge")))
     if note_type in save_mod.DB_ONLY_TYPES:
         return {"error": f"type {note_type!r} needs a format-4 wiki (a shapa.db) - "
                          f"run `shapa upgrade {root}` first"}
@@ -336,11 +338,128 @@ def tool_placement(args: dict[str, Any], cwd: str | None) -> dict[str, Any]:
     return {"text": text}
 
 
+def _scope_root(args: dict[str, Any], cwd: str | None, *, required: bool):
+    """The wiki root a focus or skill tool writes to, or an error dict."""
+    scope = str(args.get("scope") or "").strip()
+    if scope not in VALID_SAVE_SCOPES:
+        return None, {"error": f"scope must be one of {sorted(VALID_SAVE_SCOPES)} (got {scope!r})"}
+    if scope == "global":
+        return config.global_root(), None
+    found = config.discover(args.get("root") or cwd)
+    if found is None:
+        return None, {"error": "scope 'repo' requires a repo-local wiki here - run `shapa init`"}
+    return found, None
+
+
+def tool_focus(args: dict[str, Any], cwd: str | None) -> dict[str, Any]:
+    from shapa import db, focus
+
+    action = str(args.get("action") or "show").strip()
+    if action == "show":
+        out: dict[str, Any] = {}
+        for wr in config.wiki_roots(args.get("root") or cwd):
+            if wr.kind in ("global", "repo") and db.exists(wr.path):
+                conn = db.connect(wr.path)
+                try:
+                    out[wr.kind] = focus.as_dict(conn)
+                finally:
+                    conn.close()
+        return out
+    if action not in ("northstar", "fire", "unfire", "order", "rank", "promote", "candidates"):
+        return {"error": f"action must be show, northstar, fire, unfire, order, rank, promote "
+                         f"or candidates (got {action!r})"}
+    root, err = _scope_root(args, cwd, required=True)
+    if err:
+        return err
+    if not db.exists(root):
+        return {"error": f"{root} has no database - run `shapa upgrade {root}`"}
+    conn = db.connect(root)
+    try:
+        try:
+            if action == "northstar":
+                focus.set_northstar(conn, str(args.get("text") or ""))
+            elif action == "fire":
+                if args.get("feature") and args.get("scope") == "global":
+                    return {"error": "the global wiki has no ledger: a global fire is free text"}
+                focus.set_fire(conn, args.get("slot"), feature=args.get("feature") or None,
+                               text=args.get("text") or None)
+            elif action == "unfire":
+                focus.clear_fire(conn, args.get("slot"))
+            elif action == "order":
+                focus.reorder(conn, args.get("order") or [])
+            elif action == "rank":
+                rank = args.get("rank")
+                focus.rank_feature(conn, str(args.get("feature") or ""),
+                                   None if rank in (None, "", "none") else int(rank))
+            elif action == "promote":
+                focus.promote(conn, feature=args.get("feature") or None, slot=args.get("slot"))
+            elif action == "candidates":
+                return {"candidates": [{"id": i.id, "title": i.title, "rank": focus.rank_of(conn, i.id)}
+                                       for i in focus.candidates(conn)]}
+        except (db.LedgerError, ValueError, TypeError) as exc:
+            return {"error": str(exc)}
+        return focus.as_dict(conn)
+    finally:
+        conn.close()
+
+
+def tool_skill(args: dict[str, Any], cwd: str | None) -> dict[str, Any]:
+    from shapa import db, skills
+
+    action = str(args.get("action") or "list").strip()
+    if action in ("list", "show"):
+        out: list[Any] = []
+        for wr in config.wiki_roots(args.get("root") or cwd):
+            if wr.kind not in ("global", "repo") or not db.exists(wr.path):
+                continue
+            conn = db.connect(wr.path)
+            try:
+                if action == "list":
+                    out += [{**s, "scope": wr.kind} for s in skills.summaries(conn)]
+                else:
+                    v = skills.get(conn, str(args.get("name") or ""),
+                                   int(args["version"]) if args.get("version") else None)
+                    if v is not None:
+                        out.append({**skills.as_dict(v, body=True), "scope": wr.kind})
+            except (ValueError, TypeError) as exc:
+                return {"error": str(exc)}
+            finally:
+                conn.close()
+        if action == "show" and not out:
+            return {"error": f"no skill {args.get('name')!r} in any wiki in scope"}
+        return {"skills": out}
+    if action not in ("add", "update", "activate"):
+        return {"error": f"action must be list, show, add, update or activate (got {action!r})"}
+    root, err = _scope_root(args, cwd, required=True)
+    if err:
+        return err
+    conn = db.connect(root) if db.exists(root) else None
+    if conn is None:
+        return {"error": f"{root} has no database - run `shapa upgrade {root}`"}
+    try:
+        try:
+            name = str(args.get("name") or "")
+            if action == "activate":
+                v = skills.activate(conn, name, int(args["version"]) if args.get("version") else None)
+            else:
+                v = skills.add_version(conn, name, str(args.get("description") or ""),
+                                       str(args.get("body") or ""), new=action == "add",
+                                       active=bool(args.get("active")) or action == "add",
+                                       source="mcp")
+        except (db.LedgerError, ValueError, TypeError) as exc:
+            return {"error": str(exc)}
+        return skills.as_dict(v)
+    finally:
+        conn.close()
+
+
 _HANDLERS: dict[str, Callable[[dict[str, Any], str | None], dict[str, Any]]] = {
     "search": tool_search,
     "get": tool_get,
     "save": tool_save,
     "placement": tool_placement,
+    "focus": tool_focus,
+    "skill": tool_skill,
 }
 
 TOOLS: list[dict[str, Any]] = [
@@ -412,6 +531,17 @@ TOOLS: list[dict[str, Any]] = [
                     "type": "string",
                     "description": "Optional explicit id; slugified from `summary` otherwise.",
                 },
+                "project": {
+                    "type": "string",
+                    "description": "document only: the project or subproject key (default: this "
+                                   "wiki's own). A project keeps ONE document; a second is refused "
+                                   "with the first one's id unless `merge` is true.",
+                },
+                "merge": {
+                    "type": "boolean",
+                    "description": "document only: append this one as a section of the project's "
+                                   "existing document instead of refusing it.",
+                },
                 "root": {
                     "type": "string",
                     "description": "Directory to resolve 'repo' scope from (default: this server's cwd).",
@@ -427,6 +557,49 @@ TOOLS: list[dict[str, Any]] = [
             "wiki or this repo's own wiki. Call this before `save` if unsure."
         ),
         "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "focus",
+        "description": (
+            "The northstar and the three ranked big fires of the global wiki and this "
+            "repo's own. action `show` (default) reads both; `northstar` {text}, "
+            "`fire` {slot 1-3, feature | text}, `unfire` {slot}, `order` {order: [2,1,3]}, "
+            "`rank` {feature, rank}, `promote` {feature?, slot?}, `candidates` set or move "
+            "them and need `scope` (global or repo). A global fire is free text; a repo "
+            "fire points at a ledger feature."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["show", "northstar", "fire", "unfire",
+                                                      "order", "rank", "promote", "candidates"]},
+                "scope": {"type": "string", "enum": ["global", "repo"]},
+                "text": {"type": "string"}, "slot": {"type": "integer"},
+                "feature": {"type": "string"}, "rank": {"type": "integer"},
+                "order": {"type": "array", "items": {"type": "integer"}},
+                "root": {"type": "string"},
+            },
+        },
+    },
+    {
+        "name": "skill",
+        "description": (
+            "Skills stored as versioned records, global or per repo. action `list` (default) "
+            "and `show` {name, version?} read them; `add` {name, description, body} makes "
+            "version 1 active; `update` makes a new pending version (`active: true` "
+            "activates it at once); `activate` {name, version?} activates the newest "
+            "pending one. add, update and activate need `scope`."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["list", "show", "add", "update", "activate"]},
+                "scope": {"type": "string", "enum": ["global", "repo"]},
+                "name": {"type": "string"}, "description": {"type": "string"},
+                "body": {"type": "string"}, "version": {"type": "integer"},
+                "active": {"type": "boolean"}, "root": {"type": "string"},
+            },
+        },
     },
 ]
 

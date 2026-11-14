@@ -118,7 +118,7 @@ def test_add_get_update_documents(wikis):
     conn = wikis.conn()
     try:
         d1 = db.add_doc(conn, "Deploy runbook", "step one", alias="runbook", source="test")
-        d2 = db.add_doc(conn, "Second", "x", mime="text/plain")
+        d2 = db.add_doc(conn, "Second", "x", mime="text/plain", project="second")
         assert (d1, d2) == ("D1", "D2")
         doc = db.get_doc(conn, "runbook")
         assert doc.id == "D1" and doc.mime == "text/markdown" and doc.source == "test"
@@ -128,7 +128,7 @@ def test_add_get_update_documents(wikis):
         assert edited.body == "step one, then two" and edited.hash != old_hash
         assert edited.created == doc.created
         with pytest.raises(db.LedgerError):
-            db.add_doc(conn, "Dup alias", "x", alias="runbook")
+            db.add_doc(conn, "Dup alias", "x", alias="runbook", project="third")
         with pytest.raises(db.LedgerError):
             db.add_doc(conn, "  ", "x")
         with pytest.raises(db.LedgerError):
@@ -191,7 +191,7 @@ def test_the_sweep_deletes_through_tombstones_and_never_removes_documents(wikis)
         a, _ = db.add_row(conn, "R", "always rebase before merging the branch")
         b, _ = db.add_row(conn, "R", "always rebase before merging the branch", "")
         d1 = db.add_doc(conn, "Same title", "same body", tags=["keep"])
-        d2 = db.add_doc(conn, "Same title", "same body")
+        d2 = db.add_doc(conn, "Same title", "same body", project="other")
         report = db.sweep(conn, keep_closed_since="2999-01-01T00:00:00Z")
         assert j in report.deleted_items
         assert {t["id"] for t in db.tombstones(conn)} >= {j}
@@ -224,7 +224,7 @@ def test_doc_add_needs_a_scope_and_reads_body_from_file_or_stdin(wikis, tmp_path
     src = tmp_path / "in.md"
     src.write_text("from a file", encoding="utf-8")
     run_cli(["add", "--scope", "global", "File doc", "--file", str(src)], wikis.repo)
-    run_cli(["add", "--scope", "global", "Piped doc"], wikis.repo, stdin="from stdin\n")
+    run_cli(["add", "--scope", "global", "Piped doc", "--project", "piped"], wikis.repo, stdin="from stdin\n")
     conn = wikis.conn(wikis.global_wiki)
     try:
         bodies = {d.title: d.body for d in db.documents(conn)}
@@ -256,7 +256,7 @@ def test_save_accepts_document_and_idea_on_cli_and_mcp(wikis):
     r2 = save.save_note("repo", "Another idea", "details", note_type="idea", start=wikis.repo)
     assert r2["id"] == "M2"
     r3 = save.save_note("repo", "A doc", "text", note_type="document", start=wikis.repo)
-    assert r3["id"] == "D2"
+    assert "D1" in r3["error"]  # a project keeps one document; the refusal names it
     conn = wikis.conn()
     try:
         assert db.get_row(conn, "M1").kind == "M" and "idea" in db.get_row(conn, "M1").tags
@@ -279,7 +279,7 @@ def test_documents_reach_fetch_search_and_bootstrap(wikis):
     assert "Quokka migration checklist" in fetch.render(sel)
     found = mcp.tool_search({"query": "quokka migration"}, str(wikis.repo))
     assert any(r["id"] == "D1" for r in found["results"])
-    ctx = bootstrap.build_context(start=wikis.repo)
+    ctx = bootstrap.build_context(start=wikis.repo, full=True)
     assert "D1 (document): Quokka migration checklist" in ctx
     assert "the quokka database" not in ctx  # summary line only, never the body
 
@@ -288,10 +288,10 @@ def test_session_start_stays_lean_with_many_documents(wikis):
     conn = wikis.conn()
     try:
         for i in range(30):
-            db.add_doc(conn, f"Reference document number {i}", "body " * 50)
+            db.add_doc(conn, f"Reference document number {i}", "body " * 50, project=f"p{i}")
     finally:
         conn.close()
-    ctx = bootstrap.build_context(start=wikis.repo)
+    ctx = bootstrap.build_context(start=wikis.repo, full=True)
     assert ctx.count("(document)") <= bootstrap.MEMORY_CAP_PER_ROOT
 
 
@@ -421,7 +421,7 @@ def test_recall_cannot_forge_wrapper_tags_through_a_notes_id_or_type(wikis):
     (wikis.wiki / "note.md").write_text(
         f'---\nid: "{evil}"\ntype: "{evil}"\ncreated: "2026-01-01T00:00:00Z"\nconsequence: 9\n'
         f'locus: meta\nsummary: "attacker note about quokkas"\n---\nbody about quokkas\n', encoding="utf-8")
-    ctx = bootstrap.build_context(start=wikis.repo)
+    ctx = bootstrap.build_context(start=wikis.repo, full=True)
     assert "attacker note" in ctx  # the note is listed, so this test really exercises the line
     assert "<shapa-action>" not in ctx and "</shapa-action>" not in ctx
     assert ctx.count("</shapa-memory>") == ctx.count("<shapa-memory>")
@@ -461,3 +461,119 @@ def test_the_jwt_and_split_prefix_fixes_keep_redacting_real_secrets():
     key = "sk-ant-api03-ab"
     tail = "cdefghijklmnopqrstuvwxyz0123456789"
     assert tail not in redact(f"{key}\n{tail}")
+
+
+# --- the lean gate: one document per project -----------------------------------------------------
+
+def test_a_second_document_for_the_same_project_is_refused_naming_the_first(wikis):
+    conn = wikis.conn()
+    try:
+        first = db.add_doc(conn, "Principles", "the project's rules")
+        with pytest.raises(db.DocExists) as e:
+            db.add_doc(conn, "Another", "more text")
+        assert e.value.existing == first and first in str(e.value) and "Principles" in str(e.value)
+        assert len(db.documents(conn)) == 1
+    finally:
+        conn.close()
+
+
+def test_merge_appends_a_section_to_the_one_document(wikis):
+    conn = wikis.conn()
+    try:
+        first = db.add_doc(conn, "Principles", "rule one")
+        merged = db.add_doc(conn, "Models", "model text", merge=True)
+        assert merged == first and len(db.documents(conn)) == 1
+        body = db.get_doc(conn, first).body
+        assert body.startswith("rule one") and "## Models\n\nmodel text" in body
+        assert db.get_doc(conn, first).hash == db.content_hash("Principles", body)
+    finally:
+        conn.close()
+
+
+def test_a_subproject_has_its_own_document_and_a_bad_key_is_refused(wikis):
+    conn = wikis.conn()
+    try:
+        db.add_doc(conn, "Repo doc", "x")
+        sub = db.add_doc(conn, "Hosted doc", "y", project="hosted")
+        assert "project:hosted" in db.get_doc(conn, sub).tags
+        with pytest.raises(db.DocExists):
+            db.add_doc(conn, "Hosted again", "z", tags=["project:hosted"])
+        for bad in ("Has Space", "../up", "x" * 90):
+            with pytest.raises(db.LedgerError):
+                db.add_doc(conn, "t", "b", project=bad)
+    finally:
+        conn.close()
+
+
+def test_each_wiki_scope_has_its_own_project_document(wikis):
+    g, r = wikis.conn(wikis.global_wiki), wikis.conn()
+    try:
+        db.add_doc(g, "Global doc", "x")
+        db.add_doc(r, "Repo doc", "y")
+    finally:
+        g.close()
+        r.close()
+
+
+def test_the_cli_refuses_then_merges_and_names_the_existing_id(wikis, capsys):
+    run_cli(["add", "--scope", "repo", "Principles", "--body", "one"], wikis.repo)
+    with pytest.raises(SystemExit):
+        docs.main(["add", "--scope", "repo", "Second", "--body", "two", "--cwd", str(wikis.repo)])
+    assert "D1" in capsys.readouterr().err
+    code, out = run_cli(["add", "--scope", "repo", "Second", "--body", "two", "--merge"], wikis.repo)
+    assert code == 0 and out.startswith("D1") and "merged" in out
+    assert len(db.documents(wikis.conn())) == 1
+
+
+def test_mcp_save_obeys_the_gate_and_can_merge(wikis):
+    args = {"scope": "repo", "type": "document", "summary": "Principles", "body": "one"}
+    assert mcp.tool_save(args, str(wikis.repo))["id"] == "D1"
+    refused = mcp.tool_save({**args, "summary": "Second"}, str(wikis.repo))
+    assert "D1" in refused["error"] and refused["existing"] == "D1"
+    merged = mcp.tool_save({**args, "summary": "Second", "merge": True}, str(wikis.repo))
+    assert merged["id"] == "D1" and "merged" in merged["warnings"][0]
+    other = mcp.tool_save({**args, "summary": "Hosted", "project": "hosted"}, str(wikis.repo))
+    assert other["id"] == "D2"
+
+
+def test_two_devices_that_each_wrote_a_document_fold_into_one(wikis):
+    conn = wikis.conn()
+    try:
+        a = db.add_doc(conn, "Principles", "from device one")
+        with db.write(conn):  # the second device's document arrives through a sync
+            conn.execute("INSERT INTO docs(id, title, body, hash, created, updated) VALUES "
+                         "('D9','Principles','from device two','h','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')")
+        assert db.merge_docs(conn, "D9", a) == a
+        assert len(db.documents(conn)) == 1 and "from device two" in db.get_doc(conn, a).body
+        assert "D9" in {t["id"] for t in db.tombstones(conn)}
+        with pytest.raises(db.LedgerError):
+            db.merge_docs(conn, a, a)
+    finally:
+        conn.close()
+
+
+def test_the_focus_and_skill_tags_cannot_be_used_to_dodge_the_gate(wikis):
+    conn = wikis.conn()
+    try:
+        db.add_doc(conn, "Principles", "the one")
+        for t in ("focus", "skill"):
+            with pytest.raises(db.LedgerError, match="reserved"):
+                db.add_doc(conn, "Sneaky", "x", tags=[t])
+        other = db.add_doc(conn, "Other", "x", project="other")
+        with pytest.raises(db.LedgerError, match="reserved"):
+            db.tag(conn, other, ["skill"])
+        db.tag(conn, other, ["skill:tdd"])  # a row-style tag naming a skill is fine
+    finally:
+        conn.close()
+
+
+def test_an_oversized_document_is_refused(wikis):
+    conn = wikis.conn()
+    try:
+        with pytest.raises(db.LedgerError, match="bytes"):
+            db.add_doc(conn, "Huge", "x" * (db.DOC_BODY_MAX + 1))
+        db.add_doc(conn, "Doc", "x" * 600_000)
+        with pytest.raises(db.LedgerError, match="larger"):
+            db.add_doc(conn, "More", "y" * 600_000, merge=True)
+    finally:
+        conn.close()

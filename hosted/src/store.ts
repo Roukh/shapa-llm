@@ -7,7 +7,9 @@
 import { DurableObject } from "cloudflare:workers";
 import { type Device, Devices, needWiki, scopesCoherent, validDeviceName, validScopes, validWikis, wikiAllowed } from "./devices.js";
 import { fail, run, type Out } from "./errors.js";
+import * as focus from "./focus.js";
 import { composeInstructions, type ClientKind } from "./instructions.js";
+import * as skills from "./skills.js";
 import * as ledger from "./ledger.js";
 import type { CreateIn, Kind, PatchIn, RecordWire, Scope, SyncResponseOut } from "./records.js";
 import { Repo } from "./repo.js";
@@ -97,8 +99,31 @@ export class ShapaStore extends DurableObject<Env> {
 
   // --- read -----------------------------------------------------------------------------------
 
-  instructions(cred: Cred, opts: { client: ClientKind; wiki?: string; budget: number }): Out<{ text: string; version: string }> {
+  instructions(cred: Cred, opts: { client: ClientKind; wiki?: string; budget: number; full?: boolean }): Out<{ text: string; version: string }> {
     return this.tx(() => composeInstructions(this.repo, this.as(cred), opts));
+  }
+
+  // --- focus and skills -----------------------------------------------------------------------
+
+  /** The northstar, the fires with their tree, and the candidates for the next free slot. */
+  focus(cred: Cred, wiki: string): Out<focus.FocusView> {
+    return this.tx(() => focus.getFocus(this.repo, this.as(cred), wiki));
+  }
+
+  setFocus(cred: Cred, wiki: string, body: Parameters<typeof focus.setFocus>[3]): Out<focus.FocusView> {
+    return this.tx(() => focus.setFocus(this.repo, this.as(cred), wiki, body));
+  }
+
+  promoteFocus(cred: Cred, wiki: string, body: Parameters<typeof focus.promote>[3]): Out<focus.FocusView> {
+    return this.tx(() => focus.promote(this.repo, this.as(cred), wiki, body));
+  }
+
+  skills(cred: Cred, wiki: string): Out<skills.SkillSummary[]> {
+    return this.tx(() => skills.listSkills(this.repo, this.as(cred), wiki));
+  }
+
+  skill(cred: Cred, wiki: string, name: string, version?: number): Out<skills.SkillVersion> {
+    return this.tx(() => skills.getSkill(this.repo, this.as(cred), wiki, name, version));
   }
 
   search(cred: Cred, q: { query: string; k: number; wiki?: string; types?: string[] }): Out<ReturnType<typeof search>> {

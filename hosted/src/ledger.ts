@@ -5,11 +5,14 @@
 
 import { type Device, needScope, needWiki, randomHex } from "./devices.js";
 import { fail } from "./errors.js";
+import { onFeatureClosed } from "./focus.js";
+import { documentTags, gateNewDocument, mergedBody, projectHolder, refusal } from "./projects.js";
 import {
-  CLOSE_REASONS, Invalid, LEDGER_KINDS, PARENT_KIND, TYPE_NAMES, buildData, contentKey, isNoteId, nowIso, normTags,
+  CLOSE_REASONS, Invalid, LEDGER_KINDS, PARENT_KIND, RESERVED_DOC_TAGS, TYPE_NAMES, buildData, contentKey, isNoteId, nowIso, normTags, projectOf,
   type CreateIn, type CreateType, type Data, type Kind, type Normalized, type PatchIn, type RecordWire,
 } from "./records.js";
 import { Repo, toWire, type Stored } from "./repo.js";
+import { lessonFromRow } from "./skills.js";
 
 const TYPE_KIND: Record<CreateType, Kind> = {
   feature: "F", job: "J", task: "T", memory: "M", idea: "M", rule: "R", issue: "I", document: "D", note: "N",
@@ -64,8 +67,13 @@ export function createRecord(repo: Repo, d: Device, wiki: string, body: CreateIn
   wikiFor(repo, d, wiki);
   const kind = TYPE_KIND[body.type];
   const ts = nowIso();
-  const tags = normTags([...(body.tags ?? []), ...(body.type === "idea" ? ["idea"] : [])]);
+  let tags = normTags([...(body.tags ?? []), ...(body.type === "idea" ? ["idea"] : [])]);
   const text = body.title ?? body.summary ?? "";
+  if ((body.project !== undefined || body.merge !== undefined) && kind !== "D") fail("invalid", "project and merge apply to a document only");
+  if (kind === "D") {
+    if (tags.some((t) => RESERVED_DOC_TAGS.includes(t))) fail("invalid", "the tags focus and skill are reserved for the focus record and skill versions");
+    tags = normTags(wrap(() => documentTags(tags, body.project)));
+  }
   if (body.parent !== undefined && !isLedger(kind)) fail("invalid", "only a job or task takes a parent");
   if (body.parent !== undefined && kind === "F") fail("invalid", "a feature has no parent");
 
@@ -88,13 +96,24 @@ export function createRecord(repo: Repo, d: Device, wiki: string, body: CreateIn
   }
   const built = wrap(() => buildData(kind, id, raw));
 
+  if (kind === "D") {
+    // The lean gate: a project keeps one document. Refuse the second (409 naming the first) or merge into it.
+    const held = gateNewDocument(repo, wiki, tags, body.merge === true);
+    if (held) {
+      const merged = mergedBody(held.data, String(built.data["title"]), String(built.data["body"]));
+      const n = { ...norm(held), data: { ...held.data, body: merged }, updated: stamp(held.updated) };
+      return { record: toWire(repo.save(wiki, n, d.name, held)), created: false };
+    }
+  }
   if (kind === "M" || kind === "R" || kind === "I") {
     const same = repo.identicalRow(wiki, kind, String(built.data["summary"]), String(built.data["body"]));
     if (same) {
       const merged = normTags([...same.tags, ...tags]);
       if (merged.length === same.tags.length) return { record: toWire(same), created: false };
       const n = { ...norm(same), tags: merged, updated: stamp(same.updated) };
-      return { record: toWire(repo.save(wiki, n, d.name, same)), created: false };
+      const saved = repo.save(wiki, n, d.name, same);
+      lessonFromRow(repo, wiki, saved, d.name);
+      return { record: toWire(saved), created: false };
     }
   }
   if (built.alias && kind !== "N" && repo.aliasHolder(wiki, built.alias)) {
@@ -113,7 +132,9 @@ export function createRecord(repo: Repo, d: Device, wiki: string, body: CreateIn
     id, uid: kind === "N" ? "" : randomHex(16), kind, created: kind === "N" ? "" : ts, updated: existing ? stamp(existing.updated) : ts, deleted: false,
     alias, data: kind === "N" ? { ...built.data, alias: alias || null } : built.data, tags, links: [],
   };
-  return { record: toWire(repo.save(wiki, n, d.name, existing)), created: true };
+  const saved = repo.save(wiki, n, d.name, existing);
+  if (kind === "M" || kind === "R" || kind === "I") lessonFromRow(repo, wiki, saved, d.name);
+  return { record: toWire(saved), created: true };
 }
 
 // --- read -----------------------------------------------------------------------------------
@@ -174,8 +195,21 @@ export function patchRecord(repo: Repo, d: Device, wiki: string, ref: string, p:
     tags: p.tags === undefined ? rec.tags : normTags(p.tags),
   };
   if (contentKey({ ...next, updated: rec.updated }) === contentKey(norm(rec)) && alias === rec.alias) return toWire(rec);
+  if (k === "D") {
+    // The lean gate also covers a retag: a document may not move into a project another one holds,
+    // and the focus and skill tags are the engine's, not a way around the gate.
+    const was = projectOf(rec.tags);
+    const now = projectOf(next.tags);
+    if ((was === null) !== (now === null)) fail("invalid", "the focus and skill tags are reserved for the focus record and skill versions");
+    if (now !== null && now !== was) {
+      const held = projectHolder(repo, wiki, now, rec.uid);
+      if (held) fail("conflict", refusal(held, now), { existing: held.id });
+    }
+  }
   next.updated = stamp(rec.updated);
-  return toWire(repo.save(wiki, next, d.name, rec));
+  const saved = repo.save(wiki, next, d.name, rec);
+  if (k === "M" || k === "R" || k === "I") lessonFromRow(repo, wiki, saved, d.name);
+  return toWire(saved);
 }
 
 // --- ledger moves ---------------------------------------------------------------------------
@@ -228,6 +262,7 @@ export function close(
       closed.push(child.id);
     }
   }
+  if (rec.kind === "F") onFeatureClosed(repo, wiki, rec.id, d.name);
   return { record: toWire(done), closed };
 }
 

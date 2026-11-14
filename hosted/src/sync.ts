@@ -10,6 +10,7 @@ import {
 } from "./records.js";
 import { Repo, toWire, type Stored } from "./repo.js";
 import { wikiFor } from "./ledger.js";
+import { syncGate } from "./projects.js";
 
 interface SyncIn {
   cursor: number;
@@ -66,6 +67,10 @@ function applyPut(
   const held = repo.get(wiki, n.id);
   const byUid = repo.byUid(wiki, n.uid);
   const target = byUid ?? (held && held.uid === n.uid ? held : null);
+
+  // The lean gate (a project keeps one document) and the focus and skill record shapes.
+  const refused = syncGate(repo, wiki, n, target);
+  if (refused) return { id: n.id, status: "rejected", rev: target?.rev ?? 0, error: refused };
 
   if (!target) {
     if (!held) {

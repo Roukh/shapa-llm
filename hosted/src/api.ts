@@ -6,8 +6,8 @@ import { createRoute, z, type OpenAPIHono } from "@hono/zod-openapi";
 import { store } from "./auth.js";
 import { unwrap } from "./errors.js";
 import {
-  CloseBody, CreateBody, ErrorBody, KINDS, LIMITS, PatchBody, RecordOut, RecordWithWiki, SearchOut, SyncRequest,
-  SyncResponse, WIKI_KEY_RE, WikiOut, WikiPut, type Kind,
+  CloseBody, CreateBody, ErrorBody, FocusOut, FocusPromote, FocusPut, KINDS, LIMITS, PatchBody, RecordOut, RecordWithWiki,
+  SearchOut, SkillSummary, SkillVersionOut, SyncRequest, SyncResponse, WIKI_KEY_RE, WikiOut, WikiPut, type Kind,
 } from "./records.js";
 import type { Cred } from "./store.js";
 
@@ -79,6 +79,7 @@ export function registerV1(app: App): void {
           client: z.enum(["mcp", "rest"]).default("rest"),
           wiki: z.string().regex(WIKI_KEY_RE).optional(),
           budget: intQuery(LIMITS.instructionsBudget.min, LIMITS.instructionsBudget.max, LIMITS.instructionsBudget.default),
+          full: z.enum(["0", "1", "true", "false"]).optional().openapi({ description: "1 adds the rules and the other live features to the focus." }),
         }),
       },
       responses: {
@@ -94,9 +95,66 @@ export function registerV1(app: App): void {
     }),
     async (c) => {
       const q = c.req.valid("query");
-      const r = await unwrap(store(c.env).instructions(cred(c), { client: q.client, ...(q.wiki ? { wiki: q.wiki } : {}), budget: q.budget }));
+      const full = q.full === "1" || q.full === "true";
+      const r = await unwrap(store(c.env).instructions(cred(c), { client: q.client, ...(q.wiki ? { wiki: q.wiki } : {}), budget: q.budget, full }));
       if ((c.req.header("accept") ?? "").includes("text/plain")) return c.text(r.text, 200) as never;
       return c.json(r, 200);
+    },
+  );
+
+  app.openapi(
+    createRoute({
+      method: "get", path: "/v1/wikis/{wiki}/focus", tags: tag, security,
+      summary: "The wiki's northstar and three ranked fires, each with its open jobs and tasks",
+      request: { params: z.object({ wiki: wikiParam }) },
+      responses: { 200: body(FocusOut, "The focus, and the candidates for a free slot"), 404: err("No such wiki"), ...errors },
+    }),
+    async (c) => c.json(await unwrap(store(c.env).focus(cred(c), c.req.valid("param").wiki)) as never, 200),
+  );
+
+  app.openapi(
+    createRoute({
+      method: "put", path: "/v1/wikis/{wiki}/focus", tags: tag, security,
+      summary: "Set the northstar and/or replace the fires (at most three; a feature or free text each)",
+      request: { params: z.object({ wiki: wikiParam }), body: { content: { "application/json": { schema: FocusPut } }, required: true } },
+      responses: { 200: body(FocusOut, "The focus"), 404: err("No such wiki"), 409: err("A feature is closed or already a fire"), ...errors },
+    }),
+    async (c) => c.json(await unwrap(store(c.env).setFocus(cred(c), c.req.valid("param").wiki, c.req.valid("json"))) as never, 200),
+  );
+
+  app.openapi(
+    createRoute({
+      method: "post", path: "/v1/wikis/{wiki}/focus/promote", tags: tag, security,
+      summary: "Put a feature (default: the best candidate) in a fire slot (default: the first free one)",
+      request: { params: z.object({ wiki: wikiParam }), body: { content: { "application/json": { schema: FocusPromote } }, required: true } },
+      responses: { 200: body(FocusOut, "The focus"), 404: err("No candidate or no such wiki"), 409: err("No free slot, or the feature is closed or already a fire"), ...errors },
+    }),
+    async (c) => c.json(await unwrap(store(c.env).promoteFocus(cred(c), c.req.valid("param").wiki, c.req.valid("json"))) as never, 200),
+  );
+
+  app.openapi(
+    createRoute({
+      method: "get", path: "/v1/wikis/{wiki}/skills", tags: tag, security, summary: "The wiki's skills: the active and pending versions of each",
+      request: { params: z.object({ wiki: wikiParam }) },
+      responses: { 200: body(z.object({ skills: z.array(SkillSummary) }), "Skills"), 404: err("No such wiki"), ...errors },
+    }),
+    async (c) => c.json({ skills: await unwrap(store(c.env).skills(cred(c), c.req.valid("param").wiki)) }, 200),
+  );
+
+  app.openapi(
+    createRoute({
+      method: "get", path: "/v1/wikis/{wiki}/skills/{name}", tags: tag, security,
+      summary: "One skill: its active version, or ?version=N",
+      request: {
+        params: z.object({ wiki: wikiParam, name: z.string().regex(/^[a-z0-9][a-z0-9-]{0,63}$/).openapi({ param: { name: "name", in: "path" } }) }),
+        query: z.object({ version: z.coerce.number().int().min(1).max(999_999).optional() }),
+      },
+      responses: { 200: body(SkillVersionOut, "The version"), 404: err("No such skill or version"), ...errors },
+    }),
+    async (c) => {
+      const { wiki, name } = c.req.valid("param");
+      const v = c.req.valid("query").version;
+      return c.json(await unwrap(store(c.env).skill(cred(c), wiki, name, v)) as never, 200);
     },
   );
 

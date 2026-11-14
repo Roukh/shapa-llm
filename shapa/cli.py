@@ -112,7 +112,15 @@ commands:
   row ...        memory (M), rule (R) and issue (I) rows: add --scope,
                  edit, rm, link, tag, list
   doc ...        documents (D): add --scope (body from --body, --file or
-                 stdin), edit, rm, list; `shapa get D<n>` prints one
+                 stdin), edit, rm, list; `shapa get D<n>` prints one. A
+                 project keeps ONE document: a second is refused (naming
+                 the first) or, with --merge, appended to it as a section
+  focus ...      the northstar and the three ranked big fires of a wiki
+                 scope: show, northstar, fire, unfire, order, rank,
+                 candidates, promote. Session start prints these first and
+                 only the fires' own tree after them
+  skill ...      skills as versioned records, global or per repo: list,
+                 show, add, update (a new pending version), activate
   remote ...     the opt-in hosted store: login URL, sync (two-way, every wiki
                  in scope; --hook for a session hook), status, devices,
                  logout, instructions
@@ -412,6 +420,16 @@ def main(argv: list[str] | None = None) -> None:
         from shapa import docs, ledger
 
         ledger.run(docs.run_doc, rest)
+        return
+    if cmd == "focus":
+        from shapa import focus
+
+        focus.main(rest)
+        return
+    if cmd == "skill":
+        from shapa import skills
+
+        skills.main(rest)
         return
     if cmd == "remote":
         from shapa import remote
