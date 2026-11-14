@@ -37,7 +37,7 @@ import re
 import secrets
 import sqlite3
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -252,18 +252,20 @@ def exists(root) -> bool:
     return db_path(root).is_file()
 
 
-def connect(root, *, create: bool = False) -> sqlite3.Connection | None:
+def connect(root, *, create: bool = False, busy_ms: int | None = None) -> sqlite3.Connection | None:
     """Open *root*'s database (``None`` when it has none and *create* is
     false). Foreign keys on, rollback journal, a generous busy timeout so
-    hooks from parallel sessions queue instead of failing."""
+    hooks from parallel sessions queue instead of failing. *busy_ms* shortens
+    that wait for a caller that must never stall (the prompt hook)."""
+    busy = BUSY_TIMEOUT_MS if busy_ms is None else int(busy_ms)
     path = db_path(root)
     if not path.is_file():
         if not create:
             return None
         path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(path), timeout=BUSY_TIMEOUT_MS / 1000, isolation_level=None)
+    conn = sqlite3.connect(str(path), timeout=busy / 1000, isolation_level=None)
     conn.row_factory = sqlite3.Row
-    conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
+    conn.execute(f"PRAGMA busy_timeout = {busy}")
     conn.execute("PRAGMA foreign_keys = ON")
     # The file is committed to git whole: zero deleted and overwritten content
     # so a pruned or scrubbed row's old text never lingers in a free page.
@@ -779,7 +781,8 @@ def documents(conn: sqlite3.Connection) -> list[Doc]:
     if not _has_table(conn, "docs"):
         return []
     tag_map: dict[str, list[str]] = {}
-    for rid, tag_text in conn.execute("SELECT id, tag FROM tags ORDER BY tag"):
+    # only the documents' tags (ids D<n>): an index range scan, not a read of every row's tags
+    for rid, tag_text in conn.execute("SELECT id, tag FROM tags WHERE id >= 'D' AND id < 'E' ORDER BY tag"):
         tag_map.setdefault(rid, []).append(tag_text)
     return [Doc(**{k: r[k] for k in r.keys()}, tags=tag_map.get(r["id"], []))
             for r in conn.execute("SELECT * FROM docs ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)")]
@@ -989,6 +992,30 @@ def remove(conn: sqlite3.Connection, ids, *, tombstone: bool = True,
     return n
 
 
+#: Tags only ``shapa learn`` (and the hook that feeds it) writes: the principle marker, its counters, the
+#: repeat and learned states. Entry points an agent or a sync reaches (``shapa row add|tag``, ``save``, the
+#: local MCP) refuse them; nothing downstream trusts them more than the text they sit on.
+RESERVED_ROW_TAGS = ("principle", "churn", "violation", "repeat", "repeat-checked", "blocked", "learned",
+                     "meta-learning", "dismissed", "soft", "fire")
+RESERVED_ROW_TAG_PREFIXES = ("violations:", "revisions:", "repeats:", "serves:", "repeat-of:", "last-seen:",
+                             "evidence:", "learned-at:", "generalized-into:")
+_INVISIBLE = re.compile("[\u200b-\u200f\u202a-\u202e\u2060-\u2064\ufeff\x00-\x1f\x7f-\x9f]")
+
+
+def normalize_label(text) -> str:
+    """Case, width and invisible characters folded away, so a lookalike cannot dodge a reserved name."""
+    import unicodedata
+
+    return " ".join(_INVISIBLE.sub("", unicodedata.normalize("NFKC", str(text or ""))).lower().split())
+
+
+def check_row_tags(tags) -> None:
+    for t in tags or ():
+        n = normalize_label(t)
+        if n in RESERVED_ROW_TAGS or n.startswith(RESERVED_ROW_TAG_PREFIXES):
+            raise LedgerError(f"the tag {str(t)[:40]!r} is the learning loop's own (`shapa learn` writes it)")
+
+
 def tag(conn: sqlite3.Connection, target: str, tags) -> None:
     if kind_of(target) == DOC_KIND:
         clean = [t for t in (_clean_tag(x) for x in tags) if t]
@@ -1107,6 +1134,7 @@ class SweepReport:
     stale_memories: list[str]
     conflicts: list[tuple[str, str]]
     dangling_links: int
+    learned: list[str] = field(default_factory=list)
 
     def lines(self) -> list[str]:
         out = []
@@ -1121,6 +1149,8 @@ class SweepReport:
         if self.stale_memories:
             out.append(f"memories unused {STALE_MEMORY_DAYS}+ days removed: "
                        f"{', '.join(self.stale_memories)}")
+        if self.learned:
+            out.append(f"learned corrections removed (their evidence sits in a principle): {len(self.learned)}")
         if self.conflicts:
             out.append("possible rule conflicts flagged: "
                        + ", ".join(f"{a}/{b}" for a, b in self.conflicts))
@@ -1193,6 +1223,11 @@ def sweep(conn: sqlite3.Connection, *, vectors: dict[str, list[float]] | None = 
             "SELECT DISTINCT l.dst FROM links l JOIN mri m ON m.id = l.dst WHERE l.rel = 'supersedes'")]
     delete(conn, report.superseded)
 
+    with write(conn):   # a learned correction is kept as evidence inside its principle: the row itself goes
+        report.learned = [r[0] for r in conn.execute(
+            "SELECT t.id FROM tags t JOIN mri m ON m.id = t.id WHERE t.tag = 'learned' AND m.kind = 'I'")]
+    delete(conn, report.learned)
+
     all_rows = rows(conn)
     by_kind: dict[str, list[Row]] = {}
     for r in all_rows:
@@ -1244,11 +1279,32 @@ def sweep(conn: sqlite3.Connection, *, vectors: dict[str, list[float]] | None = 
     return report
 
 
+_SUM_TAGS = ("violations:", "repeats:", "evidence:")
+_MAX_TAGS = ("revisions:", "last-seen:")
+
+
 def _merge_into(conn, src: str, dst: str) -> None:
-    """Move *src*'s tags and links onto *dst* (before *src* is deleted)."""
+    """Move *src*'s tags and links onto *dst* (before *src* is deleted). A counter tag exists once on
+    the result (counts add, revisions and last-seen keep the larger), and no ``repeat-of`` points at
+    the row itself: others that pointed at *src* now point at *dst*."""
     with write(conn):
-        conn.execute("INSERT OR IGNORE INTO tags(id, tag) SELECT ?, tag FROM tags WHERE id = ?",
-                     (dst, src))
+        have = {r[0] for r in conn.execute("SELECT tag FROM tags WHERE id = ?", (dst,))}
+        other = {r[0] for r in conn.execute("SELECT tag FROM tags WHERE id = ?", (src,))}
+        for prefix in _SUM_TAGS + _MAX_TAGS:
+            vals = [t[len(prefix):] for t in sorted(have | other) if t.startswith(prefix)]
+            if not vals:
+                continue
+            if prefix in _SUM_TAGS:
+                new = str(sum(int(v) for v in vals if v.isdigit()))
+            else:
+                new = max(vals)
+            conn.execute("DELETE FROM tags WHERE id IN (?, ?) AND tag LIKE ?", (dst, src, prefix + "%"))
+            conn.execute("INSERT OR IGNORE INTO tags(id, tag) VALUES (?, ?)", (dst, prefix + new))
+        conn.execute("INSERT OR IGNORE INTO tags(id, tag) SELECT ?, tag FROM tags WHERE id = ? "
+                     "AND tag NOT LIKE 'violations:%' AND tag NOT LIKE 'repeats:%' AND tag NOT LIKE 'evidence:%' "
+                     "AND tag NOT LIKE 'revisions:%' AND tag NOT LIKE 'last-seen:%'", (dst, src))
+        conn.execute("DELETE FROM tags WHERE id = ? AND tag IN (?, ?)", (dst, f"repeat-of:{dst}", f"repeat-of:{src}"))
+        conn.execute("UPDATE OR IGNORE tags SET tag = ? WHERE tag = ?", (f"repeat-of:{dst}", f"repeat-of:{src}"))
         conn.execute("INSERT OR IGNORE INTO links(src, dst, rel) SELECT ?, dst, rel FROM links "
                      "WHERE src = ? AND dst != ?", (dst, src, dst))
         conn.execute("INSERT OR IGNORE INTO links(src, dst, rel) SELECT src, ?, rel FROM links "

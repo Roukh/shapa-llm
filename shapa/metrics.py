@@ -37,11 +37,13 @@ CLI::
 from __future__ import annotations
 
 import argparse
+import bisect
 import json
 import math
 import re
 import sqlite3
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -49,6 +51,9 @@ from shapa import config, db, store
 
 RAW_DAYS = 60
 MAX_EVENTS = 20_000
+SNAPSHOT_DAYS = 400          # daily snapshot rows kept per repo
+SNAPSHOT_BUDGET_MS = 50      # an automatic snapshot that costs more is skipped, tried next session
+INDEX_BUSY_S = 1.0           # the hook path never waits longer than this on the derived index
 LATENCY_OPS = ("fetch", "bootstrap")
 FIRE_TAG = "fire"
 STALL_DAYS = 7
@@ -63,10 +68,9 @@ _EVENTS_SQL = (
     "CREATE INDEX IF NOT EXISTS m_events_kind_ts ON m_events(kind, ts)",
     "CREATE UNIQUE INDEX IF NOT EXISTS m_events_once ON m_events(kind, ref) "
     "WHERE kind IN ('job-open','job-close','feature-open','feature-close')",
-    # shapa.learn's per-device state: which issue rows the hook itself filed (the operator's
-    # own word, never a synced or hand-written row) and how often a principle was served.
-    "CREATE TABLE IF NOT EXISTS learn_local (id TEXT PRIMARY KEY, hash TEXT NOT NULL, ts TEXT NOT NULL)",
+    # how often session start served each principle on this device (shapa.learn)
     "CREATE TABLE IF NOT EXISTS p_served (id TEXT PRIMARY KEY, n INTEGER NOT NULL DEFAULT 0, last TEXT)",
+    "CREATE TABLE IF NOT EXISTS m_meta (key TEXT PRIMARY KEY, value TEXT)",
 )
 
 # --- frustration ----------------------------------------------------------------------
@@ -166,18 +170,41 @@ def home_root(cwd=None) -> Path | None:
     return None
 
 
-def _events_conn(root, *, create: bool = True) -> sqlite3.Connection | None:
+def open_local(root, *, create: bool = True, timeout: float = INDEX_BUSY_S) -> sqlite3.Connection | None:
+    """The wiki's derived index file with the learning and metrics tables, waiting at most *timeout*
+    seconds on a lock (a corrupt file is set aside by ``store.open_index`` and rebuilt once)."""
     root = Path(root)
     if not create and not store.db_path(root).is_file():
         return None
     if not root.is_dir():
         return None
-    conn = store.open_index(root)
-    conn.row_factory = sqlite3.Row
-    for stmt in _EVENTS_SQL:
-        conn.execute(stmt)
-    conn.commit()
-    return conn
+    path = store.db_path(root)
+    for attempt in (1, 2):
+        try:
+            conn = sqlite3.connect(path, timeout=timeout)
+            conn.row_factory = sqlite3.Row
+            try:
+                conn.execute("PRAGMA journal_mode=WAL")
+            except sqlite3.OperationalError:
+                pass
+            conn.execute(f"PRAGMA busy_timeout = {int(timeout * 1000)}")
+            for stmt in _EVENTS_SQL:
+                conn.execute(stmt)
+            conn.commit()
+            return conn
+        except sqlite3.OperationalError:
+            raise
+        except sqlite3.DatabaseError:
+            if attempt == 2:
+                raise
+            try:
+                conn.close()
+            except Exception:
+                pass
+            store.open_index(root).close()   # sets a malformed file aside and rebuilds it
+
+
+_events_conn = open_local
 
 
 def record(root, kind: str, *, session: str = "", ref: str = "", val: float | None = None,
@@ -285,25 +312,51 @@ def harvest(conn: sqlite3.Connection, root) -> int:
         return 0
 
 
-def work_records(conn: sqlite3.Connection, root) -> dict[str, dict]:
+def _all_events(root, ctx: dict) -> tuple[list, list]:
+    if "ev" not in ctx:
+        conn = open_local(root, create=False)
+        rows = []
+        if conn is not None:
+            try:
+                rows = [tuple(r) for r in conn.execute(
+                    "SELECT ts, kind, session, ref, val, data FROM m_events ORDER BY ts, id")]
+            except sqlite3.Error:
+                rows = []
+            finally:
+                conn.close()
+        ctx["ev"], ctx["ev_ts"] = rows, [r[0] for r in rows]
+    return ctx["ev"], ctx["ev_ts"]
+
+
+def _window(root, ctx: dict, s: str, u: str) -> list:
+    ev, ts = _all_events(root, ctx)
+    return ev[bisect.bisect_left(ts, s):bisect.bisect_left(ts, u)]
+
+
+def _json(blob) -> dict:
+    try:
+        return json.loads(blob) if blob else {}
+    except ValueError:
+        return {}
+
+
+def work_records(conn: sqlite3.Connection, root, ctx: dict | None = None) -> dict[str, dict]:
     """id -> {kind, parent, created, closed, fire}: archived events overlaid by live items."""
+    ctx = {} if ctx is None else ctx
+    if "recs" in ctx:
+        return ctx["recs"]
     out: dict[str, dict] = {}
-    for e in events(root):
-        k = e["kind"]
+    for ts, k, _, ref, _, data in _all_events(root, ctx)[0]:
         if k not in ONCE_KINDS:
             continue
-        d = {}
-        try:
-            d = json.loads(e["data"]) if e["data"] else {}
-        except ValueError:
-            pass
-        rec = out.setdefault(e["ref"], {"kind": "F" if k.startswith("feature") else "J",
-                                        "parent": d.get("parent") or None, "created": None,
-                                        "closed": None, "fire": bool(d.get("fire"))})
+        d = _json(data)
+        rec = out.setdefault(ref, {"kind": "F" if k.startswith("feature") else "J",
+                                   "parent": d.get("parent") or None, "created": None,
+                                   "closed": None, "fire": bool(d.get("fire"))})
         if k.endswith("open"):
-            rec["created"] = e["ts"]
+            rec["created"] = ts
         else:
-            rec["closed"] = e["ts"]
+            rec["closed"] = ts
             rec["created"] = rec["created"] or d.get("created")
     fire_tagged = fire_ids(conn)
     for it in db.items(conn):
@@ -312,17 +365,33 @@ def work_records(conn: sqlite3.Connection, root) -> dict[str, dict]:
         out[it.id] = {"kind": it.kind, "parent": it.parent, "created": it.created,
                       "closed": it.closed if it.status == "closed" else None,
                       "fire": (it.id in fire_tagged) if it.kind == "F" else bool(it.parent in fire_tagged)}
+    ctx["recs"] = out
     return out
+
+
+def closed_jobs_since(conn: sqlite3.Connection, root, cut: str) -> list[dict]:
+    """Jobs closed at or after *cut*: ``{id, parent, closed, fire}``, from two indexed queries (the live
+    items and the archived close events), not a scan of the ledger. What session start's drift line reads."""
+    fire = fire_ids(conn)
+    out: dict[str, dict] = {}
+    ev = open_local(root, create=False)
+    if ev is not None:
+        try:
+            for ts, ref, data in ev.execute("SELECT ts, ref, data FROM m_events WHERE kind = 'job-close' "
+                                            "AND ts >= ?", (cut,)):
+                d = _json(data)
+                out[ref] = {"id": ref, "parent": d.get("parent") or None, "closed": ts, "fire": bool(d.get("fire"))}
+        except sqlite3.Error:
+            pass
+        finally:
+            ev.close()
+    for jid, parent, closed in conn.execute(
+            "SELECT id, parent, closed FROM items WHERE kind = 'J' AND status = 'closed' AND closed >= ?", (cut,)):
+        out[jid] = {"id": jid, "parent": parent, "closed": closed, "fire": bool(parent in fire)}
+    return list(out.values())
 
 
 # --- compute -----------------------------------------------------------------------------------
-
-def _tagmap(conn, kind_letter: str | None = None) -> dict[str, set[str]]:
-    out: dict[str, set[str]] = {}
-    for rid, t in conn.execute("SELECT id, tag FROM tags"):
-        out.setdefault(rid, set()).add(t)
-    return out
-
 
 def _tagval(tags, prefix: str) -> str | None:
     for t in sorted(tags):
@@ -352,75 +421,97 @@ def _empty() -> dict:
             "events": {}, "records": 0}
 
 
-def compute(root, since: datetime, until: datetime) -> dict:
-    """The raw (additive) measures of one wiki over ``[since, until)``."""
+_FLAGS = ("repeat", "violation", "meta-learning", "learned", "dismissed", "soft")
+
+
+def _corrections_in(conn, ctx: dict, s: str, u: str) -> list[tuple]:
+    """``(id, session, flags)`` of every correction created in ``[s, u)``: one indexed pass over the
+    correction tag (kept in *ctx* for the other windows of a report), then the flags of the ones in the window."""
+    if "corr" not in ctx:
+        ctx["corr"] = conn.execute("SELECT m.id, m.created, m.session FROM tags c JOIN mri m ON m.id = c.id "
+                                   "WHERE c.tag = 'correction'").fetchall()
+    inside = {r[0]: r[2] for r in ctx["corr"] if s <= r[1] < u}
+    flags: dict[str, set] = {}
+    ids = list(inside)
+    for i in range(0, len(ids), 500):
+        part = ids[i:i + 500]
+        marks = ",".join("?" * len(part))
+        for rid, tag in conn.execute(f"SELECT id, tag FROM tags WHERE id IN ({marks}) AND tag IN "
+                                     f"({','.join('?' * len(_FLAGS))})", [*part, *_FLAGS]):
+            flags.setdefault(rid, set()).add(tag)
+    return [(rid, inside[rid], flags.get(rid, set())) for rid in ids]
+
+
+def compute(root, since: datetime, until: datetime, ctx: dict | None = None) -> dict:
+    """The raw (additive) measures of one wiki over ``[since, until)``. Everything read from the rows goes
+    through the tag index and primary keys, so it costs what the window holds, not what the wiki holds.
+    A soft candidate is not a correction until it is learned."""
     from shapa import learn, skills
 
     root = Path(root)
+    own = ctx is None
+    ctx = {} if ctx is None else ctx
     s, u = _iso(since), _iso(until)
     c = _empty()
-    conn = db.connect(root)
-    ev = events(root, since=s, until=u)
-    sessions: set[str] = {e["session"] for e in ev if e["session"] and e["kind"] != "latency"}
+    ev = _window(root, ctx, s, u)
+    sessions: set[str] = {e[2] for e in ev if e[2] and e[1] != "latency"}
     for e in ev:
-        c["events"][e["kind"]] = c["events"].get(e["kind"], 0) + 1
-    prompts = [e for e in ev if e["kind"] == "prompt"]
+        c["events"][e[1]] = c["events"].get(e[1], 0) + 1
+    prompts = [e for e in ev if e[1] == "prompt"]
     c["prompts"] = len(prompts)
-    c["frustration_sum"] = round(sum(e["val"] or 0.0 for e in prompts), 3)
+    c["frustration_sum"] = round(sum(e[4] or 0.0 for e in prompts), 3)
     for e in ev:
-        if e["kind"] == "skill-use" and e["ref"]:
-            c["skills"]["uses"][e["ref"]] = c["skills"]["uses"].get(e["ref"], 0) + 1
+        if e[1] == "skill-use" and e[3]:
+            c["skills"]["uses"][e[3]] = c["skills"]["uses"].get(e[3], 0) + 1
             c["skills"]["uses_total"] += 1
     for op in LATENCY_OPS:
-        vals = [e["val"] for e in ev if e["kind"] == "latency" and e["ref"] == op and e["val"] is not None]
+        vals = [e[4] for e in ev if e[1] == "latency" and e[3] == op and e[4] is not None]
         c["latency"][op] = {"n": len(vals), "p50_ms": percentile(vals, 50), "p95_ms": percentile(vals, 95)}
-    dedup = sum(1 for e in ev if e["kind"] == "repeat" and '"dedup"' in (e["data"] or ""))
+    dedup = sum(1 for e in ev if e[1] == "repeat" and '"dedup"' in (e[5] or ""))
     c["corrections"]["total"] += dedup
     c["corrections"]["repeats"] += dedup
+    conn = ctx.get("conn") or db.connect(root)
     if conn is None:
         c["sessions"] = len(sessions)
         return c
     try:
-        tags = _tagmap(conn)
-        for r in db.rows(conn, "I"):
-            tg = tags.get(r.id, set())
-            if "correction" not in tg:
+        for rid, session, fl in _corrections_in(conn, ctx, s, u):
+            learned = "learned" in fl
+            if "soft" in fl and not learned:
                 continue
-            if s <= r.created < u:
-                sessions.add(r.session) if r.session else None
-                c["corrections"]["total"] += 1
-                c["corrections"]["repeats"] += "repeat" in tg
-                c["corrections"]["violations"] += "violation" in tg
-                c["corrections"]["meta"] += "meta-learning" in tg
-                if "learned" in tg:
-                    c["corrections"]["learned"] += 1
-                elif "dismissed" in tg:
-                    c["corrections"]["dismissed"] += 1
-                else:
-                    c["corrections"]["pending"] += 1
-            at = _tagval(tg, "learned-at:")
-            if at and s <= at < u:
-                c["learn"]["applied"] += 1
-                serves = _tagval(tg, "serves:") or "none"
-                if serves == "none":
-                    c["learn"]["serving_nothing"] += 1
-                else:
-                    c["learn"]["serving"] += 1
-        for name, versions in skills._all(conn).items():
+            if session:
+                sessions.add(session)
+            cc = c["corrections"]
+            cc["total"] += 1
+            cc["repeats"] += "repeat" in fl
+            cc["violations"] += "violation" in fl
+            cc["meta"] += "meta-learning" in fl
+            cc["learned" if learned else ("dismissed" if "dismissed" in fl else "pending")] += 1
+        applied = conn.execute("SELECT id, tag FROM tags WHERE tag >= ? AND tag < ?",
+                               ("learned-at:" + s, "learned-at:" + u)).fetchall()
+        for rid, _ in applied:
+            c["learn"]["applied"] += 1
+            serves = conn.execute("SELECT tag FROM tags WHERE id = ? AND tag LIKE 'serves:%'", (rid,)).fetchone()
+            if serves is None or serves[0] == "serves:none":
+                c["learn"]["serving_nothing"] += 1
+            else:
+                c["learn"]["serving"] += 1
+        if "skills" not in ctx:
+            ctx["skills"] = skills._all(conn)
+        for name, versions in ctx["skills"].items():
             for v in versions:
                 if s <= v.created < u:
                     c["skills"]["created" if v.version == 1 else "updated"] += 1
                 if v.status == "active" and s <= v.updated < u:
                     c["skills"]["activated"] += 1
-        for r in db.rows(conn, "R"):
-            tg = tags.get(r.id, set())
-            if "principle" in tg:
-                c["principles"]["total"] += 1
-                c["principles"]["violations"] += int(_tagval(tg, "violations:") or 0)
-                c["principles"]["churn"] += "churn" in tg
+        for (pid,) in conn.execute("SELECT id FROM tags WHERE tag = 'principle'").fetchall():
+            tg = [r[0] for r in conn.execute("SELECT tag FROM tags WHERE id = ?", (pid,))]
+            c["principles"]["total"] += 1
+            c["principles"]["violations"] += int(_tagval(tg, "violations:") or 0)
+            c["principles"]["churn"] += "churn" in tg
         c["principles"]["served"] = learn.served_total(root)
-        c["records"] = sum(db.counts(conn).values())   # live records now: a gauge, stored with each snapshot
-        recs = work_records(conn, root)
+        c["records"] = live_records(conn)
+        recs = work_records(conn, root, ctx)
         children: dict[str, int] = {}
         for rid, r in recs.items():
             if r["kind"] == "J" and r["parent"]:
@@ -445,16 +536,26 @@ def compute(root, since: datetime, until: datetime) -> dict:
                         if lead is not None:
                             c["fires"]["lead_days_sum"] += lead
                             c["fires"]["lead_n"] += 1
-        c["fires"]["stalled"] = stalled_fires(conn, recs, until)
+        c["fires"]["stalled"] = stalled_fires(conn, root, until)
     finally:
-        conn.close()
+        if "conn" not in ctx:
+            conn.close()
     c["sessions"] = len(sessions)
     c["features"]["lead_days_sum"] = round(c["features"]["lead_days_sum"], 4)
     c["fires"]["lead_days_sum"] = round(c["fires"]["lead_days_sum"], 4)
     return c
 
 
-def stalled_fires(conn, recs: dict[str, dict], now: datetime) -> list[str]:
+def live_records(conn) -> int:
+    """The wiki's live record count: rows, documents and open ledger items (three counts, no row read)."""
+    n = conn.execute("SELECT COUNT(*) FROM mri").fetchone()[0]
+    n += conn.execute("SELECT COUNT(*) FROM items WHERE status != 'closed'").fetchone()[0]
+    if db._has_table(conn, "docs"):
+        n += conn.execute("SELECT COUNT(*) FROM docs").fetchone()[0]
+    return n
+
+
+def stalled_fires(conn, root, now: datetime) -> list[str]:
     """Fire features still open that have had no job closed in :data:`STALL_DAYS`
     days (a fire younger than that is not stalled)."""
     from shapa import focus
@@ -465,16 +566,16 @@ def stalled_fires(conn, recs: dict[str, dict], now: datetime) -> list[str]:
         f = focus.load(conn)
     except Exception:
         return out
-    for fire in f.fires:
-        if not fire or not fire.feature:
-            continue
-        item = db.get_item(conn, fire.feature)
+    fires = [x.feature for x in f.fires if x and x.feature]
+    if not fires:
+        return out
+    recent = {j["parent"] for j in closed_jobs_since(conn, root, cut)}
+    for fid in fires:
+        item = db.get_item(conn, fid)
         if item is None or item.status == "closed" or item.created >= cut:
             continue
-        recent = any(r["kind"] == "J" and r["parent"] == fire.feature and r["closed"] and r["closed"] >= cut
-                     for r in recs.values())
-        if not recent:
-            out.append(fire.feature)
+        if fid not in recent:
+            out.append(fid)
     return out
 
 
@@ -509,11 +610,12 @@ DIRECTION = {"corrections_per_session": True, "repeat_rate": True, "learned_rati
              "skill_uses": False}
 
 
-def trend(root, now: datetime | None = None, days: int = 7) -> dict:
+def trend(root, now: datetime | None = None, days: int = 7, ctx: dict | None = None) -> dict:
     """The last *days* days against the *days* before them."""
     now = _utc(now)
-    cur = derive(compute(root, now - timedelta(days=days), now))
-    prev = derive(compute(root, now - timedelta(days=2 * days), now - timedelta(days=days)))
+    ctx = {} if ctx is None else ctx
+    cur = derive(compute(root, now - timedelta(days=days), now, ctx))
+    prev = derive(compute(root, now - timedelta(days=2 * days), now - timedelta(days=days), ctx))
     out = {}
     for k, lower in DIRECTION.items():
         a, b = cur.get(k), prev.get(k)
@@ -598,7 +700,7 @@ def latency_scale(root, now: datetime | None = None, days: int = 7) -> dict:
 # --- snapshots ------------------------------------------------------------------------------------
 
 def _snapshot_conn(root) -> sqlite3.Connection | None:
-    return db.connect(root) if db.exists(root) else None
+    return db.connect(root, busy_ms=1000) if db.exists(root) else None
 
 
 def _write_snapshot(root, day: str, repo: str, data: dict) -> bool:
@@ -645,14 +747,14 @@ def snapshot_rows(root, since_day: str | None = None, until_day: str | None = No
         conn.close()
 
 
-def snapshot(root, now: datetime | None = None, day: datetime | None = None) -> str:
+def snapshot(root, now: datetime | None = None, day: datetime | None = None, data: dict | None = None) -> str:
     """Store today's (or *day*'s) snapshot of *root*, here and in the global wiki
     (with the roll-up row ``*`` there). Returns the day."""
     now = _utc(now)
     start = _utc(day or now).replace(hour=0, minute=0, second=0, microsecond=0)
     end = min(start + timedelta(days=1), now + timedelta(seconds=1)) if day is None else start + timedelta(days=1)
     key = repo_key(root)
-    data = compute(root, start, end)
+    data = data if data is not None else compute(root, start, end)
     d = start.strftime("%Y-%m-%d")
     _write_snapshot(root, d, key, data)
     try:
@@ -671,45 +773,84 @@ def snapshot(root, now: datetime | None = None, day: datetime | None = None) -> 
 
 
 def prune(root, now: datetime | None = None) -> dict:
-    """Fold every day whose raw events are about to be dropped into a snapshot, then
-    drop events older than :data:`RAW_DAYS` and any beyond :data:`MAX_EVENTS`. The sweep calls this."""
+    """Fold every day whose raw events are about to be dropped into a snapshot, then drop events older
+    than :data:`RAW_DAYS` and any beyond :data:`MAX_EVENTS`, and keep at most :data:`SNAPSHOT_DAYS`
+    daily snapshots per repo. The sweep calls this. A year costs at most 365 snapshot rows a repo
+    (and as many roll-up rows in the global wiki), and a bounded event table."""
     now = _utc(now)
     cut = _iso(now - timedelta(days=RAW_DAYS))
-    out = {"snapshots": 0, "dropped": 0}
-    conn = _events_conn(root, create=False)
-    if conn is None:
-        return out
-    try:
-        days = sorted({r[0] for r in conn.execute("SELECT DISTINCT substr(ts, 1, 10) FROM m_events WHERE ts < ?", (cut,))})
-        have = {d for d, rp, _ in snapshot_rows(root, repo=repo_key(root))}
-    finally:
-        conn.close()
-    for d in days:
-        if d not in have:
-            day = datetime.strptime(d, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-            snapshot(root, now, day=day)
-            out["snapshots"] += 1
-    conn = _events_conn(root, create=False)
-    try:
-        cur = conn.execute("DELETE FROM m_events WHERE ts < ?", (cut,))
-        out["dropped"] += cur.rowcount
-        over = conn.execute("SELECT COUNT(*) FROM m_events").fetchone()[0] - MAX_EVENTS
-        if over > 0:
-            conn.execute("DELETE FROM m_events WHERE id IN (SELECT id FROM m_events ORDER BY ts, id LIMIT ?)", (over,))
-            out["dropped"] += over
-        conn.commit()
-    finally:
-        conn.close()
+    out = {"snapshots": 0, "dropped": 0, "snapshots_dropped": 0}
+    conn = open_local(root, create=False)
+    if conn is not None:
+        try:
+            days = sorted({r[0] for r in conn.execute(
+                "SELECT DISTINCT substr(ts, 1, 10) FROM m_events WHERE ts < ?", (cut,))})
+            have = {d for d, rp, _ in snapshot_rows(root, repo=repo_key(root))}
+        finally:
+            conn.close()
+        for d in days:
+            if d not in have:
+                day = datetime.strptime(d, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                snapshot(root, now, day=day)
+                out["snapshots"] += 1
+        conn = open_local(root, create=False)
+        try:
+            cur = conn.execute("DELETE FROM m_events WHERE ts < ?", (cut,))
+            out["dropped"] += cur.rowcount
+            over = conn.execute("SELECT COUNT(*) FROM m_events").fetchone()[0] - MAX_EVENTS
+            if over > 0:
+                conn.execute("DELETE FROM m_events WHERE id IN (SELECT id FROM m_events ORDER BY ts, id LIMIT ?)", (over,))
+                out["dropped"] += over
+            conn.commit()
+        finally:
+            conn.close()
+    old = (now - timedelta(days=SNAPSHOT_DAYS)).strftime("%Y-%m-%d")
+    for target in {Path(root), Path(config.global_root())}:
+        if db.exists(target):
+            c2 = db.connect(target)
+            try:
+                with db.write(c2):
+                    out["snapshots_dropped"] += c2.execute("DELETE FROM metrics_daily WHERE day < ?", (old,)).rowcount
+            except sqlite3.Error:
+                pass
+            finally:
+                c2.close()
     return out
+
+
+def auto_snapshot(root, now: datetime | None = None) -> bool:
+    """Store today's snapshot on the first session of the day, when it costs under
+    :data:`SNAPSHOT_BUDGET_MS`; a dearer one is skipped and tried again next session. Never raises."""
+    try:
+        now = _utc(now)
+        day = now.strftime("%Y-%m-%d")
+        if any(d == day for d, _, _ in snapshot_rows(root, day, (now + timedelta(days=1)).strftime("%Y-%m-%d"),
+                                                     repo=repo_key(root))):
+            return False
+        t0 = time.perf_counter()
+        start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        data = compute(root, start, now + timedelta(seconds=1))
+        if (time.perf_counter() - t0) * 1000 > SNAPSHOT_BUDGET_MS:
+            return False
+        snapshot(root, now, data=data)
+        return True
+    except Exception:
+        return False
 
 
 # --- the report ------------------------------------------------------------------------------------
 
 def report(root, since: datetime, until: datetime) -> dict:
-    c = compute(root, since, until)
-    return {"repo": repo_key(root), "since": _iso(since), "until": _iso(until),
-            "measures": c, "derived": derive(c), "trend": trend(root, until),
-            "scale": latency_scale(root, until)}
+    conn = db.connect(root)
+    ctx = {"conn": conn} if conn is not None else {}
+    try:
+        c = compute(root, since, until, ctx)
+        return {"repo": repo_key(root), "since": _iso(since), "until": _iso(until),
+                "measures": c, "derived": derive(c), "trend": trend(root, until, ctx=ctx),
+                "scale": latency_scale(root, until)}
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 def rollup(groot, since: datetime, until: datetime, repo: str | None = None) -> dict:

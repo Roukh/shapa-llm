@@ -123,10 +123,14 @@ commands:
                  show, add, update (a new pending version), activate
   learn ...      close the loop on corrections: pending [--json] lists the
                  corrections not yet generalized with their nearest rules,
-                 skills and issues and whether each is a repeat; apply ISSUE
-                 --principle TEXT files the principle (global by default,
-                 --scope repo needs --why, skill:NAME for a skill), merging
-                 into a close rule, never stacking; dismiss ISSUE
+                 skills and issues and whether each is a repeat (and the
+                 skill versions awaiting `shapa skill activate`); apply ISSUE
+                 --principle TEXT (--into R<n>|skill:NAME | --new) files the
+                 principle (global by default, --scope repo needs --why):
+                 you choose merge or new, and with candidates and no choice
+                 it exits 2 listing them; merge SRC DST folds two principles
+                 (60 at most a wiki); dismiss ISSUE drops a correction or
+                 removes a soft candidate
   metrics [--since DATE] [--json] [--snapshot] [--all] [--repo KEY]
                  whether the wiki is working: fetch latency, corrections and
                  repeats per session, learned vs pending, skill use, feature

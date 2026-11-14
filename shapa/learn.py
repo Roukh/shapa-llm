@@ -1,46 +1,44 @@
 """``shapa learn`` - a correction is made once, learned once, and serves every repo.
 
-The operator's correction ("no, wrong, not like this") is already an issue row
-(:func:`shapa.ledger.record_correction`). This module closes the loop:
+The operator's correction ("no, wrong, not like this", or, while work is claimed, a short remark such as
+"move this header up") is an issue row (:func:`shapa.ledger.record_correction`). This module closes the loop:
 
-1. **Repeat detection** (:func:`on_correction`): a new correction is compared, by
-   stemmed-token similarity (a Dice score over an inverted index, the same word rule
-   as the FTS index) and, with ``[semantic]``, by vector cosine, with every earlier
-   issue and every rule of the repo wiki AND the global wiki. Close to one: it is a
-   repeat. It is tagged ``repeat`` and ``repeat-of:REF``, linked ``related`` when the
-   target is in the same wiki, the earlier row's count (``repeats:N``, or
-   ``violations:N`` on a principle) goes up, and the row's ``session`` column is the
-   mark. A repeat of something already learned is a *violation* of that principle.
-2. **Generalize without bloat** (:func:`apply`, ``shapa learn apply``): the agent states
-   the principle the correction implies. A principle is one rule row (tag
-   ``principle``): the statement is its summary, the evidence (source corrections: id,
-   wiki key, date, text) its body. A close principle MUST merge into the rule that holds
-   it (evidence appended, wording kept as one ``Also:`` line), never a second row. The
-   default scope is the GLOBAL wiki: principles apply across repos. ``--scope repo``
-   needs ``--why``. ``skill:NAME`` files a new version of a skill; a version derived from
-   a correction the hook itself filed activates at once (the operator's word), anything
-   else stays pending.
-3. **Directed**: every apply records what it serves (the fire of the claimed feature,
-   ``--serves F<n>|northstar``, else ``none``, which is counted).
-4. **Loop guards**: a correction is learned once; a principle revised three times whose
-   violations keep coming is marked ``churn`` (a fourth revision is refused: it needs
-   enforcement, not rewording); corrections about the learning system itself are applied
-   at most :data:`META_PER_WEEK` a week.
+1. **Repeat detection** (:func:`on_correction`): a new correction is compared with every earlier issue and
+   rule of the repo wiki, with every rule of the global wiki, and with the unlearned corrections of the
+   OTHER repos (a derived mirror in the global wiki's index), by stemmed-token Dice over a derived inverted
+   index (top candidates only) and, with ``[semantic]``, by cosine over stored vectors. Close to one: it is a
+   repeat (tags ``repeat`` and ``repeat-of:REF``, a ``related`` link in one wiki, a count on the earlier
+   row); a repeat of a learned principle is a *violation* of it.
+2. **Generalize without bloat** (:func:`apply`): the agent states the principle the correction implies and
+   CHOOSES where it goes: ``--into R<n>`` (merge into that rule), ``--into skill:NAME`` or ``--new``. Lexical
+   matching cannot decide meaning, so a call that chooses nothing is refused with the candidates (nearest
+   rules and skills, every churned principle, principles serving the same fire). A principle is one rule row
+   tagged ``principle``: the statement is its summary, the evidence (id, wiki key, date, text) its body.
+   Global by default; ``--scope repo`` needs ``--why``. A principle for a skill is a rule carrying
+   ``skill:NAME``; the existing lesson mechanism files a PENDING version of the skill from it, and only
+   ``shapa skill activate`` makes it live. At most :data:`MAX_PRINCIPLES` live principles per wiki
+   (:func:`merge` folds two).
+3. **Directed**: every apply records what it serves (``northstar``, ``<wiki key>/F<n>``, or ``none``).
+4. **Loop guards**: a correction is learned once; a principle revised :data:`REVISION_LIMIT` times and
+   violated again is ``churn`` (no more revisions, and no ``--new`` beside it: it needs enforcement);
+   corrections about the learning system itself are applied at most :data:`META_PER_WEEK` a week.
 
-Tags used (all ordinary row tags, so a sync carries them with no Worker change):
+Scale: every similarity query goes through the derived index (``l_chunks``, ``l_tok``, ``l_vec`` in
+``.shapa-index.db``, kept up to date from a rowid watermark and by the writes here), looks at top candidates
+only, and never scans the wiki. The prompt path waits at most one second on any lock and skips silently.
 
-issue: ``correction``, ``repeat-checked``, ``repeat``, ``repeat-of:REF``, ``violation``,
-``meta-learning``, ``blocked``, ``learned``, ``learned-at:ISO``, ``generalized-into:REF``,
-``serves:F3|northstar|none``, ``dismissed``, ``repeats:N``.
-principle (rule row): ``principle``, ``violations:N``, ``revisions:N``, ``churn``,
-``evidence:N``, ``last-seen:ISO``, ``serves:...``.
+Tags (ordinary row tags that sync; ``db.RESERVED_ROW_TAGS`` keeps every other writer away from them)::
+
+    issue: correction soft repeat-checked repeat repeat-of:REF violation meta-learning blocked learned
+           learned-at:ISO generalized-into:REF serves:... dismissed repeats:N
+    principle (rule row): principle violations:N revisions:N evidence:N last-seen:ISO serves:... churn
 
 CLI::
 
     shapa learn pending [--json] [--session ID] [--limit N]
-    shapa learn apply ISSUE --principle TEXT [--scope global|repo|skill:NAME] [--why TEXT]
-                      [--into R<n>|skill:NAME] [--serves F<n>|northstar] [--wiki repo|global] [--json]
-    shapa learn dismiss ISSUE [--wiki repo|global]
+    shapa learn apply ISSUE --principle TEXT (--into R<n>|--into skill:NAME|--new) [--scope global|repo|skill:NAME]
+                      [--why TEXT] [--serves <key>/F<n>|northstar] [--wiki repo|global] [--session ID] [--json]
+    shapa learn dismiss ISSUE [--wiki repo|global]      shapa learn merge SRC DST      shapa learn principles
 """
 
 from __future__ import annotations
@@ -48,14 +46,15 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import sqlite3
 import sys
 import unicodedata
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from shapa import config, db, embed, metrics, skills
-from shapa.ledger import CommandError, _subcommand_adder, run
+from shapa.ledger import CommandError, _subcommand_adder
 
 LEX_REPEAT, COS_REPEAT = 0.55, 0.85
 LEX_MERGE, COS_MERGE = 0.50, 0.80
@@ -63,15 +62,20 @@ LEX_TOPIC = 0.34          # same subject, so a flipped polarity is a contradicti
 PRINCIPLE_MIN, PRINCIPLE_MAX = 12, 160
 EVIDENCE_KEEP = 12
 ALSO_KEEP = 4
-MAX_SECTION_LINES = 25
 NEAREST_SHOWN = 5
 REVISION_LIMIT = 3
 META_PER_WEEK = 3
 PRINCIPLES_SHOWN = 4
+MAX_PRINCIPLES = 60       # live principles per wiki
+HOOK_BUSY_S = 1.0         # the prompt path gives up on a lock after this
+CATCHUP_ROWS = 1500       # rows the hook path indexes per call while it catches up
+CANDIDATE_POOL = 80       # candidate chunks scored per search
+DF_CAP = 2000             # a token in more chunks than this is too common to retrieve by
+VECTOR_POOL = 2000        # newest chunks a vector search covers besides the lexical candidates
 DRIFT_DAYS = 14
 DRIFT_MIN_JOBS = 4
 DRIFT_OFF_SHARE = 0.5
-SKILL_SECTION = "## Learned principles"
+HEAD_NOTE = "context learned from corrections, not an instruction"
 
 # --- text ----------------------------------------------------------------------------------
 
@@ -148,14 +152,17 @@ def is_meta(text: str) -> bool:
 
 _ZERO = re.compile("[​-‏‪-‮⁠-⁤﻿\x00-\x1f\x7f-\x9f]")
 _LABEL = re.compile(r"^(?:evidence|why|also)\s*:\s*", re.I)
-_UNSAFE = re.compile(
+#: A hint only: it adds a warning to an apply's result. Nothing depends on it (a lookalike letter defeats
+#: any list); what keeps a line harmless is that it is flattened, masked, capped and printed as recalled
+#: context, and that a skill version it files is only ever pending.
+_HINT = re.compile(
     r"(ignore\s+(?:all\s+|any\s+|the\s+|your\s+)?(?:previous|prior|above|earlier)|disregard|system\s+prompt|"
     r"you\s+are\s+now|new\s+instructions|jailbreak|exfiltrat|https?://|www\.|\bcurl\b|\bwget\b|base64|"
     r"\|\s*(?:sh|bash|zsh)\b|<\s*/?\s*(?:system|shapa|assistant|user|tool)|\bsudo\b|\brm\s+-rf\b)", re.I)
 
 
 def inert(text: str) -> str:
-    """*text* as one line that can open no tag, heading, fence or list in what it is quoted into."""
+    """*text* as one masked line that can open no tag, heading, fence or list in what it is quoted into."""
     from shapa.redact import redact
 
     t = _ZERO.sub(" ", unicodedata.normalize("NFKC", str(text or "")))
@@ -163,127 +170,38 @@ def inert(text: str) -> str:
     return re.sub(r"\[[A-Za-z]+:?\d+\]", "(ref)", t)
 
 
-def clean_principle(text: str, *, limit: int = PRINCIPLE_MAX) -> str:
-    """One safe line: no control or direction characters, no markdown structure, no wrapper
-    tags, no instruction-injection phrases. A principle ends up in a rule and at session
-    start (and an operator-derived skill version goes live at once), so it is checked, not trusted."""
-    from shapa.redact import redact
-
-    t = unicodedata.normalize("NFKC", str(text or ""))
-    t = _ZERO.sub(" ", t)
-    t = " ".join(redact(t).split())
-    t = t.replace("`", "'").replace("<", "‹").replace(">", "›").replace("---", "-")
-    t = re.sub(r"\[[A-Za-z]+:?\d+\]", "(ref)", t)             # a lesson marker must not be forgeable
-    for _ in range(4):                                         # no heading, quote, bullet, list marker or label
+def flatten(text: str, limit: int = PRINCIPLE_MAX) -> str:
+    """:func:`inert`, markdown markers and labels stripped, cut to *limit*: what is printed, never raises."""
+    t = inert(text).replace("---", "-")
+    for _ in range(4):
         t = re.sub(r"^(?:[#>*\-+•]+|\(ref\)|\d+[.)])\s*", "", t.strip())
         t = _LABEL.sub("", t)
     t = t.strip()
+    return t if len(t) <= limit else t[:limit - 1].rstrip() + "…"
+
+
+def clean_principle(text: str, *, limit: int = PRINCIPLE_MAX) -> str:
+    t = flatten(text, limit=10 ** 6)
     if len(t) < PRINCIPLE_MIN or not re.search(r"[^\W\d_]{3}", t):
         raise db.LedgerError(f"a principle is a sentence of at least {PRINCIPLE_MIN} characters")
     if len(t) > limit:
         raise db.LedgerError(f"a principle is at most {limit} characters: state the general rule, "
                              "not the occasion")
-    if _UNSAFE.search(t):
-        raise db.LedgerError("that principle reads as an instruction to the agent, or carries a URL or "
-                             "shell fragment: state the rule itself, in the operator's terms")
     return t
 
 
-# --- the similarity index -----------------------------------------------------------------------
+class ChooseError(db.LedgerError):
+    """``apply`` was given neither ``--into`` nor ``--new`` while candidates exist."""
 
-@dataclass
-class Entry:
-    label: str                 # repo | global
-    id: str                    # R5, I12, or the skill name
-    kind: str                  # R | I | S
-    summary: str
-    chunks: list
-    tags: set
-    created: str = ""
-
-    @property
-    def n(self) -> int:
-        m = re.search(r"\d+$", self.id)
-        return int(m.group()) if m else 0
+    def __init__(self, candidates: list[dict], message: str = ""):
+        self.candidates = candidates
+        super().__init__(message or "choose where this principle goes: `--into R<n>` (or `skill:NAME`) to merge it, "
+                         "or `--new` if none of these covers it:\n" + "\n".join(
+                             f"  {c['wiki']}/{c['id']}{' [CHURN: needs enforcement]' if c['churn'] else ''} {c['summary']}"
+                             for c in candidates))
 
 
-@dataclass
-class Neighbor:
-    entry: Entry
-    chunk: str
-    lex: float
-    cos: float | None
-    score: float = 0.0
-
-    @property
-    def repeat(self) -> bool:
-        return self.lex >= LEX_REPEAT or (self.cos is not None and self.cos >= COS_REPEAT)
-
-    @property
-    def merge(self) -> bool:
-        return self.lex >= LEX_MERGE or (self.cos is not None and self.cos >= COS_MERGE)
-
-
-def default_embedder():
-    return embed.embed_many if embed.available() else None
-
-
-class Index:
-    """Entries' chunks under an inverted token index; vectors are computed lazily, once."""
-
-    def __init__(self, entries: list[Entry], embedder="auto"):
-        self.entries = entries
-        self.embedder = default_embedder() if embedder == "auto" else embedder
-        self.chunks: list[tuple[int, str, frozenset]] = []
-        self.post: dict[str, list[int]] = {}
-        for ei, e in enumerate(entries):
-            for text in e.chunks:
-                toks = tokens(text)
-                self.post_add(len(self.chunks), toks)
-                self.chunks.append((ei, text, toks))
-        self._vecs = None
-
-    def post_add(self, ci: int, toks) -> None:
-        for t in toks:
-            self.post.setdefault(t, []).append(ci)
-
-    def _vectors(self):
-        if self._vecs is None:
-            self._vecs = self.embedder([c[1] for c in self.chunks]) if self.chunks else []
-        return self._vecs
-
-    def _cosines(self, text: str) -> list[float] | None:
-        if self.embedder is None or not self.chunks:
-            return None
-        q = self.embedder([text])[0]
-        vecs = self._vectors()
-        try:
-            import numpy as np
-
-            return [float(x) for x in (np.asarray(vecs, dtype=float) @ np.asarray(q, dtype=float))]
-        except ImportError:
-            return [float(sum(a * b for a, b in zip(v, q))) for v in vecs]
-
-    def nearest(self, text: str, k: int = NEAREST_SHOWN, *, kinds=None, skip=None) -> list[Neighbor]:
-        qt = tokens(text)
-        cands = {ci for t in qt for ci in self.post.get(t, ())}
-        cos = self._cosines(text)
-        if cos is not None:
-            cands |= {ci for ci, c in enumerate(cos) if c >= COS_MERGE - 0.1}
-        best: dict[int, Neighbor] = {}
-        for ci in cands:
-            ei, chunk, toks = self.chunks[ci]
-            e = self.entries[ei]
-            if (kinds and e.kind not in kinds) or (skip and skip(e)):
-                continue
-            n = Neighbor(e, chunk, dice(qt, toks), cos[ci] if cos is not None else None)
-            n.score = max(n.lex, n.cos or 0.0)
-            if ei not in best or n.score > best[ei].score:
-                best[ei] = n
-        return sorted(best.values(), key=lambda n: (-n.score, n.entry.label != "repo", n.entry.id))[:k]
-
-
-# --- scopes and entries ---------------------------------------------------------------------------
+# --- scopes ---------------------------------------------------------------------------------------
 
 @dataclass
 class Scope:
@@ -291,8 +209,8 @@ class Scope:
     root: Path
     key: str
 
-    def conn(self):
-        c = db.connect(self.root)
+    def conn(self, busy_ms: int | None = None):
+        c = db.connect(self.root, busy_ms=busy_ms)
         if c is None:
             raise CommandError(f"{self.root} has no database")
         return c
@@ -319,64 +237,15 @@ def _ref(frm: Scope, target: Scope, rid: str) -> str:
 
 
 def _resolve(ss: list[Scope], frm: Scope, ref: str) -> tuple[Scope | None, str]:
-    if ":" in ref and not ref.startswith("skill:"):
+    if ref.startswith(("skill:", "x:")):
+        return None, ref
+    if ":" in ref:
         label, rid = ref.split(":", 1)
         return next((s for s in ss if s.label == label), None), rid
     return frm, ref
 
 
-def _evidence_texts(body: str) -> list[str]:
-    out = []
-    for line in (body or "").splitlines():
-        m = re.match(r"^- [A-Z]\d+ \S+ \d{4}-\d\d-\d\d: (.+)$", line)
-        if m:
-            out.append(m.group(1))
-    return out
-
-
-def _chunks_of(row: db.Row) -> list[str]:
-    if row.kind == "I":
-        return [issue_text(row)]
-    chunks = [row.summary]
-    for line in (row.body or "").splitlines():
-        line = line.strip()
-        if line in ("Evidence:",) or len(line) < 8:
-            continue
-        m = re.match(r"^- [A-Z]\d+ \S+ \d{4}-\d\d-\d\d: (.+)$", line)
-        chunks.append(m.group(1) if m else re.sub(r"^(?:Also|Why):\s*", "", line))
-    return chunks
-
-
-def statements_of(row: db.Row) -> list[str]:
-    """What a rule asserts, to test a new principle against: its summary. Not the corrections quoted as
-    evidence (the operator's reactions), and not the ``Also:`` wordings (alternative phrasings of the
-    summary, whose looser polarity words would raise false contradictions)."""
-    return [row.summary]
-
-
-def load_entries(ss: list[Scope], *, skills_too: bool = False) -> list[Entry]:
-    out = []
-    for s in ss:
-        conn = s.conn()
-        try:
-            tags: dict[str, set] = {}
-            for rid, t in conn.execute("SELECT id, tag FROM tags"):
-                tags.setdefault(rid, set()).add(t)
-            for r in db.rows(conn):
-                if r.kind in ("I", "R"):
-                    out.append(Entry(s.label, r.id, r.kind, r.summary, _chunks_of(r), tags.get(r.id, set()), r.created))
-            if skills_too:
-                for name, vs in skills._all(conn).items():
-                    cur = next((v for v in reversed(vs) if v.status == "active"), vs[-1])
-                    lines = [l.strip(" -*") for l in cur.body.splitlines() if len(l.strip()) >= 12
-                             and not l.startswith("#")]
-                    out.append(Entry(s.label, name, "S", name, lines or [cur.description], set(), cur.created))
-        finally:
-            conn.close()
-    return out
-
-
-# --- tags ------------------------------------------------------------------------------------------
+# --- tags -------------------------------------------------------------------------------------------
 
 def tag_of(tags, prefix: str) -> str | None:
     for t in sorted(tags):
@@ -394,22 +263,257 @@ def _count(tags, prefix: str) -> int:
     return int(v) if v and v.isdigit() else 0
 
 
-def _bump(conn, rid: str, prefix: str, now: datetime) -> int:
-    n = _count(_tags(conn, rid), prefix) + 1
+def _set_tags(conn, rid: str, mapping: dict, extra=()) -> None:
+    """Replace every tag starting with a mapping key by ``key + value``, and add *extra*."""
     tg = _tags(conn, rid)
-    db.retag(conn, rid, add=[f"{prefix}{n}"], drop=[t for t in tg if t.startswith(prefix)])
+    drop = [t for t in tg if any(t.startswith(k) for k in mapping)]
+    db.retag(conn, rid, add=[f"{k}{v}" for k, v in mapping.items()] + list(extra), drop=drop)
+
+
+def _bump(conn, rid: str, prefix: str) -> int:
+    n = _count(_tags(conn, rid), prefix) + 1
+    _set_tags(conn, rid, {prefix: n})
     return n
 
 
-# --- per-device state ------------------------------------------------------------------------------
+# --- the derived similarity index ----------------------------------------------------------------------
 
-def _local(root):
-    return metrics._events_conn(root)
+_INDEX_SQL = (
+    "CREATE TABLE IF NOT EXISTS l_chunks (cid INTEGER PRIMARY KEY AUTOINCREMENT, rid TEXT NOT NULL, "
+    "kind TEXT NOT NULL, created TEXT NOT NULL DEFAULT '', src TEXT NOT NULL DEFAULT '', text TEXT NOT NULL)",
+    "CREATE INDEX IF NOT EXISTS l_chunks_rid ON l_chunks(src, rid)",
+    "CREATE TABLE IF NOT EXISTS l_tok (tok TEXT NOT NULL, cid INTEGER NOT NULL, PRIMARY KEY (tok, cid)) WITHOUT ROWID",
+    "CREATE TABLE IF NOT EXISTS l_vec (cid INTEGER PRIMARY KEY, vec BLOB NOT NULL)",
+    "CREATE TABLE IF NOT EXISTS p_local (id TEXT PRIMARY KEY, ts TEXT NOT NULL)",
+)
+CHUNK_CHARS = 400
 
+
+def _chunks_of(row: db.Row) -> list[str]:
+    if row.kind == "I":
+        return [issue_text(row)[:CHUNK_CHARS]]
+    chunks = [row.summary]
+    for line in (row.body or "").splitlines():
+        line = line.strip()
+        if line == "Evidence:" or len(line) < 8:
+            continue
+        m = re.match(r"^- [A-Z]\d+ \S+ \d{4}-\d\d-\d\d: (.+)$", line)
+        chunks.append((m.group(1) if m else re.sub(r"^(?:Also|Why):\s*", "", line))[:CHUNK_CHARS])
+    return chunks
+
+
+@dataclass
+class Hit:
+    rid: str
+    kind: str                  # I | R | S
+    src: str                   # '' for the index's own wiki, else the repo key of a mirrored issue
+    wiki: str                  # repo | global | x (another repo's unlearned correction)
+    chunk: str
+    lex: float
+    cos: float | None
+    created: str = ""
+
+    @property
+    def score(self) -> float:
+        return max(self.lex, self.cos or 0.0)
+
+    @property
+    def repeat(self) -> bool:
+        return self.lex >= LEX_REPEAT or (self.cos is not None and self.cos >= COS_REPEAT)
+
+    @property
+    def merge(self) -> bool:
+        return self.lex >= LEX_MERGE or (self.cos is not None and self.cos >= COS_MERGE)
+
+    @property
+    def n(self) -> int:
+        m = re.search(r"\d+$", self.rid)
+        return int(m.group()) if m else 0
+
+
+class LearnIndex:
+    """One wiki's similarity index inside its derived ``.shapa-index.db``. Rebuilt from the rows when
+    missing; the rows stay the truth."""
+
+    def __init__(self, root, timeout: float = HOOK_BUSY_S):
+        self.root = Path(root)
+        self.conn = metrics.open_local(root, timeout=timeout)
+        for stmt in _INDEX_SQL:
+            self.conn.execute(stmt)
+        self.conn.commit()
+
+    def close(self) -> None:
+        try:
+            self.conn.close()
+        except Exception:
+            pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        self.close()
+
+    # -- writing
+    def _put(self, rid: str, kind: str, created: str, src: str, chunks: list[str], fresh: bool = False) -> None:
+        cur = self.conn.cursor()
+        if not fresh:
+            self._drop(rid, src)
+        for text in chunks:
+            toks = tokens(text)
+            if not toks:
+                continue
+            cur.execute("INSERT INTO l_chunks(rid, kind, created, src, text) VALUES (?,?,?,?,?)",
+                        (rid, kind, created, src, text))
+            cid = cur.lastrowid
+            cur.executemany("INSERT OR IGNORE INTO l_tok(tok, cid) VALUES (?, ?)", [(t, cid) for t in toks])
+
+    def _drop(self, rid: str, src: str) -> None:
+        cids = [r[0] for r in self.conn.execute("SELECT cid FROM l_chunks WHERE src = ? AND rid = ?", (src, rid))]
+        if cids:
+            marks = ",".join("?" * len(cids))
+            self.conn.execute(f"DELETE FROM l_tok WHERE cid IN ({marks})", cids)
+            self.conn.execute(f"DELETE FROM l_vec WHERE cid IN ({marks})", cids)
+            self.conn.execute(f"DELETE FROM l_chunks WHERE cid IN ({marks})", cids)
+
+    def upsert_row(self, row: db.Row) -> None:
+        if row.kind in ("I", "R"):
+            self._put(row.id, row.kind, row.created, "", _chunks_of(row))
+            self.conn.commit()
+
+    def drop(self, rid: str, src: str = "") -> None:
+        self._drop(rid, src)
+        self.conn.commit()
+
+    def put_mirror(self, key: str, rid: str, created: str, text: str) -> None:
+        self._put(rid, "I", created, key, [text[:CHUNK_CHARS]])
+        self.conn.commit()
+
+    def _meta(self, key: str) -> str | None:
+        r = self.conn.execute("SELECT value FROM m_meta WHERE key = ?", (key,)).fetchone()
+        return r[0] if r else None
+
+    def _set_meta(self, key: str, value) -> None:
+        self.conn.execute("INSERT OR REPLACE INTO m_meta(key, value) VALUES (?, ?)", (key, str(value)))
+
+    def sync(self, dbconn, max_rows: int | None = None) -> bool:
+        """Index the rows written since the watermark (a rowid: new rows always have a higher one).
+        *max_rows* bounds a catch-up on the prompt path; ``True`` when caught up."""
+        top = dbconn.execute("SELECT COALESCE(MAX(rowid), 0) FROM mri").fetchone()[0]
+        wm = int(self._meta("l_wm") or 0)
+        if wm > top:   # the file was swapped or renumbered: start over
+            self.conn.execute("DELETE FROM l_chunks WHERE src = ''")
+            self.conn.execute("DELETE FROM l_tok WHERE cid NOT IN (SELECT cid FROM l_chunks)")
+            self.conn.execute("DELETE FROM l_vec WHERE cid NOT IN (SELECT cid FROM l_chunks)")
+            wm = 0
+        fresh = wm == 0 and self.conn.execute("SELECT 1 FROM l_chunks WHERE src = '' LIMIT 1").fetchone() is None
+        sql = ("SELECT rowid, id, kind, created, summary, body FROM mri WHERE rowid > ? AND kind IN ('I','R') "
+               "ORDER BY rowid" + (" LIMIT ?" if max_rows else ""))
+        last = wm
+        n = 0
+        for rowid, rid, kind, created, summary, body in dbconn.execute(sql, (wm, max_rows) if max_rows else (wm,)):
+            row = db.Row(rid, kind, None, summary, body, "", "", "", created, created, [])
+            self._put(rid, kind, created, "", _chunks_of(row), fresh=fresh)
+            last = rowid
+            n += 1
+        if not max_rows or n < max_rows:
+            last = max(last, top)
+        self._set_meta("l_wm", last)
+        self.conn.commit()
+        return last >= top
+
+    # -- reading
+    def _rare_tokens(self, qtoks, limit: int = 8) -> list[str]:
+        scored = []
+        for t in qtoks:
+            df = self.conn.execute(f"SELECT COUNT(*) FROM (SELECT 1 FROM l_tok WHERE tok = ? LIMIT {DF_CAP})", (t,)).fetchone()[0]
+            if df:
+                scored.append((df, t))
+        scored.sort()
+        rare = [t for df, t in scored if df < DF_CAP][:limit]
+        return rare or [t for _, t in scored[:2]]
+
+    def search(self, text: str, k: int = NEAREST_SHOWN, *, kinds=None, skip=None, exclude_src=(),
+               embedder=None, wiki: str = "repo") -> list[Hit]:
+        """The *k* chunks nearest *text* among a handful of lexical candidates (rare tokens, scored by
+        overlap), plus, with *embedder*, the vector neighbours among the newest chunks. *skip(hit)* drops
+        one (the row being filed); each entry counts once, by its best chunk."""
+        qt = tokens(text)
+        cands: dict[int, tuple] = {}
+        rare = self._rare_tokens(qt)
+        if rare:
+            marks = ",".join("?" * len(rare))
+            cids = [r[0] for r in self.conn.execute(
+                f"SELECT cid, COUNT(*) n FROM l_tok WHERE tok IN ({marks}) GROUP BY cid "
+                f"ORDER BY n DESC, cid DESC LIMIT {CANDIDATE_POOL}", rare)]
+            if cids:
+                m2 = ",".join("?" * len(cids))
+                for cid, rid, kind, created, src, chunk in self.conn.execute(
+                        f"SELECT cid, rid, kind, created, src, text FROM l_chunks WHERE cid IN ({m2})", cids):
+                    cands[cid] = (rid, kind, created, src, chunk)
+        cos: dict[int, float] = {}
+        if embedder is not None:
+            cos = self._cosines(text, embedder, cands)
+            missing = [c for c in cos if c not in cands]
+            if missing:
+                m3 = ",".join("?" * len(missing))
+                for cid, rid, kind, created, src, chunk in self.conn.execute(
+                        f"SELECT cid, rid, kind, created, src, text FROM l_chunks WHERE cid IN ({m3})", missing):
+                    cands[cid] = (rid, kind, created, src, chunk)
+        best: dict[tuple, Hit] = {}
+        for cid, (rid, kind, created, src, chunk) in cands.items():
+            if (kinds and kind not in kinds) or src in exclude_src:
+                continue
+            h = Hit(rid, kind, src, "x" if src else wiki, chunk, dice(qt, tokens(chunk)), cos.get(cid), created)
+            if skip is not None and skip(h):
+                continue
+            key = (src, rid)
+            if key not in best or h.score > best[key].score:
+                best[key] = h
+        return sorted(best.values(), key=lambda h: (-h.score, h.rid))[:k]
+
+    def _cosines(self, text: str, embedder, cands: dict) -> dict[int, float]:
+        pool = set(cands) | {r[0] for r in self.conn.execute(
+            f"SELECT cid FROM l_chunks ORDER BY cid DESC LIMIT {VECTOR_POOL}")}
+        if not pool:
+            return {}
+        have = {r[0]: r[1] for r in self.conn.execute(
+            f"SELECT cid, vec FROM l_vec WHERE cid IN ({','.join('?' * len(pool))})", list(pool))}
+        todo = [c for c in pool if c not in have]
+        if todo:
+            texts = {r[0]: r[1] for r in self.conn.execute(
+                f"SELECT cid, text FROM l_chunks WHERE cid IN ({','.join('?' * len(todo))})", todo)}
+            order = list(texts)
+            mat = embedder([texts[c] for c in order])
+            from array import array
+            for cid, vec in zip(order, mat):
+                blob = array("f", [float(x) for x in vec]).tobytes()
+                self.conn.execute("INSERT OR REPLACE INTO l_vec(cid, vec) VALUES (?, ?)", (cid, blob))
+                have[cid] = blob
+            self.conn.commit()
+        from array import array
+        q = [float(x) for x in embedder([text])[0]]
+        out = {}
+        for cid, blob in have.items():
+            v = array("f")
+            v.frombytes(blob)
+            out[cid] = sum(a * b for a, b in zip(v, q))
+        return out
+
+
+def default_embedder():
+    return embed.embed_many if embed.available() else None
+
+
+def _embedder(arg):
+    return default_embedder() if arg == "auto" else arg
+
+
+# --- per-device state -------------------------------------------------------------------------------------
 
 def served_total(root) -> int:
     try:
-        conn = metrics._events_conn(root, create=False)
+        conn = metrics.open_local(root, create=False)
         if conn is None:
             return 0
         try:
@@ -422,9 +526,7 @@ def served_total(root) -> int:
 
 def mark_served(root, ids, now: datetime | None = None) -> None:
     try:
-        conn = _local(root)
-        if conn is None:
-            return
+        conn = metrics.open_local(root)
         try:
             ts = db.now_iso(now)
             for rid in ids:
@@ -437,51 +539,35 @@ def mark_served(root, ids, now: datetime | None = None) -> None:
         pass
 
 
-def _note_hook_filed(root, rid: str, digest: str, now: datetime | None) -> None:
+def _mark_local(root, rid: str, now: datetime | None = None) -> None:
+    """This device wrote (or merged into) principle *rid* itself: only these earn a rank boost from their tags."""
     try:
-        conn = _local(root)
-        if conn is not None:
-            try:
-                conn.execute("INSERT OR REPLACE INTO learn_local(id, hash, ts) VALUES (?,?,?)",
-                             (rid, digest, db.now_iso(now)))
-                conn.commit()
-            finally:
-                conn.close()
+        with LearnIndex(root) as ix:
+            ix.conn.execute("INSERT OR REPLACE INTO p_local(id, ts) VALUES (?, ?)", (rid, db.now_iso(now)))
+            ix.conn.commit()
     except Exception:
         pass
 
 
-def operator_authority(root, row: db.Row) -> bool:
-    """True only for an issue this device's UserPromptSubmit hook filed itself, with the text
-    it filed: not a synced row, not a hand-written one, not an edited one."""
-    if row.source != "correction":
-        return False
+def local_principles(root) -> set[str]:
     try:
-        conn = metrics._events_conn(root, create=False)
+        conn = metrics.open_local(root, create=False)
         if conn is None:
-            return False
+            return set()
         try:
-            r = conn.execute("SELECT hash FROM learn_local WHERE id = ?", (row.id,)).fetchone()
-            return bool(r) and r[0] == row.hash
+            return {r[0] for r in conn.execute("SELECT id FROM p_local")}
         finally:
             conn.close()
     except Exception:
-        return False
+        return set()
 
 
 # --- 1. repeat detection ------------------------------------------------------------------------------
 
-def _set_tags(conn, rid: str, mapping: dict, extra=()) -> None:
-    """Replace every tag starting with a mapping key by ``key + value``, and add *extra*."""
-    tg = _tags(conn, rid)
-    drop = [t for t in tg if any(t.startswith(k) for k in mapping)]
-    db.retag(conn, rid, add=[f"{k}{v}" for k, v in mapping.items()] + list(extra), drop=drop)
-
-
-def _violate(target_scope: Scope, pid: str, now: datetime) -> tuple[int, bool]:
+def _violate(target_scope: Scope, pid: str, now: datetime, busy_ms: int | None = None) -> tuple[int, bool]:
     """Count a violation on principle *pid*: ``(violations, churn)``. A principle revised
     :data:`REVISION_LIMIT` times that is violated again is marked ``churn``."""
-    conn = target_scope.conn()
+    conn = target_scope.conn(busy_ms)
     try:
         tg = _tags(conn, pid)
         n = _count(tg, "violations:") + 1
@@ -492,28 +578,28 @@ def _violate(target_scope: Scope, pid: str, now: datetime) -> tuple[int, bool]:
         conn.close()
 
 
-def _target_of(ss: list[Scope], e: Entry):
-    """For an earlier row *e* that a new correction repeats: ``(scope, id)`` that takes the
-    repeat count, and ``(scope, id)`` of the principle it violates (or None)."""
-    scope = next(s for s in ss if s.label == e.label)
-    if e.kind == "R":
-        return (scope, e.id), ((scope, e.id) if "principle" in e.tags else None)
-    gi = tag_of(e.tags, "generalized-into:")
-    if gi and "learned" in e.tags and not gi.startswith("skill:"):
+def _target_of(ss: list[Scope], scope: Scope, rid: str, kind: str, tg: set):
+    """For an earlier row a new correction repeats: ``((scope, id) taking the count, (scope, id) of the
+    principle it violates or None)``."""
+    if kind == "R":
+        return (scope, rid), ((scope, rid) if "principle" in tg else None)
+    gi = tag_of(tg, "generalized-into:")
+    if gi and "learned" in tg and not gi.startswith("skill:"):
         psc, pid = _resolve(ss, scope, gi)
         if psc is not None:
-            return (scope, e.id), (psc, pid)
-    ro = tag_of(e.tags, "repeat-of:")
+            return (scope, rid), (psc, pid)
+    ro = tag_of(tg, "repeat-of:")
     if ro:
-        rsc, rid = _resolve(ss, scope, ro)
+        rsc, root_id = _resolve(ss, scope, ro)
         if rsc is not None:
-            return (rsc, rid), None
-    return (scope, e.id), None
+            return (rsc, root_id), None
+    return (scope, rid), None
 
 
 def on_correction(root, rid: str, created: bool, *, session: str = "", hook: bool = True,
                   now: datetime | None = None, embedder="auto") -> dict:
-    """Run after the hook files issue *rid* in wiki *root*: detect a repeat, tag, link, count, mark."""
+    """Run after the hook files issue *rid* in wiki *root*: detect a repeat, tag, link, count, mark. Never
+    waits more than a second on a lock: on a lock it returns what it has and the row stays unchecked."""
     now = now or datetime.now(timezone.utc)
     home_root = Path(root)
     ss = scopes(home_root)
@@ -522,25 +608,26 @@ def on_correction(root, rid: str, created: bool, *, session: str = "", hook: boo
         home = Scope("global" if metrics.repo_key(home_root) == "global" else "repo", home_root,
                      metrics.repo_key(home_root))
         ss = [home] + [s for s in ss if s.root.resolve() != home_root.resolve()]
-    search = [home] + ([s for s in ss if s.label == "global" and s is not home] if home.label == "repo" else [])
+    gscope = next((s for s in ss if s.label == "global" and s is not home), None) if home.label == "repo" else None
     info = {"repeat": False, "of": None, "count": 0, "violation": None, "churn": False, "meta": False}
-    conn = home.conn()
+    emb = _embedder(embedder)
+    busy = int(HOOK_BUSY_S * 1000)
+    conn = home.conn(busy)
+    idx = gidx = None
     try:
         row = db.get_row(conn, rid)
         if row is None:
             return info
-        if hook and created:
-            _note_hook_filed(home_root, rid, row.hash, now)
         text = issue_text(row)
         tags = _tags(conn, rid)
         if not created:                                    # the same words again: one row, a higher count
-            info.update(repeat=True, of=rid, count=_bump(conn, rid, "repeats:", now))
+            info.update(repeat=True, of=rid, count=_bump(conn, rid, "repeats:"))
             gi = tag_of(tags, "generalized-into:")
             if gi and not gi.startswith("skill:"):
                 psc, pid = _resolve(ss, home, gi)
                 if psc is not None:
                     info["violation"] = gi
-                    _, info["churn"] = _violate(psc, pid, now)
+                    _, info["churn"] = _violate(psc, pid, now, busy)
             metrics.record(home_root, "repeat", session=session, ref=rid, data={"dedup": 1}, now=now)
             return info
         if "repeat-checked" in tags:
@@ -549,101 +636,179 @@ def on_correction(root, rid: str, created: bool, *, session: str = "", hook: boo
         if is_meta(text):
             add.append("meta-learning")
             info["meta"] = True
+        idx = LearnIndex(home_root)
+        idx.sync(conn, max_rows=CATCHUP_ROWS)
+        idx.upsert_row(row)
         n_self = int(rid[1:])
 
-        def skip(e: Entry) -> bool:
-            if e.kind != "I":
-                return False
-            if e.label == home.label:
-                return (e.created, e.n) >= (row.created, n_self)
-            return e.created >= row.created
+        def skip_own(h: Hit) -> bool:
+            return h.rid == rid or (h.kind == "I" and (h.created, h.n) >= (row.created, n_self))
 
-        hit = next((n for n in Index(load_entries(search), embedder).nearest(text, 5, kinds=("I", "R"), skip=skip)
-                    if n.repeat), None)
+        hits = idx.search(text, 6, kinds=("I", "R"), skip=skip_own, embedder=emb, wiki=home.label)
+        if gscope is not None:
+            try:
+                gidx = LearnIndex(gscope.root)
+                hits += gidx.search(text, 6, kinds=("I", "R"), exclude_src={home.key}, embedder=emb, wiki="global",
+                                    skip=lambda h: h.kind == "I" and h.created >= row.created)
+            except sqlite3.Error:
+                gidx = None
+        hit = next((h for h in sorted(hits, key=lambda h: (-h.score, h.rid)) if h.repeat), None)
         if hit is not None:
-            (tscope, tid), pr = _target_of(ss, hit.entry)
-            ref = _ref(home, tscope, tid)
-            add += ["repeat", f"repeat-of:{ref}"]
-            info.update(repeat=True, of=ref)
-            if pr is None or pr != (tscope, tid):
-                c2 = tscope.conn()
+            if hit.src:                                     # another repo's unlearned correction
+                ref = f"x:{hit.src}/{hit.rid}"
+                add += ["repeat", f"repeat-of:{ref}"]
+                info.update(repeat=True, of=ref, count=1)
+                db.retag(conn, rid, add=add)
+            else:
+                tscope = home if hit.wiki == home.label else next(s for s in ss if s.label == hit.wiki)
+                tconn = tscope.conn(busy) if tscope is not home else conn
                 try:
-                    info["count"] = _bump(c2, tid, "repeats:", now)
+                    (cs, cid), pr = _target_of(ss, tscope, hit.rid, hit.kind, _tags(tconn, hit.rid))
                 finally:
-                    c2.close()
-            if pr is not None:
-                psc, pid = pr
-                info["violation"] = _ref(home, psc, pid)
-                add.append("violation")
-                info["count"], info["churn"] = _violate(psc, pid, now)
-                if info["churn"]:
-                    add.append("blocked")
-            db.retag(conn, rid, add=add)
-            if tscope.label == home.label:
-                db.link(conn, rid, tid, "related")
+                    if tconn is not conn:
+                        tconn.close()
+                ref = _ref(home, cs, cid)
+                add += ["repeat", f"repeat-of:{ref}"]
+                info.update(repeat=True, of=ref)
+                if pr is None or pr != (cs, cid):
+                    c2 = cs.conn(busy)
+                    try:
+                        info["count"] = _bump(c2, cid, "repeats:")
+                    finally:
+                        c2.close()
+                if pr is not None:
+                    psc, pid = pr
+                    info["violation"] = _ref(home, psc, pid)
+                    add.append("violation")
+                    info["count"], info["churn"] = _violate(psc, pid, now, busy)
+                    if info["churn"]:
+                        add.append("blocked")
+                db.retag(conn, rid, add=add)
+                if cs.label == home.label:
+                    db.link(conn, rid, cid, "related")
             metrics.record(home_root, "repeat", session=session, ref=rid, now=now)
         else:
             db.retag(conn, rid, add=add)
+        if gidx is not None:
+            gidx.put_mirror(home.key, rid, row.created, text)    # visible to the other repos' sessions at once
         metrics.record(home_root, "correction", session=session, ref=rid, now=now)
         return info
+    except sqlite3.OperationalError:
+        return info
     finally:
+        for x in (idx, gidx):
+            if x is not None:
+                x.close()
         conn.close()
 
 
 # --- pending ------------------------------------------------------------------------------------------
 
-def _unlearned(conn) -> list[db.Row]:
-    out = []
-    tags: dict[str, set] = {}
-    for rid, t in conn.execute("SELECT id, tag FROM tags"):
-        tags.setdefault(rid, set()).add(t)
-    for r in db.rows(conn, "I"):
-        tg = tags.get(r.id, set())
-        if "correction" in tg and "learned" not in tg and "dismissed" not in tg:
-            r.tags = sorted(tg)
-            out.append(r)
-    return out
+#: A correction an agent can still act on: not learned, dismissed or blocked, and not folded under an
+#: earlier still-pending correction of the same wiki (a repeat is listed once, with its root).
+_FOLDED = ("NOT EXISTS (SELECT 1 FROM tags ro JOIN tags rc ON rc.id = substr(ro.tag, 11) AND rc.tag = 'correction' "
+           "WHERE ro.id = c.id AND ro.tag LIKE 'repeat-of:I%' AND instr(substr(ro.tag, 11), ':') = 0 "
+           "AND NOT EXISTS (SELECT 1 FROM tags y WHERE y.id = rc.id AND y.tag IN ('learned','dismissed')))")
+#: A correction listed by ``learn pending``: not learned or dismissed, and not folded under an earlier
+#: still-pending correction of the same wiki (a repeat is listed once, with its root).
+_LISTED = ("NOT EXISTS (SELECT 1 FROM tags x WHERE x.id = c.id AND x.tag IN ('learned','dismissed')) AND " + _FOLDED)
+#: One an agent can still act on: listed, and not blocked (a churned principle needs the operator).
+_OPEN = ("NOT EXISTS (SELECT 1 FROM tags x WHERE x.id = c.id AND x.tag IN ('learned','dismissed','blocked')) AND " + _FOLDED)
 
 
-def meta_applied_week(conn, now: datetime) -> int:
-    cut = db.now_iso(now - timedelta(days=7))
-    n = 0
-    for rid, in conn.execute("SELECT id FROM tags WHERE tag = 'meta-learning'"):
-        for (t,) in conn.execute("SELECT tag FROM tags WHERE id = ? AND tag LIKE 'learned-at:%'", (rid,)):
-            n += t[len("learned-at:"):] >= cut
-    return n
+def _folded_open(conn) -> int:
+    """Pending corrections folded under an earlier pending one of the same wiki (a repeat is listed once)."""
+    return conn.execute(
+        "SELECT COUNT(DISTINCT ro.id) FROM tags ro "
+        "JOIN tags cc ON cc.id = ro.id AND cc.tag = 'correction' "
+        "JOIN tags rc ON rc.id = substr(ro.tag, 11) AND rc.tag = 'correction' "
+        "WHERE ro.tag >= 'repeat-of:I' AND ro.tag < 'repeat-of:J' AND instr(substr(ro.tag, 11), ':') = 0 "
+        "AND NOT EXISTS (SELECT 1 FROM tags x WHERE x.id = ro.id AND x.tag IN ('learned','dismissed','blocked')) "
+        "AND NOT EXISTS (SELECT 1 FROM tags y WHERE y.id = rc.id AND y.tag IN ('learned','dismissed'))").fetchone()[0]
 
 
 def awaiting_count(conn, now: datetime | None = None) -> int:
-    """Corrections an agent can still act on: unlearned, not dismissed, not blocked, and not a
-    learning-system correction past this week's cap. One query, no similarity."""
+    """Corrections an agent can still act on: unlearned, not dismissed, not blocked, not folded under an
+    earlier pending one, and not a learning-system correction past this week's cap. Indexed counts only
+    (no similarity pass, no row read); the same number ``learn pending`` reports."""
     now = now or datetime.now(timezone.utc)
     try:
-        total = conn.execute(
-            "SELECT COUNT(*) FROM mri m WHERE m.kind = 'I' "
-            "AND EXISTS (SELECT 1 FROM tags t WHERE t.id = m.id AND t.tag = 'correction') "
-            "AND NOT EXISTS (SELECT 1 FROM tags t WHERE t.id = m.id AND t.tag IN ('learned','dismissed','blocked'))"
-        ).fetchone()[0]
-        meta = conn.execute(
-            "SELECT COUNT(*) FROM mri m WHERE m.kind = 'I' "
-            "AND EXISTS (SELECT 1 FROM tags t WHERE t.id = m.id AND t.tag = 'correction') "
-            "AND EXISTS (SELECT 1 FROM tags t WHERE t.id = m.id AND t.tag = 'meta-learning') "
-            "AND NOT EXISTS (SELECT 1 FROM tags t WHERE t.id = m.id AND t.tag IN ('learned','dismissed','blocked'))"
-        ).fetchone()[0]
-        if meta and meta_applied_week(conn, now) >= META_PER_WEEK:
-            total -= meta
+        total = conn.execute("SELECT COUNT(*) FROM tags WHERE tag = 'correction'").fetchone()[0]
+        if not total:
+            return 0
+        total -= conn.execute(
+            "SELECT COUNT(DISTINCT a.id) FROM tags a JOIN tags b ON b.id = a.id AND "
+            "b.tag IN ('learned','dismissed','blocked') WHERE a.tag = 'correction'").fetchone()[0]
+        total -= _folded_open(conn)
+        if total and meta_applied_week(conn, now) >= META_PER_WEEK:
+            meta = [r[0] for r in conn.execute("SELECT id FROM tags WHERE tag = 'meta-learning'")]
+            total -= sum(1 for rid in meta if conn.execute(
+                f"SELECT 1 FROM tags c WHERE c.id = ? AND c.tag = 'correction' AND {_OPEN}", (rid,)).fetchone())
         return max(0, total)
     except Exception:
         return 0
 
 
-def _brief(n: Neighbor, home: Scope) -> dict:
-    e = n.entry
-    kind = {"R": "principle" if "principle" in e.tags else "rule", "I": "issue", "S": "skill"}[e.kind]
-    return {"ref": _ref(home, Scope(e.label, Path(), ""), e.id) if e.kind != "S" else f"skill:{e.id}",
-            "wiki": e.label, "kind": kind, "score": round(n.score, 3), "lex": round(n.lex, 3),
-            "cos": None if n.cos is None else round(n.cos, 3), "merge": n.merge, "repeat": n.repeat,
-            "text": n.chunk[:160]}
+def meta_applied_week(conn, now: datetime) -> int:
+    cut = "learned-at:" + db.now_iso(now - timedelta(days=7))
+    return conn.execute(
+        "SELECT COUNT(*) FROM tags l WHERE l.tag >= ? AND l.tag < 'learned-at:~' AND EXISTS "
+        "(SELECT 1 FROM tags m WHERE m.id = l.id AND m.tag = 'meta-learning')", (cut,)).fetchone()[0]
+
+
+def awaiting_activation(ss: list[Scope] | None = None, conn=None) -> list[dict]:
+    """Pending skill versions that a learned principle filed: ``[{skill, version, lesson}]``. Only
+    ``shapa skill activate`` makes one live."""
+    out = []
+    conns = [(None, conn)] if conn is not None else [(s, s.conn()) for s in (ss or [])]
+    try:
+        for _, c in conns:
+            for doc_id, source in c.execute("SELECT id, source FROM docs WHERE source LIKE 'lesson:R%'").fetchall():
+                d = db.get_doc(c, doc_id)
+                v = skills._from_doc(d) if d else None
+                if v is None or v.status != "pending":
+                    continue
+                row = db.get_row(c, source[len("lesson:"):])
+                if row is None or "principle" not in _tags(c, row.id):
+                    continue
+                out.append({"skill": v.name, "version": v.version, "lesson": flatten(row.summary)})
+    finally:
+        if conn is None:
+            for _, c in conns:
+                c.close()
+    return sorted(out, key=lambda x: (x["skill"], x["version"]))
+
+
+def _unlearned_ids(conn, offset: int, n: int) -> list[str]:
+    return [r[0] for r in conn.execute(
+        f"SELECT c.id FROM tags c JOIN mri m ON m.id = c.id WHERE c.tag = 'correction' AND {_LISTED} "
+        "ORDER BY m.created, m.rowid LIMIT ? OFFSET ?", (n, offset))]
+
+
+def _skill_lines(ss: list[Scope]) -> list[tuple[str, str, str]]:
+    out = []
+    for s in ss:
+        c = s.conn()
+        try:
+            for name, vs in skills._all(c).items():
+                cur = next((v for v in reversed(vs) if v.status == "active"), vs[-1])
+                for l in cur.body.splitlines():
+                    l = l.strip(" -*")
+                    if len(l) >= 12 and not l.startswith("#"):
+                        out.append((name, s.label, l))
+        finally:
+            c.close()
+    return out
+
+
+def _brief_hit(h: Hit, conn_of) -> dict:
+    kind = {"I": "issue", "R": "rule"}[h.kind]
+    if h.kind == "R" and "principle" in _tags(conn_of(h.wiki), h.rid):
+        kind = "principle"
+    ref = h.rid if h.wiki in ("repo",) else (f"x:{h.src}/{h.rid}" if h.src else f"{h.wiki}:{h.rid}")
+    return {"ref": ref, "wiki": h.wiki, "kind": kind, "score": round(h.score, 3), "lex": round(h.lex, 3),
+            "cos": None if h.cos is None else round(h.cos, 3), "merge": h.merge, "repeat": h.repeat,
+            "text": h.chunk[:160]}
 
 
 def churned(ss: list[Scope]) -> list[dict]:
@@ -656,7 +821,7 @@ def churned(ss: list[Scope]) -> list[dict]:
                 if r is None or r.kind != "R":
                     continue
                 tg = _tags(conn, rid)
-                out.append({"id": rid, "wiki": s.label, "summary": r.summary,
+                out.append({"id": rid, "wiki": s.label, "summary": flatten(r.summary),
                             "violations": _count(tg, "violations:"), "revisions": _count(tg, "revisions:"),
                             "note": "needs enforcement, not rewording"})
         finally:
@@ -666,50 +831,101 @@ def churned(ss: list[Scope]) -> list[dict]:
 
 def pending(cwd=None, *, session: str = "", limit: int = 20, now: datetime | None = None,
             embedder="auto") -> dict:
+    """The corrections not yet generalized, at most *limit* of them (the limit applies before any similarity
+    search), each with its nearest rules, skills and issues. ``count`` is :func:`awaiting_count` summed over
+    the wikis in scope: the number session start prints."""
     now = now or datetime.now(timezone.utc)
+    emb = _embedder(embedder)
     ss = scopes(cwd)
-    out_items: list[dict] = []
+    items: list[dict] = []
     total = 0
-    mode = "lexical"
+    skill_lines = None
     for home in ss:
-        search = ss if home.label == "repo" else [home]
-        entries = load_entries(search, skills_too=True)
-        idx = Index(entries, embedder)
-        if idx.embedder is not None:
-            mode = "fused"
         conn = home.conn()
         try:
-            rows = _unlearned(conn)
-            by_id = {r.id: r for r in rows}
-            folded: dict[str, list[str]] = {}
-            for r in rows:
-                ro = tag_of(r.tags, "repeat-of:")
-                if ro and ":" not in ro and ro in by_id:
-                    folded.setdefault(ro, []).append(r.id)
-            fold_ids = {x for v in folded.values() for x in v}
+            total += awaiting_count(conn, now)
+            if len(items) >= limit:
+                continue
             capped = meta_applied_week(conn, now) >= META_PER_WEEK
-            for r in rows:
-                if r.id in fold_ids or (session and not (r.session or "").startswith(session[:8])):
-                    continue
-                total += 1
-                text = issue_text(r)
-                near = idx.nearest(text, NEAREST_SHOWN, skip=lambda e, rid=r.id, lbl=home.label:
-                                   e.label == lbl and e.id == rid)
-                ro = tag_of(r.tags, "repeat-of:")
-                item = {"id": r.id, "wiki": home.label, "key": home.key, "summary": r.summary, "text": text[:300],
-                        "session": r.session, "created": r.created, "repeat": "repeat" in r.tags,
-                        "repeat_of": ro, "repeat_count": _count(r.tags, "repeats:"),
-                        "violation": "violation" in r.tags, "also": sorted(folded.get(r.id, [])),
-                        "meta": "meta-learning" in r.tags, "capped": "meta-learning" in r.tags and capped,
-                        "blocked": "blocked" in r.tags,
-                        "nearest": [_brief(n, home) for n in near]}
-                if item["blocked"]:
-                    item["note"] = "needs enforcement, not rewording"
-                out_items.append(item)
+            with LearnIndex(home.root, timeout=5.0) as idx:
+                idx.sync(conn)
+                gidx = None
+                if home.label == "repo":
+                    g = next((s for s in ss if s.label == "global"), None)
+                    if g is not None:
+                        gidx = LearnIndex(g.root, timeout=5.0)
+                conns = {"repo": conn}
+                gconn = None
+
+                def conn_of(label):
+                    nonlocal gconn
+                    if label == home.label:
+                        return conn
+                    if gconn is None:
+                        gconn = next(s for s in ss if s.label == label).conn()
+                    return gconn
+
+                offset = 0
+                try:
+                    while len(items) < limit:
+                        page = _unlearned_ids(conn, offset, 100)
+                        if not page:
+                            break
+                        offset += len(page)
+                        for rid in page:
+                            if len(items) >= limit:
+                                break
+                            r = db.get_row(conn, rid)
+                            tg = _tags(conn, rid)
+                            r.tags = sorted(tg)
+                            ro = tag_of(tg, "repeat-of:")
+                            if ro and ":" not in ro:   # folded under its (still pending) root
+                                rt = _tags(conn, ro)
+                                if rt and "correction" in rt and not rt & {"learned", "dismissed"}:
+                                    continue
+                            if session and not (r.session or "").startswith(session[:8]):
+                                continue
+                            text = issue_text(r)
+                            hits = idx.search(text, NEAREST_SHOWN, skip=lambda h, i=rid: h.rid == i and not h.src,
+                                              embedder=emb, wiki=home.label)
+                            if gidx is not None:
+                                hits += gidx.search(text, 3, exclude_src={home.key}, embedder=emb, wiki="global")
+                            hits = sorted(hits, key=lambda h: -h.score)[:NEAREST_SHOWN]
+                            near = [_brief_hit(h, conn_of) for h in hits]
+                            if skill_lines is None:
+                                skill_lines = _skill_lines(ss)
+                            qt = tokens(text)
+                            best = {}
+                            for name, label, line in skill_lines:
+                                sc = dice(qt, tokens(line))
+                                if sc >= 0.2 and sc > best.get(name, (0,))[0]:
+                                    best[name] = (sc, label, line)
+                            for name, (sc, label, line) in sorted(best.items(), key=lambda kv: -kv[1][0])[:2]:
+                                near.append({"ref": f"skill:{name}", "wiki": label, "kind": "skill",
+                                             "score": round(sc, 3), "lex": round(sc, 3), "cos": None,
+                                             "merge": sc >= LEX_MERGE, "repeat": False, "text": line[:160]})
+                            also = [x[0] for x in conn.execute(
+                                "SELECT t.id FROM tags t WHERE t.tag = ? AND NOT EXISTS (SELECT 1 FROM tags l WHERE "
+                                "l.id = t.id AND l.tag IN ('learned','dismissed'))", (f"repeat-of:{rid}",))]
+                            item = {"id": rid, "wiki": home.label, "key": home.key, "summary": flatten(r.summary),
+                                    "text": flatten(text, 300), "session": r.session, "created": r.created,
+                                    "repeat": "repeat" in tg, "repeat_of": ro, "repeat_count": _count(tg, "repeats:"),
+                                    "violation": "violation" in tg, "also": sorted(also),
+                                    "meta": "meta-learning" in tg, "capped": "meta-learning" in tg and capped,
+                                    "blocked": "blocked" in tg, "soft": "soft" in tg, "nearest": near}
+                            if item["blocked"]:
+                                item["note"] = "needs enforcement, not rewording"
+                            items.append(item)
+                finally:
+                    if gidx is not None:
+                        gidx.close()
+                    if gconn is not None:
+                        gconn.close()
         finally:
             conn.close()
-    out_items.sort(key=lambda i: (i["created"], i["id"]))
-    return {"count": total, "pending": out_items[:limit], "churn": churned(ss), "mode": mode}
+    items.sort(key=lambda i: (i["created"], i["id"]))
+    return {"count": total, "pending": items[:limit], "churn": churned(ss),
+            "awaiting_activation": awaiting_activation(ss), "mode": "fused" if emb is not None else "lexical"}
 
 
 # --- 2. apply -------------------------------------------------------------------------------------------
@@ -733,91 +949,121 @@ def _join_body(head: list[str], ev: list[str]) -> str:
     return "\n".join([*head, *(["Evidence:"] if ev else []), *ev]).strip()
 
 
-def resolve_serves(conn, explicit: str | None) -> str:
-    """The goal a learn serves: *explicit* (``northstar`` or a feature of this wiki), else the fire
-    of the claimed feature, else ``none``."""
+def statements_of(row: db.Row) -> list[str]:
+    """What a rule asserts, to test a new principle against: its summary. Not the corrections quoted as
+    evidence (the operator's reactions), and not the ``Also:`` wordings (alternative phrasings of the
+    summary, whose looser polarity words would raise false contradictions)."""
+    return [row.summary]
+
+
+def resolve_serves(conn, explicit: str | None, key: str, label: str) -> str:
+    """The goal a learn serves: ``northstar``, ``<wiki key>/F<n>`` (an OPEN feature of this repo wiki,
+    never a bare id: a global principle outlives the repo it was learned in), or ``none``."""
     from shapa import focus
+
+    def feature(fid: str) -> str:
+        it = db.get_item(conn, fid) if re.fullmatch(r"F[1-9]\d*", fid) else None
+        if it is None or it.kind != "F":
+            raise db.LedgerError(f"--serves names a feature of this repo wiki (F<n>), got {fid!r}")
+        if it.status == "closed":
+            raise db.LedgerError(f"{it.id} is closed: a closed feature is served by nothing")
+        return f"{key}/{it.id}"
 
     if explicit:
         e = explicit.strip()
         if e.lower() == "northstar":
             return "northstar"
-        it = db.get_item(conn, e) if re.fullmatch(r"F[1-9]\d*", e) else None
-        if it is None or it.kind != "F":
-            raise db.LedgerError(f"--serves is northstar or a feature of this repo (F<n>), got {explicit!r}")
-        return it.id
+        if label != "repo":
+            raise db.LedgerError("only a repo wiki's feature can be served: use --serves northstar or none")
+        return feature(e.split("/", 1)[1] if "/" in e and e.split("/", 1)[0] == key else e)
+    if label != "repo":
+        return "none"
     fire_ids = {f.feature for f in focus.load(conn).fires if f and f.feature}
     for item in db.items(conn, status="claimed"):
         cur = item
         while cur is not None and cur.kind != "F":
             cur = db.get_item(conn, cur.parent) if cur.parent else None
-        if cur is not None and (cur.id in fire_ids or "fire" in _tags(conn, cur.id)):
-            return cur.id
+        if cur is not None and cur.status != "closed" and (cur.id in fire_ids or "fire" in _tags(conn, cur.id)):
+            return f"{key}/{cur.id}"
     return "none"
 
 
-def _skill_section(body: str, line: str) -> str:
-    lines = body.rstrip().splitlines()
-    idx = next((i for i, l in enumerate(lines) if l.strip().lower() == SKILL_SECTION.lower()), None)
-    if idx is None:
-        return body.rstrip() + f"\n\n{SKILL_SECTION}\n\n- {line}\n"
-    end = next((j for j in range(idx + 1, len(lines)) if lines[j].startswith("## ")), len(lines))
-    if sum(1 for l in lines[idx + 1:end] if l.startswith("- ")) >= MAX_SECTION_LINES:
-        raise db.LedgerError(f"the skill's {SKILL_SECTION!r} section is full ({MAX_SECTION_LINES}): "
-                             "fold it into the skill's own text first (`shapa skill update`)")
-    last = max(j for j in range(idx, end) if lines[j].strip())
-    lines.insert(last + 1, f"- {line}")
-    return "\n".join(lines) + "\n"
+def live_principles(conn) -> list[str]:
+    return [r[0] for r in conn.execute("SELECT t.id FROM tags t JOIN mri m ON m.id = t.id "
+                                       "WHERE t.tag = 'principle' AND m.kind = 'R'")]
 
 
-def _apply_skill(ss: list[Scope], name: str, principle: str, prov: str, authority: bool) -> dict:
-    holder = None
+def _candidates(ss: list[Scope], target: Scope, principle: str, serve: str, embedder, skill_name=None) -> list[dict]:
+    """What a principle might already be: the nearest rules of the target wiki, the nearest skills, every
+    churned principle, and the principles that serve the same goal."""
+    out: dict[str, dict] = {}
+    conn = target.conn()
+    try:
+        with LearnIndex(target.root, timeout=5.0) as idx:
+            idx.sync(conn)
+            for h in idx.search(principle, 5, kinds=("R",), embedder=embedder, wiki=target.label):
+                r = db.get_row(conn, h.rid)
+                if r is not None:
+                    out[h.rid] = {"id": h.rid, "wiki": target.label, "summary": flatten(r.summary),
+                                  "churn": "churn" in _tags(conn, h.rid)}
+        for rid in live_principles(conn):
+            tg = _tags(conn, rid)
+            if "churn" in tg or (serve != "none" and f"serves:{serve}" in tg):
+                r = db.get_row(conn, rid)
+                if r is not None:
+                    out.setdefault(rid, {"id": rid, "wiki": target.label, "summary": flatten(r.summary),
+                                         "churn": "churn" in tg})
+    finally:
+        conn.close()
+    qt = tokens(principle)
+    seen = set()
+    for name, label, line in _skill_lines(ss):
+        if name not in seen and dice(qt, tokens(line)) >= 0.25:
+            seen.add(name)
+            out[f"skill:{name}"] = {"id": f"skill:{name}", "wiki": label, "summary": flatten(line), "churn": False}
+    return sorted(out.values(), key=lambda c: (not c["churn"], c["id"]))
+
+
+def _find_skill(ss: list[Scope], name: str) -> Scope:
     for s in ss:
         c = s.conn()
         try:
             if skills.versions(c, name):
-                holder = s
-                break
+                return s
         finally:
             c.close()
-    if holder is None:
-        raise db.LedgerError(f"no skill {name!r} in scope: start it with `shapa skill add`")
-    conn = holder.conn()
-    try:
-        vs = skills.versions(conn, name)
-        base = next((v for v in reversed(vs) if v.status == "active"), vs[-1])
-        pt = tokens(principle)
-        conflict = False
-        for l in base.body.splitlines():
-            text = re.sub(r"\s*\([^)]*\)\s*$", "", l.strip(" -*"))
-            if len(text) < 12:
-                continue
-            d = dice(pt, tokens(text))
-            if d >= LEX_MERGE and not opposite(principle, text):
-                return {"action": "duplicate", "target": f"skill:{name}", "wiki": holder.label,
-                        "version": base.version, "status": base.status, "conflicts": []}
-            if d >= LEX_TOPIC and opposite(principle, text):
-                conflict = True
-        body = _skill_section(base.body, f"{principle} ({prov})")
-        active = authority and not conflict
-        v = skills.add_version(conn, name, base.description, body, active=active, source="learn")
-        return {"action": "skill-version", "target": f"skill:{name}", "wiki": holder.label,
-                "version": v.version, "status": v.status, "conflicts": ["contradicts a line of the skill"] if conflict else []}
-    finally:
-        conn.close()
+    raise db.LedgerError(f"no skill {name!r} in scope: start it with `shapa skill add`")
 
 
-def apply(cwd, issue_id: str, principle: str, *, scope: str = "global", why: str = "",
-          into: str | None = None, serves: str | None = None, wiki: str | None = None,
+def _parse_into(into: str | None, ss: list[Scope]) -> tuple[str | None, str | None, str | None]:
+    """``(rule id, wiki label, skill name)`` from ``R2``, ``global/R2``, ``repo/R2`` or ``skill:NAME``."""
+    if not into:
+        return None, None, None
+    into = into.strip()
+    if into.startswith("skill:"):
+        return None, None, into[6:]
+    label = None
+    if "/" in into:
+        label, into = into.split("/", 1)
+        if label not in ("global", "repo"):
+            raise db.LedgerError("--into is R<n>, global/R<n>, repo/R<n> or skill:NAME")
+    if not re.fullmatch(r"R[1-9]\d*", into):
+        raise db.LedgerError("--into is R<n>, global/R<n>, repo/R<n> or skill:NAME")
+    return into, label, None
+
+
+def apply(cwd, issue_id: str, principle: str, *, scope: str = "global", into: str | None = None,
+          new: bool = False, why: str = "", serves: str | None = None, wiki: str | None = None,
           session: str = "", now: datetime | None = None, embedder="auto") -> dict:
     now = now or datetime.now(timezone.utc)
+    emb = _embedder(embedder)
     ss = scopes(cwd)
     if not ss:
         raise CommandError("no wiki with a database in scope")
-    cands = [s for s in ss if wiki in (None, s.label)]
-    home = None
-    row = None
-    for s in cands:
+    if into and new:
+        raise db.LedgerError("--into and --new are two answers to one question: give one")
+    home, row = None, None
+    for s in (x for x in ss if wiki in (None, x.label)):
         c = s.conn()
         try:
             r = db.get_row(c, issue_id)
@@ -832,7 +1078,6 @@ def apply(cwd, issue_id: str, principle: str, *, scope: str = "global", why: str
     try:
         row = db.get_row(hconn, row.id)
         tags = _tags(hconn, row.id)
-        row.tags = sorted(tags)
         if "learned" in tags:
             return {"issue": row.id, "wiki": home.label, "status": "already-learned",
                     "target": tag_of(tags, "generalized-into:")}
@@ -841,47 +1086,42 @@ def apply(cwd, issue_id: str, principle: str, *, scope: str = "global", why: str
         if "meta-learning" in tags and meta_applied_week(hconn, now) >= META_PER_WEEK:
             raise db.LedgerError(f"learning-system corrections are applied at most {META_PER_WEEK} a week: "
                                  f"{row.id} stays recorded and pending until the week turns")
+        rule_id, rule_label, skill_name = _parse_into(into, ss)
         sc = scope.strip()
-        skill_name = None
-        if into and into.startswith("skill:"):
-            skill_name = into[6:]
-        elif sc.startswith("skill:"):
+        if skill_name is None and sc.startswith("skill:"):
             skill_name = sc[6:]
-        elif sc not in ("global", "repo"):
+        elif skill_name is None and sc not in ("global", "repo"):
             raise db.LedgerError("--scope is global (the default), repo (with --why), or skill:NAME")
-        if skill_name is None and sc == "repo":
-            why = " ".join(str(why or "").split())
-            if len(why) < 8:
-                raise db.LedgerError("--scope repo is the exception: say why this holds only in this repo (--why TEXT)")
-        principle = clean_principle(principle)
-        why = clean_principle(why, limit=240) if why else ""
-        serve = resolve_serves(hconn, serves) if home.label == "repo" else (
-            "northstar" if (serves or "").lower() == "northstar" else "none")
-        text = inert(issue_text(row))
-        date = (row.created or db.now_iso(now))[:10]
-        prov = f"{row.id}, {inert(home.key)[:40]}, {date}"
         if skill_name is not None:
-            res = _apply_skill(ss, skill_name, principle, prov, operator_authority(home.root, row))
-            res["scope"] = f"skill:{skill_name}"
+            target = _find_skill(ss, skill_name)
         else:
-            target = next((s for s in ss if s.label == sc), None)
+            want = rule_label or sc
+            target = next((s for s in ss if s.label == want), None)
             if target is None:
-                raise CommandError(f"no {sc} wiki with a database in scope")
-            res = _apply_rule(ss, target, home, row, principle, text, why, serve, into, now, embedder)
-            res["scope"] = sc
-        # the issue is learned, once, with the goal it serves; so are its still-unlearned repeats
+                raise CommandError(f"no {want} wiki with a database in scope")
+        why = " ".join(str(why or "").split())
+        if skill_name is None and target.label == "repo" and len(why) < 8:
+            raise db.LedgerError("--scope repo is the exception: say why this holds only in this repo (--why TEXT)")
+        warnings = ["the principle reads like an instruction or carries a URL or shell fragment: it is stored "
+                    "flattened, and printed only as recalled context"] if _HINT.search(str(principle)) else []
+        principle = clean_principle(principle)
+        why = flatten(why, 240) if why else ""
+        serve = resolve_serves(hconn, serves, home.key, home.label)
+        text = inert(issue_text(row))
+        res = _apply_rule(ss, target, home, row, principle, text, why, serve, rule_id, new, skill_name, now, emb)
+        res["warnings"] = warnings
+        res["scope"] = f"skill:{skill_name}" if skill_name else target.label
         group = [row.id]
-        for r in _unlearned(hconn):
-            if r.id != row.id and tag_of(r.tags, "repeat-of:") == row.id:
-                group.append(r.id)
-        tgt = res["target"] if res["target"].startswith("skill:") else _ref(home, next(
-            s for s in ss if s.label == res["wiki"]), res["target"])
+        for (gid,) in hconn.execute("SELECT t.id FROM tags t WHERE t.tag = ?", (f"repeat-of:{row.id}",)).fetchall():
+            if not _tags(hconn, gid) & {"learned", "dismissed"}:
+                group.append(gid)
+        tgt = _ref(home, target, res["target"])
         stamp = db.now_iso(now)
         for gid in group:
             db.retag(hconn, gid, add=["learned", f"learned-at:{stamp}", f"generalized-into:{tgt}", f"serves:{serve}"])
-        if not res["target"].startswith("skill:") and res["wiki"] == home.label:
-            for gid in group:
+            if target.label == home.label:
                 db.link(hconn, gid, res["target"], "related")
+        _forget_mirrors(ss, home, group)
         res.update(issue=row.id, learned=True, serves=serve, also_learned=group[1:], principle=principle)
         metrics.record(home.root, "learn", session=session, ref=row.id, val=0.0 if serve == "none" else 1.0,
                        data={"serves": serve, "target": tgt}, now=now)
@@ -890,59 +1130,86 @@ def apply(cwd, issue_id: str, principle: str, *, scope: str = "global", why: str
         hconn.close()
 
 
-def _apply_rule(ss, target: Scope, home: Scope, row: db.Row, principle: str, text: str, why: str,
-                serve: str, into: str | None, now: datetime, embedder) -> dict:
-    """File *principle* in *target*'s wiki: merge into the rule that already holds it (evidence
-    appended), else a new principle row; a contradicted rule gets a ``conflicts`` link."""
+def _forget_mirrors(ss: list[Scope], home: Scope, ids: list[str]) -> None:
+    g = next((s for s in ss if s.label == "global"), None)
+    if home.label != "repo" or g is None:
+        return
+    try:
+        with LearnIndex(g.root) as ix:
+            for i in ids:
+                ix._drop(i, home.key)
+            ix.conn.commit()
+    except Exception:
+        pass
+
+
+def _apply_rule(ss, target: Scope, home: Scope, row: db.Row, principle: str, text: str, why: str, serve: str,
+                rule_id: str | None, new: bool, skill_name: str | None, now: datetime, emb) -> dict:
+    """File *principle* in *target*'s wiki: merge into the rule the caller named, or add a new principle
+    when the caller says so. Refuses to guess."""
     conn = target.conn()
     try:
-        rules = {r.id: r for r in db.rows(conn, "R")}
-        chosen, conflicts = None, []
+        rules = {r.id: r for r in db.rows(conn, "R")} if rule_id is None and not new else {}
         pt = tokens(principle)
-
-        def contradicts(rule: db.Row) -> bool:
-            return any(dice(pt, tokens(x)) >= LEX_TOPIC and opposite(principle, x) for x in statements_of(rule))
-
-        if into:
-            if into not in rules:
-                raise db.LedgerError(f"no rule {into!r} in the {target.label} wiki")
-            chosen = rules[into]
-            if contradicts(chosen):
-                raise db.LedgerError(f"the principle contradicts {chosen.id}: drop --into to file it as a new "
-                                     f"principle linked `conflicts`, or edit {chosen.id} yourself")
-        else:
-            entries = [e for e in load_entries([target]) if e.kind == "R"]
-            for n in Index(entries, embedder).nearest(principle, 3, kinds=("R",)):
-                if not (n.merge or n.lex >= LEX_TOPIC):
+        cands = _candidates(ss, target, principle, serve, emb, skill_name)
+        chosen = None
+        if rule_id:
+            chosen = db.get_row(conn, rule_id)
+            if chosen is None or chosen.kind != "R":
+                raise db.LedgerError(f"no rule {rule_id!r} in the {target.label} wiki")
+            if "churn" in _tags(conn, chosen.id):
+                _block(home, row.id)
+                raise db.LedgerError(f"{chosen.id} needs enforcement, not rewording: it was revised {REVISION_LIMIT} "
+                                     "times and is still violated. Ask the operator for a hook or a test; "
+                                     "no fourth revision is filed")
+            if any(dice(pt, tokens(x)) >= LEX_TOPIC and opposite(principle, x) for x in statements_of(chosen)):
+                raise db.LedgerError(f"the principle contradicts {chosen.id}: file it with --new (it is linked "
+                                     f"`conflicts`), or edit {chosen.id} yourself")
+        elif skill_name is not None and not new:
+            # `--into skill:NAME`: the principle belongs to that skill; fold it into the skill's close rule
+            for c in cands:
+                if c["id"].startswith("skill:") or c["churn"]:
                     continue
-                if contradicts(rules[n.entry.id]):
-                    conflicts.append(n.entry.id)
-                elif n.merge:
-                    chosen = rules[n.entry.id]
+                r = db.get_row(conn, c["id"])
+                if r is not None and f"skill:{skill_name}" in _tags(conn, r.id) and \
+                        dice(pt, tokens(r.summary)) >= LEX_MERGE and not any(
+                            opposite(principle, x) for x in statements_of(r)):
+                    chosen = r
                     break
-        if chosen is not None and "churn" in _tags(conn, chosen.id):
-            hc = home.conn()
-            try:
-                db.retag(hc, row.id, add=["blocked"])
-            finally:
-                hc.close()
-            raise db.LedgerError(f"{chosen.id} needs enforcement, not rewording: it was revised {REVISION_LIMIT} "
-                                 "times and is still violated. Ask the operator for a hook or a test; "
-                                 "no fourth revision is filed")
+        elif not new:
+            if cands:
+                raise ChooseError(cands)
+        if chosen is None and (new or skill_name is not None or not cands):
+            churn = [c for c in cands if c["churn"]]
+            if churn and not skill_name:
+                _block(home, row.id)
+                raise ChooseError(cands, f"{churn[0]['wiki']}/{churn[0]['id']} ({churn[0]['summary'][:60]!r}) needs "
+                                         "enforcement, not rewording, and it is a candidate for this principle: "
+                                         "no new principle is filed beside it. Ask the operator for a hook or a "
+                                         "test, or remove it with `shapa row rm`")
+            if len(live_principles(conn)) >= MAX_PRINCIPLES:
+                raise db.LedgerError(f"the {target.label} wiki holds {MAX_PRINCIPLES} principles, the most it keeps: "
+                                     "merge two first (`shapa learn merge SRC DST`) or file this one with --into")
         stamp = db.now_iso(now)
         wiki_key = inert(home.key).replace(" ", "-")[:40] or "repo"
         key = f"{row.id} {wiki_key} {(row.created or stamp)[:10]}"
         entry_line = f"- {key}: {text[:140]}"
+        extra = [f"skill:{skill_name}"] if skill_name else []
         if chosen is None:
+            conflicts = []
+            for r in (rules or {r.id: r for r in db.rows(conn, "R")}).values():
+                if dice(pt, tokens(r.summary)) >= LEX_TOPIC and opposite(principle, r.summary):
+                    conflicts.append(r.id)
             head = [f"Why: {why}"] if why else []
             rid, created = db.add_row(conn, "R", principle, _join_body(head, [entry_line]),
-                                      tags=["principle", f"serves:{serve}", "evidence:1", f"last-seen:{stamp}"],
+                                      tags=["principle", f"serves:{serve}", "evidence:1", f"last-seen:{stamp}"] + extra,
                                       source="learn", now=now)
             if created:
                 for c in conflicts[:3]:
                     db.link(conn, rid, c, "conflicts")
+                _post_write(target, rid, now)
                 return {"action": "created", "target": rid, "wiki": target.label, "conflicts": conflicts[:3]}
-            chosen = db.get_row(conn, rid)   # the identical principle is already stored
+            chosen = db.get_row(conn, rid)          # the identical principle is already stored
         head, ev = _split_body(chosen.body)
         statements = [chosen.summary] + [re.sub(r"^Also:\s*", "", l) for l in head if l.startswith("Also:")]
         if not any(dice(pt, tokens(x)) >= 0.85 for x in statements):
@@ -964,10 +1231,94 @@ def _apply_rule(ss, target: Scope, home: Scope, row: db.Row, principle: str, tex
         if outstanding:
             mapping["revisions:"] = _count(tg, "revisions:") + 1
         _set_tags(conn, chosen.id, mapping, extra=["principle", f"serves:{serve}"])
+        if skill_name and f"skill:{skill_name}" not in tg:
+            db.tag(conn, chosen.id, [f"skill:{skill_name}"])   # files the pending version, once
+        _post_write(target, chosen.id, now)
         return {"action": "merged", "target": chosen.id, "wiki": target.label, "conflicts": [],
                 "revision": outstanding}
     finally:
         conn.close()
+
+
+def _post_write(target: Scope, rid: str, now: datetime) -> None:
+    """Keep the derived index current with a rule just written, and remember this device wrote it."""
+    try:
+        c = target.conn()
+        try:
+            row = db.get_row(c, rid)
+            with LearnIndex(target.root, timeout=5.0) as ix:
+                if row is not None:
+                    ix.upsert_row(row)
+        finally:
+            c.close()
+    except Exception:
+        pass
+    _mark_local(target.root, rid, now)
+
+
+def _block(home: Scope, issue_id: str) -> None:
+    c = home.conn()
+    try:
+        db.retag(c, issue_id, add=["blocked"])
+    finally:
+        c.close()
+
+
+def merge(cwd, src: str, dst: str, wiki: str | None = None) -> dict:
+    """Fold principle *src* into *dst* (same wiki): evidence and counters combined, *src* removed. A
+    churned principle is not merged away (it would shed the mark)."""
+    ss = scopes(cwd)
+    label = wiki
+    if "/" in src:
+        label, src = src.split("/", 1)
+    if "/" in dst:
+        l2, dst = dst.split("/", 1)
+        label = label or l2
+    target = next((s for s in ss if s.label == (label or "global")), None)
+    if target is None:
+        raise CommandError("no such wiki in scope")
+    conn = target.conn()
+    try:
+        a, b = db.get_row(conn, src), db.get_row(conn, dst)
+        if a is None or b is None or a.kind != "R" or b.kind != "R" or src == dst:
+            raise db.LedgerError("merge takes two different rules of one wiki")
+        for r in (a, b):
+            tg = _tags(conn, r.id)
+            if "principle" not in tg:
+                raise db.LedgerError(f"{r.id} is not a principle")
+            if "churn" in tg:
+                raise db.LedgerError(f"{r.id} needs enforcement, not rewording: it cannot be merged to shed that")
+        bh, bev = _split_body(b.body)
+        ah, aev = _split_body(a.body)
+        if dice(tokens(a.summary), tokens(b.summary)) < 0.85:
+            bh.append(f"Also: {a.summary}")
+        bh += [l for l in ah if l.startswith(("Also:", "Why:")) and l not in bh]
+        also = [i for i, l in enumerate(bh) if l.startswith("Also:")]
+        for i in reversed(also[:-ALSO_KEEP]):
+            bh.pop(i)
+        ev = list(dict.fromkeys(bev + aev))[-EVIDENCE_KEEP:]
+        db._merge_into(conn, a.id, b.id)
+        db.update_row(conn, b.id, body=_join_body(bh, ev))
+        _set_tags(conn, b.id, {"evidence:": max(_count(_tags(conn, b.id), "evidence:"), len(ev))})
+        conn.execute("UPDATE OR IGNORE tags SET tag = ? WHERE tag = ?", (f"generalized-into:{b.id}", f"generalized-into:{a.id}"))
+        for s in ss:
+            if s is not target:
+                c2 = s.conn()
+                try:
+                    c2.execute("UPDATE OR IGNORE tags SET tag = ? WHERE tag = ?",
+                               (f"generalized-into:{target.label}:{b.id}", f"generalized-into:{target.label}:{a.id}"))
+                finally:
+                    c2.close()
+        db.delete(conn, [a.id])
+    finally:
+        conn.close()
+    try:
+        with LearnIndex(target.root, timeout=5.0) as ix:
+            ix.drop(src)
+    except Exception:
+        pass
+    _post_write(target, dst, datetime.now(timezone.utc))
+    return {"merged": src, "into": dst, "wiki": target.label}
 
 
 def principles(cwd=None) -> list[dict]:
@@ -979,20 +1330,20 @@ def principles(cwd=None) -> list[dict]:
         conn = s.conn()
         try:
             served = {}
-            lc = metrics._events_conn(s.root, create=False)
+            lc = metrics.open_local(s.root, create=False)
             if lc is not None:
                 try:
                     served = {r[0]: (r[1], r[2]) for r in lc.execute("SELECT id, n, last FROM p_served")}
                 finally:
                     lc.close()
-            for rid, in conn.execute("SELECT id FROM tags WHERE tag = 'principle'").fetchall():
+            for rid in live_principles(conn):
                 r = db.get_row(conn, rid)
-                if r is None or r.kind != "R":
+                if r is None:
                     continue
                 tg = set(r.tags)
                 head, ev = _split_body(r.body)
                 out.append({
-                    "id": r.id, "wiki": s.label, "summary": r.summary,
+                    "id": r.id, "wiki": s.label, "summary": flatten(r.summary),
                     "why": next((l[5:].strip() for l in head if l.startswith("Why:")), ""),
                     "evidence": _count(tg, "evidence:"), "sources": [e.lstrip("- ") for e in ev],
                     "violations": _count(tg, "violations:"), "revisions": _count(tg, "revisions:"),
@@ -1005,53 +1356,77 @@ def principles(cwd=None) -> list[dict]:
 
 
 def dismiss(cwd, issue_id: str, wiki: str | None = None) -> dict:
-    for s in scopes(cwd):
+    """A correction that implies no principle. A soft candidate is removed outright (it teaches nothing
+    and is never measured); a strong one is kept, tagged ``dismissed``."""
+    ss = scopes(cwd)
+    for s in ss:
         if wiki not in (None, s.label):
             continue
         conn = s.conn()
         try:
             r = db.get_row(conn, issue_id)
-            if r is not None and r.kind == "I":
+            if r is None or r.kind != "I":
+                continue
+            soft = "soft" in _tags(conn, r.id)
+            if soft:
+                db.delete(conn, [r.id])
+            else:
                 db.retag(conn, r.id, add=["dismissed"])
-                return {"issue": r.id, "wiki": s.label, "status": "dismissed"}
         finally:
             conn.close()
+        _forget_mirrors(ss, s, [issue_id])
+        try:
+            with LearnIndex(s.root, timeout=5.0) as ix:
+                if soft:
+                    ix.drop(issue_id)
+        except Exception:
+            pass
+        return {"issue": issue_id, "wiki": s.label, "status": "removed" if soft else "dismissed"}
     raise CommandError(f"no issue {issue_id!r} in scope")
 
 
 # --- 3. session start -----------------------------------------------------------------------------------
 
 def principle_candidates(conn, label: str, root) -> list[dict]:
-    """The wiki's live principles (not the churned ones), cheap: tags and summaries only."""
-    out, tags = [], {}
-    for rid, t in conn.execute("SELECT id, tag FROM tags WHERE id IN (SELECT id FROM tags WHERE tag = 'principle')"):
-        tags.setdefault(rid, set()).add(t)
-    for rid, tg in tags.items():
-        r = conn.execute("SELECT summary FROM mri WHERE id = ? AND kind = 'R'", (rid,)).fetchone()
-        if r is None or "churn" in tg:
+    """The wiki's live principles (not the churned ones): tags and summaries only. The counters in their
+    tags count for ranking only on a principle this device wrote itself."""
+    mine = local_principles(root)
+    out = []
+    for rid in live_principles(conn):
+        tg = _tags(conn, rid)
+        if "churn" in tg:
             continue
-        out.append({"id": rid, "wiki": label, "root": str(root), "text": r[0],
-                    "violations": _count(tg, "violations:"), "evidence": _count(tg, "evidence:"),
-                    "serves": tag_of(tg, "serves:") or "none"})
+        r = conn.execute("SELECT summary FROM mri WHERE id = ?", (rid,)).fetchone()
+        local = rid in mine
+        out.append({"id": rid, "wiki": label, "root": str(root), "text": r[0], "local": local,
+                    "violations": _count(tg, "violations:") if local else 0,
+                    "evidence": _count(tg, "evidence:") if local else 0,
+                    "serves": (tag_of(tg, "serves:") or "none") if local else "none"})
     return out
 
 
-def rank_principles(cands: list[dict], fire_text: str, fire_ids: set, k: int = PRINCIPLES_SHOWN) -> list[dict]:
+def rank_principles(cands: list[dict], fire_text: str, fire_keys: set, k: int = PRINCIPLES_SHOWN) -> list[dict]:
     ft = tokens(fire_text)
     scored = []
     for c in cands:
         pt = tokens(c["text"])
         overlap = len(pt & ft) / max(1, len(pt))
         score = 4 * overlap + min(c["violations"], 3) + 0.3 * min(c["evidence"], 5) \
-            + (1.0 if c["serves"] in fire_ids or c["serves"] == "northstar" else 0.0)
+            + (1.0 if c["serves"] in fire_keys or c["serves"] == "northstar" else 0.0)
         if score > 0:
             scored.append((-score, c["wiki"] != "repo", c["id"], c))
     return [c for *_, c in sorted(scored, key=lambda x: x[:3])[:k]]
 
 
+def principle_line(c: dict) -> str:
+    """One principle as session start prints it: masked, capped, labelled as recalled context."""
+    return (f"[{c['wiki']} {c['id']}] {flatten(c['text'], 160)}"
+            + (f" (violated {c['violations']}x)" if c["violations"] else ""))
+
+
 def drift(conn, root, now: datetime | None = None, churn: list | None = None) -> list[str]:
     """Why the work may be off its goal (empty when fine): jobs closing outside every fire, a stalled
-    fire, a principle that needs enforcement."""
+    fire, a principle that needs enforcement, latency rising with the data."""
     from shapa import focus
 
     now = now or datetime.now(timezone.utc)
@@ -1059,13 +1434,12 @@ def drift(conn, root, now: datetime | None = None, churn: list | None = None) ->
     try:
         f = focus.load(conn)
         if any(x and x.feature for x in f.fires):
-            recs = metrics.work_records(conn, root)
             cut = db.now_iso(now - timedelta(days=DRIFT_DAYS))
-            closed = [r for r in recs.values() if r["kind"] == "J" and r["closed"] and r["closed"] >= cut]
+            closed = metrics.closed_jobs_since(conn, root, cut)
             off = [r for r in closed if not r["fire"]]
             if len(closed) >= DRIFT_MIN_JOBS and len(off) / len(closed) > DRIFT_OFF_SHARE:
                 out.append(f"drift: {len(off)} of {len(closed)} jobs closed in {DRIFT_DAYS} days sat outside every fire")
-            stalled = metrics.stalled_fires(conn, recs, now)
+            stalled = metrics.stalled_fires(conn, root, now)
             if stalled:
                 out.append(f"drift: fire {', '.join(stalled)} has had no job closed in {metrics.STALL_DAYS} days")
         sc = metrics.latency_scale(root, now)
@@ -1078,20 +1452,37 @@ def drift(conn, root, now: datetime | None = None, churn: list | None = None) ->
     return out
 
 
+def reindex(cwd=None) -> int:
+    """Catch the derived index up with every wiki in scope (the sweep calls this)."""
+    n = 0
+    for s in scopes(cwd):
+        conn = s.conn()
+        try:
+            with LearnIndex(s.root, timeout=5.0) as ix:
+                ix.sync(conn)
+                n += 1
+        finally:
+            conn.close()
+    return n
+
+
 # --- the CLI ---------------------------------------------------------------------------------------------
 
 def _print_pending(res: dict) -> None:
-    if not res["pending"] and not res["churn"]:
+    if not res["pending"] and not res["churn"] and not res["awaiting_activation"]:
         print("no corrections await learning")
         return
+    print(f"{res['count']} correction{'' if res['count'] == 1 else 's'} await learning")
     for i in res["pending"]:
-        flags = [x for x in ("repeat", "violation", "meta", "capped", "blocked") if i.get(x)]
+        flags = [x for x in ("soft", "repeat", "violation", "meta", "capped", "blocked") if i.get(x)]
         also = f" (+{len(i['also'])} repeats: {', '.join(i['also'])})" if i["also"] else ""
         print(f"{i['id']} [{i['wiki']}/{i['key']}] {i['summary']}{also}" + (f"  <{', '.join(flags)}>" if flags else ""))
         for n in i["nearest"][:3]:
             print(f"    near {n['ref']} ({n['kind']}, {n['score']:.2f}{', merge' if n['merge'] else ''}): {n['text'][:90]}")
     for c in res["churn"]:
         print(f"{c['wiki']}/{c['id']} {c['summary']}  <{c['note']}; revised {c['revisions']}x, violated {c['violations']}x>")
+    for a in res["awaiting_activation"]:
+        print(f"skill {a['skill']} v{a['version']} awaits activation (`shapa skill activate`): {a['lesson']}")
 
 
 def run_learn(argv: list[str]) -> int:
@@ -1108,16 +1499,22 @@ def run_learn(argv: list[str]) -> int:
     ap.add_argument("--principle", required=True)
     ap.add_argument("--scope", default="global", help="global (default), repo (needs --why) or skill:NAME")
     ap.add_argument("--why", default="")
-    ap.add_argument("--into", default=None, help="merge into this rule (R<n>) or skill:NAME")
-    ap.add_argument("--serves", default=None, help="F<n> or northstar (default: the claimed fire)")
+    ap.add_argument("--into", default=None, help="merge into this rule (R<n>, global/R<n>, repo/R<n>) or skill:NAME")
+    ap.add_argument("--new", action="store_true", help="no listed candidate covers it")
+    ap.add_argument("--serves", default=None, help="<wiki key>/F<n> or northstar (default: the claimed fire)")
     ap.add_argument("--wiki", choices=["repo", "global"], default=None, help="the wiki holding the issue")
     ap.add_argument("--session", default="")
     ap.add_argument("--json", action="store_true")
     di = add("dismiss", help="a correction that implies no general principle")
     di.add_argument("issue")
     di.add_argument("--wiki", choices=["repo", "global"], default=None)
+    mg = add("merge", help="fold principle SRC into DST (evidence combined)")
+    mg.add_argument("src")
+    mg.add_argument("dst")
+    mg.add_argument("--wiki", choices=["repo", "global"], default=None)
     pr = add("principles", help="the principles, with their evidence, violations and serves")
     pr.add_argument("--json", action="store_true")
+    add("reindex", help="catch the derived similarity index up")
     args = p.parse_args(argv)
     if args.cmd == "principles":
         res = principles(args.cwd)
@@ -1129,8 +1526,14 @@ def run_learn(argv: list[str]) -> int:
                   f"{', CHURN' if x['churn'] else ''}>")
         return 0
     if args.cmd == "apply":
-        res = apply(args.cwd, args.issue, args.principle, scope=args.scope, why=args.why, into=args.into,
-                    serves=args.serves, wiki=args.wiki, session=args.session)
+        try:
+            res = apply(args.cwd, args.issue, args.principle, scope=args.scope, why=args.why, into=args.into,
+                        new=args.new, serves=args.serves, wiki=args.wiki, session=args.session)
+        except ChooseError as exc:
+            if args.json:
+                print(json.dumps({"error": "choose", "candidates": exc.candidates, "message": str(exc)}, sort_keys=True))
+                return 2
+            raise
         if args.json:
             print(json.dumps(res, sort_keys=True))
         elif res.get("status") == "already-learned":
@@ -1141,10 +1544,17 @@ def run_learn(argv: list[str]) -> int:
         return 0
     if args.cmd == "dismiss":
         res = dismiss(args.cwd, args.issue, args.wiki)
-        print(f"{res['issue']} dismissed")
+        print(f"{res['issue']} {res['status']}")
+        return 0
+    if args.cmd == "merge":
+        res = merge(args.cwd, args.src, args.dst, args.wiki)
+        print(f"{res['merged']} merged into {res['into']} [{res['wiki']}]")
+        return 0
+    if args.cmd == "reindex":
+        print(f"indexed {reindex(args.cwd)} wiki(s)")
         return 0
     res = pending(args.cwd, session=args.session, limit=max(1, args.limit))
-    if args.cmd in (None, "pending") and getattr(args, "json", False):
+    if getattr(args, "json", False):
         print(json.dumps(res, sort_keys=True))
     else:
         _print_pending(res)
@@ -1152,7 +1562,16 @@ def run_learn(argv: list[str]) -> int:
 
 
 def main(argv: list[str] | None = None) -> None:
-    run(run_learn, list(sys.argv[1:] if argv is None else argv))
+    argv = list(sys.argv[1:] if argv is None else argv)
+    try:
+        code = run_learn(argv)
+    except (CommandError, db.LedgerError) as exc:
+        print(f"shapa: {exc}", file=sys.stderr)
+        code = 2
+    except sqlite3.Error as exc:
+        print(f"shapa: the database is locked or unreadable ({type(exc).__name__}); try again", file=sys.stderr)
+        code = 1
+    sys.exit(code)
 
 
 if __name__ == "__main__":

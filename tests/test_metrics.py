@@ -334,3 +334,27 @@ def test_latency_growing_faster_than_the_data_is_flagged_and_slower_is_not(wikis
     assert metrics.latency_scale(wikis.wiki, at(14))["flag"] is True       # 5x slower on 10% more data
     _snapshots(wikis.wiki, [(1000, 40.0)] * 7 + [(5000, 100.0)] * 7)
     assert metrics.latency_scale(wikis.wiki, at(14))["flag"] is False      # 2.5x slower on 5x the data
+
+
+# --- the snapshot table is bounded ------------------------------------------------------------------------------------------
+
+def test_daily_snapshots_are_kept_for_at_most_400_days_and_a_year_costs_a_stated_amount(wikis):
+    assert metrics.SNAPSHOT_DAYS == 400
+    key = metrics.repo_key(wikis.wiki)
+    data = json.loads(json.dumps(metrics._empty()))
+    for day in range(450):
+        metrics._write_snapshot(wikis.wiki, at(day).strftime("%Y-%m-%d"), key, data)
+    out = metrics.prune(wikis.wiki, now=at(449))
+    days = {d for d, _, _ in metrics.snapshot_rows(wikis.wiki)}
+    assert len(days) == metrics.SNAPSHOT_DAYS + 1 and out["snapshots_dropped"] >= 49
+    assert at(449).strftime("%Y-%m-%d") in days and at(0).strftime("%Y-%m-%d") not in days
+    # what a year costs: one row a day in the repo wiki (and one in the global wiki's roll-up), at this size
+    conn = wikis.conn()
+    try:
+        size = conn.execute("SELECT COALESCE(SUM(LENGTH(day) + LENGTH(repo) + LENGTH(data)), 0) FROM metrics_daily "
+                            "WHERE day >= ?", (at(449 - 364).strftime("%Y-%m-%d"),)).fetchone()[0]
+    finally:
+        conn.close()
+    per_row = size / 365
+    print(f"a year of daily snapshots: 365 rows, {size} bytes ({per_row:.0f} bytes a row)")
+    assert per_row < 4096 and size < 1_500_000      # a populated row is about a kilobyte; a year is about a megabyte at most

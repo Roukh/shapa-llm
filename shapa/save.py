@@ -90,6 +90,10 @@ def save_row(root, scope: str, note_type: str, summary: str, body: str, tags, al
     document obeys the lean gate: one per *project* (see :func:`db.add_doc`)."""
     from shapa import db
 
+    try:
+        db.check_row_tags(tags)
+    except db.LedgerError as exc:
+        return {"error": str(exc)}
     conn = db.connect(root)
     created, merged = True, False
     try:

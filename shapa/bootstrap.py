@@ -292,8 +292,10 @@ def build_focused(wiki_roots: list[WikiRoot], budget: int = DEFAULT_BUDGET) -> s
     fire_text: list[str] = []
     fire_ids: set = set()
     awaiting = 0
+    activation = 0
     drift_lines: list[str] = []
     churn_ids: list[str] = []
+    home_conn_root = None
     ordered = sorted((wr for wr in wiki_roots if wr.kind in ("global", "repo")),
                      key=lambda wr: wr.kind != "global")  # the global northstar leads
     for wr in ordered:
@@ -309,9 +311,11 @@ def build_focused(wiki_roots: list[WikiRoot], budget: int = DEFAULT_BUDGET) -> s
             f = focus.load(conn)
             try:  # learning: pending corrections, principles, drift (each its own line; never blocks)
                 awaiting += learn.awaiting_count(conn)
+                activation += len(learn.awaiting_activation(conn=conn))
                 pool.extend(learn.principle_candidates(conn, wr.kind, wr.path))
                 churn_ids += [f"{wr.kind}/{r[0]}" for r in conn.execute("SELECT id FROM tags WHERE tag = 'churn'")]
                 if wr.kind == "repo":
+                    home_conn_root = wr.path
                     drift_lines += learn.drift(conn, wr.path)
             except Exception:
                 pass
@@ -331,7 +335,7 @@ def build_focused(wiki_roots: list[WikiRoot], budget: int = DEFAULT_BUDGET) -> s
                     continue  # closed behind our back: `shapa focus` heals it
                 fire_text.append(" ".join([t.title, *(j.title for j in t.jobs)]))
                 if t.feature:
-                    fire_ids.add(t.feature)
+                    fire_ids.add(f"{metrics.repo_key(wr.path)}/{t.feature}")
                 head = f"{i}. " + (f"{t.feature} " if t.feature else "") + _clip(t.title, 160)
                 if t.status == "claimed":
                     head += " (claimed)"
@@ -378,9 +382,13 @@ def build_focused(wiki_roots: list[WikiRoot], budget: int = DEFAULT_BUDGET) -> s
                 graph.close()
             conn.close()
     learn_lines: list[str] = []
-    if awaiting:
-        learn_lines.append(f"{awaiting} correction{' awaits' if awaiting == 1 else 's await'} learning: "
-                           "shapa learn pending")
+    if awaiting or activation:
+        parts = []
+        if awaiting:
+            parts.append(f"{awaiting} correction{' awaits' if awaiting == 1 else 's await'} learning")
+        if activation:
+            parts.append(f"{activation} skill version{' awaits' if activation == 1 else 's await'} activation")
+        learn_lines.append(", ".join(parts) + ": shapa learn pending")
     if churn_ids:
         drift_lines.append(f"drift: principle {churn_ids[0]} needs enforcement, not rewording "
                            "(shapa learn pending)")
@@ -388,8 +396,9 @@ def build_focused(wiki_roots: list[WikiRoot], budget: int = DEFAULT_BUDGET) -> s
         learn_lines.append(drift_lines[0] + (f" (+{len(drift_lines) - 1} more: shapa metrics)"
                                              if len(drift_lines) > 1 else ""))
     shown_principles = learn.rank_principles(pool, " ".join(fire_text), fire_ids)
-    prin_lines = [f"learned [{p['wiki']} {p['id']}]: {_clip(p['text'], 160)}"
-                  + (f" (violated {p['violations']}x)" if p["violations"] else "") for p in shown_principles]
+    prin_lines = [learn.principle_line(p) for p in shown_principles]
+    if prin_lines:  # the heading travels with the first line: one block, never an orphan heading
+        prin_lines[0] = f"{learn.HEAD_NOTE}:\n{prin_lines[0]}"
     if not (norths or groups or hints or directive or pointers or learn_lines or prin_lines):
         return ""
     head = (["<shapa-action>", *directive, "</shapa-action>"] if directive else [])
@@ -436,7 +445,7 @@ def build_focused(wiki_roots: list[WikiRoot], budget: int = DEFAULT_BUDGET) -> s
             if left:
                 lines.append(f"   … {left} more not shown (shapa focus, or a bigger --budget)")
     for k, line in enumerate(prin_lines):
-        if (LEVEL_NAMES, 9, k) in keep:
+        if (LEVEL_NAMES, 9, k) in keep and (LEVEL_NAMES, 9, 0) in keep:
             lines.append(line)
             _SERVED.append((shown_principles[k]["root"], shown_principles[k]["id"]))
     for k, line in enumerate(hints + pointers):
@@ -641,6 +650,7 @@ def main(argv: list[str] | None = None) -> None:
             metrics.record(home, "session", session=session)
             for root, rid in dict.fromkeys(_SERVED):
                 learn.mark_served(root, [rid])
+            metrics.auto_snapshot(home)  # the first session of the day, when it costs under 50 ms
     except Exception:
         pass
     sys.exit(0)

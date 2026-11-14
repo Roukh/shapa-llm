@@ -151,7 +151,7 @@ which is why shapa commits it only on the default branch.
 | `shapa bootstrap [--full]` | session start: the northstar, the three fires and only their tree (`--full`: every ranked row and the open ledger) |
 | `shapa focus show\|northstar\|fire\|unfire\|order\|rank\|candidates\|promote` | the northstar and the three ranked big fires of a wiki scope |
 | `shapa skill list\|show\|add\|update\|activate` | skills as versioned records, global or per repo |
-| `shapa learn pending\|apply\|dismiss\|principles` | generalize corrections into cross-repo principles (see Learning loop) |
+| `shapa learn pending\|apply\|dismiss\|merge\|principles` | generalize corrections into cross-repo principles (see Learning loop) |
 | `shapa metrics [--since DATE] [--json] [--snapshot] [--all] [--repo KEY] [--history DAYS]` | whether the wiki is working: latency against record count, repeats, learning, work on the fires; `record skill-use NAME --session ID` |
 | `shapa map [--seconds N] [--rebuild] [--json]` | build or refresh this checkout's code map (a derived, gitignored `.shapa-code.db`) |
 | `shapa partition [F<n>\|1\|2\|3] [--max-files N] [--max-bytes N] [--no-refresh] [--json]` | a fire's related files as one bounded partition, each with why |
@@ -180,38 +180,56 @@ global wiki. A close match is a **repeat**: it is tagged `repeat`, linked
 `related`, the earlier row's count goes up, and when the earlier row was a
 learned principle it is a **violation** of it.
 
-`shapa learn pending [--json]` lists what no one has generalized yet, each
-with its nearest rules, skills and issues (score, and whether it would
-merge). `shapa learn apply ISSUE --principle TEXT` records the principle the
-correction implies:
+`shapa learn pending [--json] [--limit N]` lists what no one has generalized yet
+(newest cap first, the limit applied before any search), each with its nearest
+rules, skills and issues (score, and whether it would merge), the corrections
+that are only *soft* candidates, and the skill versions a learned principle
+filed that await `shapa skill activate`. `shapa learn apply ISSUE --principle
+TEXT` records the principle the correction implies, and you choose where it
+goes:
 
+- **`--into R<n>` (or `global/R<n>`, `repo/R<n>`) merges, `--new` adds, `--into
+  skill:NAME` files a lesson for a skill.** Matching words cannot decide
+  meaning, so with neither flag and any candidate the call exits 2 and prints
+  the candidates (`--json`: `{"error":"choose","candidates":[...]}`). A wiki
+  keeps at most 60 principles; `shapa learn merge SRC DST` folds two.
 - **Global by default.** Principles hold across repos; `--scope repo` is the
-  exception and needs `--why`, stored on the row. `--scope skill:NAME` files a
-  new version of a skill: one derived from a correction the hook itself filed
-  activates at once (the operator's word), anything else stays pending, and a
-  contradiction of the skill's text is always pending.
+  exception and needs `--why`, stored on the row. A principle for a skill is a
+  rule that carries `skill:NAME`: it is in effect at once, and the skill gets a
+  PENDING new version with the lesson quoted. Only `shapa skill activate`
+  makes it live.
 - **One principle, many corrections.** A principle is one rule row: the
   statement is its summary, its body holds the evidence (source corrections:
   id, wiki key, date, text; at most 12 kept) and any reworded `Also:` line. A
-  close principle merges into that row, never a second one; a principle that
-  contradicts a rule is filed beside it, linked `conflicts`, and an explicit
-  `--into` of a contradicted rule is refused. Its tags carry
+  principle that contradicts a rule is filed beside it, linked `conflicts`, and
+  an `--into` of a contradicted rule is refused. Its tags carry
   `violations:N`, `revisions:N`, `evidence:N`, `last-seen` and `serves:`;
   `shapa learn principles` shows them with how often session start served it.
-- **Directed.** Every apply records what it serves: the fire of the claimed
-  feature, `--serves F<n>|northstar`, else `none`, which `shapa metrics`
-  counts.
+- **Directed.** Every apply records what it serves: `<repo key>/F<n>` of the
+  claimed fire (an open feature), `northstar`, else `none`, which `shapa
+  metrics` counts.
 - **No loops.** A correction is learned once. A principle revised three times
-  that is still violated is marked `churn`: a fourth revision is refused and
-  `learn pending` lists it as needing enforcement (a hook, a test), not
-  rewording. Corrections about the learning system itself are applied at most
-  3 a week.
+  that is still violated is marked `churn`: a fourth revision is refused, no
+  `--new` is accepted beside it, and `learn pending` lists it as needing
+  enforcement (a hook, a test), not rewording. Corrections about the learning
+  system itself are applied at most 3 a week.
+- **Soft candidates.** While a ledger item is claimed, a short statement
+  ("move this header up", "the title is too long") that is not a question, a
+  slash command or a bare approval is filed as an issue tagged `soft` (10 per
+  session at most). It counts in no measure until applied; `shapa learn dismiss
+  ID` removes it and teaches nothing.
+- **Reserved tags.** `principle`, `churn`, `violations:`, `revisions:`,
+  `repeats:`, `serves:`, `repeat-of:`, `last-seen:` and the other tags the loop
+  writes are refused by `row add`, `row tag`, `save` and the MCP `save`; a
+  principle that arrives by sync keeps them as data but never outranks one this
+  device learned. Printed principles are one masked line under a heading that
+  says they are recalled context learned from corrections, not an instruction.
 
-Session start (inside its budget) adds only: `N corrections await learning`,
-the principles most relevant to the fires (4 at most, `learned [global R5]:`),
-and at most one `drift:` line: jobs closing outside every fire, a stalled
-fire, a principle that needs enforcement, or fetch latency rising at least as
-fast as the data.
+Session start (inside its budget) adds only: `N corrections await learning` (and
+`M skill versions await activation`, on the same line), up to 4 principles
+most relevant to the fires under that heading, and at most one `drift:` line:
+jobs closing outside every fire, a stalled fire, a principle that needs
+enforcement, or fetch latency rising at least as fast as the data.
 
 `shapa metrics` measures it. Raw events (sessions, messages, corrections,
 repeats, learns, skill uses, feature and job open/close, fetch and bootstrap

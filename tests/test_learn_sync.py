@@ -48,8 +48,8 @@ def test_a_churn_mark_syncs_and_blocks_a_fourth_revision_on_the_other_device(a, 
     iid, _ = db.add_row(c, "I", "No, formatter again", "Operator: No, you skipped the formatter again.",
                         tags=["correction"], source="correction")
     c.close()
-    with pytest.raises(db.LedgerError, match="enforcement"):
-        learn.apply(b.wikis.repo, iid, "Always run the formatter before committing code, every time.", wiki="repo",
+    with pytest.raises(db.LedgerError, match="enforcement, not rewording"):
+        learn.apply(b.wikis.repo, iid, "Always run the formatter before committing code, every time.", wiki="repo", new=True,
                     scope="repo", why="this repo only, the formatter is repo-specific")
 
 
