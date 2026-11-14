@@ -149,7 +149,16 @@ CREATE TABLE IF NOT EXISTS uids (
     uid TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS uids_uid ON uids(uid);
+CREATE TABLE IF NOT EXISTS metrics_daily (
+    day TEXT NOT NULL,
+    repo TEXT NOT NULL,
+    data TEXT NOT NULL,
+    PRIMARY KEY (day, repo)
+) WITHOUT ROWID;
 """
+#: ``metrics_daily`` (``shapa metrics --snapshot``): one small JSON row per day and repo, kept
+#: when the raw events behind it are dropped; the global wiki's also holds the ``*`` roll-up.
+#: Local to the committed file: the hosted sync never reads or writes it.
 #: A record's identity is its uid, kept in the ``uids`` side table (id -> uid)
 #: and not as a column of ``items``/``mri``: an older shapa builds its
 #: dataclasses from ``SELECT *`` and would fail on an extra column.
@@ -276,6 +285,7 @@ def connect(root, *, create: bool = False) -> sqlite3.Connection | None:
 
 def _is_current(conn: sqlite3.Connection) -> bool:
     return (_has_table(conn, "docs") and _has_table(conn, "tombstones") and _has_table(conn, "uids")
+            and _has_table(conn, "metrics_daily")
             and any(r[1] == "uid" for r in conn.execute("PRAGMA table_info(tombstones)")))
 
 

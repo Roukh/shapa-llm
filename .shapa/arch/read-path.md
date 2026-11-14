@@ -44,6 +44,7 @@ never blocks.
 
 ## Invariants
 
+- The focused session start adds only the learning loop's own three kinds of line, none outside the budget but the first: `N corrections await learning: shapa learn pending` (one SQL count per wiki, never a similarity pass), up to 4 principles (`learned [global R5]: text`, optional lines: ranked by overlap with the fires' words, violations, evidence and the goal they serve; a churned principle is not served), and at most one `drift:` line (off-fire share of jobs closed in 14 days above 50%, a stalled fire, a churned principle, or fetch latency up at least 1.5x and at least as fast as the record count). Served principles are counted per device by the hook entry only, after the output is printed; `build_context` writes nothing. Fetch and bootstrap record their latency the same way.
 - Tier 1 (bootstrap) loads metadata only (`id/type/summary/tags/consequence/locus`), never a body. By default it loads no row at all: only the focus record and the fires' tree, each text one masked line (a record cannot add a heading, a wrapper tag or a line). A fire on a closed feature is skipped. No skill body ever reaches it. Measured on a fixture of 12 features, 80 jobs and 140 rows: 8546 bytes with `--full`, 1763 by default.
 - Focus records and skill versions are documents but are left out of the derived recall index (`db.doc_rows`).
 - Tier 2 (fetch) is summary-only, snippet-capped and budget-capped; a confidence floor drops below-floor results rather than padding to a fixed `k`.

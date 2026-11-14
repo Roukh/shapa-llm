@@ -141,6 +141,11 @@ def load(conn: sqlite3.Connection) -> Focus:
 
 def save(conn: sqlite3.Connection, f: Focus) -> Focus:
     f.fires = (list(f.fires) + [None] * MAX_FIRES)[:MAX_FIRES]
+    for fire in f.fires:  # a feature that was ever a fire keeps the tag: metrics read it after it closes
+        if fire is not None and fire.feature and conn.execute(
+                "SELECT 1 FROM tags WHERE id = ? AND tag = 'fire'", (fire.feature,)).fetchone() is None \
+                and db.get_item(conn, fire.feature) is not None:
+            db.retag(conn, fire.feature, add=["fire"])
     body = _dump(f)
     d = db.get_doc(conn, ALIAS)
     if d is None:

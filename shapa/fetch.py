@@ -27,6 +27,7 @@ import argparse
 import json
 import re
 import sys
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -1117,10 +1118,12 @@ def main(argv: list[str] | None = None) -> None:
         except (json.JSONDecodeError, ValueError):
             query = ""
 
+    t0 = time.perf_counter()
     try:
         block = fetch_context(query, root=args.root, k=args.k, record=not args.no_record)
     except Exception:
         block = ""  # never block the prompt
+    elapsed_ms = (time.perf_counter() - t0) * 1000
 
     try:
         seen = config.wiki_roots() if args.root is None else [config.resolve(args.root)]
@@ -1129,7 +1132,14 @@ def main(argv: list[str] | None = None) -> None:
         pass  # bookkeeping only; never block the prompt
 
     if block:
-        print(block)
+        print(block, flush=True)
+    if not args.no_record:
+        try:  # latency of the read path itself (interpreter start excluded), kept per device
+            from shapa import metrics
+
+            metrics.record_latency(args.root, "fetch", elapsed_ms)
+        except Exception:
+            pass
     sys.exit(0)
 
 

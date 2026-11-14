@@ -398,9 +398,22 @@ def run_sweep(root: Path, *, keep_closed_since: str | None = None) -> db.SweepRe
         uses = None  # no stale-memory step on a synced wiki
     conn = _connect(root)
     try:
-        return db.sweep(conn, vectors=vectors, uses=uses, keep_closed_since=keep_closed_since)
+        try:
+            from shapa import metrics
+
+            metrics.harvest(conn, root)  # the sweep deletes closed items: archive them as events first
+        except Exception:
+            pass
+        report = db.sweep(conn, vectors=vectors, uses=uses, keep_closed_since=keep_closed_since)
     finally:
         conn.close()
+    try:
+        from shapa import metrics
+
+        metrics.prune(root)  # raw events past their window are folded into snapshots, then dropped
+    except Exception:
+        pass
+    return report
 
 
 def remove_temp(root: Path, feature: str) -> bool:
@@ -752,6 +765,9 @@ def row_main(argv: list[str]) -> int:
                 conn.close()
         return 0
     if cmd == "add":
+        if args.source.split(":")[0] in ("correction", "learn"):
+            raise CommandError("the sources `correction` and `learn` are the engine's own: the hook and "
+                               "`shapa learn` file those rows")
         root = scoped_root(args.scope, args.cwd)
         conn = _connect(root, create=True)
         try:
@@ -806,19 +822,24 @@ def is_correction(text: str) -> bool:
 
 
 def record_correction(prompt: str, *, cwd=None, session: str = "",
-                      transcript_path: str | None = None, now: datetime | None = None
-                      ) -> tuple[Path, str] | None:
+                      transcript_path: str | None = None, now: datetime | None = None,
+                      hook: bool = True, info: dict | None = None) -> tuple[Path, str] | None:
     """Write an issue row for an operator correction. ``None`` when *prompt*
     is not a correction, is text the harness wrote (an agent's hand-back, a
     task notice, command output: capture skips the same turns), or no wiki in
-    scope has a database."""
+    scope has a database. *hook* is false for a manual ``--text`` filing, which
+    carries no operator authority (its source is ``correction:manual``). *info*
+    receives what :func:`shapa.learn.on_correction` found (a repeat, a violation)."""
     from shapa import capture
 
     text = capture._clean_user_text(prompt or "")
-    if not capture._is_operator_text(text) or not is_correction(text):
+    if not capture._is_operator_text(text):
         return None
     root = default_root_for_hook(cwd)
     if root is None:
+        return None
+    _note_prompt(root, session, text, now)
+    if not is_correction(text):
         return None
     conn = db.connect(root)
     if conn is None:
@@ -830,11 +851,30 @@ def record_correction(prompt: str, *, cwd=None, session: str = "",
         if before:
             body += f"\nAgent before: {before}"
         first = re.split(r"(?<=[.!?])\s+", text.strip(), maxsplit=1)[0]
-        rid, _ = db.add_row(conn, "I", first, body, tags=["correction"], about=claimed,
-                            source="correction", session=(session or "")[:8], now=now)
+        rid, created = db.add_row(conn, "I", first, body, tags=["correction"], about=claimed,
+                                  source="correction" if hook else "correction:manual",
+                                  session=(session or "")[:8], now=now)
     finally:
         conn.close()
+    try:
+        from shapa import learn
+
+        found = learn.on_correction(root, rid, created, session=session, hook=hook, now=now)
+        if info is not None:
+            info.update(found)
+    except Exception:
+        pass  # learning never blocks a correction from being recorded
     return root, rid
+
+
+def _note_prompt(root, session: str, text: str, now) -> None:
+    """One operator message's frustration signal, kept per device (never the text)."""
+    try:
+        from shapa import metrics
+
+        metrics.record_prompt(root, session, text, now=now)
+    except Exception:
+        pass
 
 
 def correction_main(argv: list[str]) -> int:
@@ -848,15 +888,24 @@ def correction_main(argv: list[str]) -> int:
         print("correction" if is_correction(args.text) else "not a correction")
         return 0
     data = {"prompt": args.text} if args.text is not None else _read_hook_stdin()
+    found: dict = {}
     try:
         hit = record_correction(str(data.get("prompt") or ""), cwd=data.get("cwd"),
                                 session=str(data.get("session_id") or ""),
-                                transcript_path=data.get("transcript_path"))
+                                transcript_path=data.get("transcript_path"),
+                                hook=args.text is None, info=found)
     except Exception:
         hit = None
     if hit is not None:
         root, rid = hit
-        print(f"shapa: logged this correction as issue {rid} ({root})")
+        line = f"shapa: logged this correction as issue {rid} ({root})"
+        if found.get("repeat"):
+            line += (f"; a REPEAT of {found.get('of')} (seen {max(found.get('count') or 1, 2)} times)"
+                     + (f", and {found['violation']} is a principle already learned: it did not hold"
+                        if found.get("violation") else "")
+                     + ("; it was revised without effect and needs enforcement, not rewording"
+                        if found.get("churn") else ""))
+        print(line)
     return 0
 
 

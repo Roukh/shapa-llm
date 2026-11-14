@@ -26,10 +26,11 @@ import argparse
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
-from shapa import (codemap, config, db, embed, focus, ledger, memlog, partition, reconfigure,
-                   registry, serve)
+from shapa import (codemap, config, db, embed, focus, learn, ledger, memlog, metrics, partition,
+                   reconfigure, registry, serve)
 from shapa.config import WikiRoot
 from shapa.nodes import Node, load_nodes
 from shapa.score import score_meta
@@ -144,6 +145,11 @@ def _load_memories(path: Path) -> dict[str, Node]:
 #: live memory count per root path, filled by :func:`_load_memories` for
 #: the wiki header line.
 _MEMORY_COUNTS: dict[str, int] = {}
+
+#: The principles the last focused session start printed, as ``(wiki root, row id)``:
+#: ``main`` counts them as served on this device (the hook path writes; a plain
+#: :func:`build_context` call leaves the wiki untouched).
+_SERVED: list[tuple[str, str]] = []
 
 
 def _select_from_loaded(
@@ -271,6 +277,7 @@ def build_focused(wiki_roots: list[WikiRoot], budget: int = DEFAULT_BUDGET) -> s
     themselves are never cut. The tree under them is: jobs first, then the files
     and arch boxes they name, then tasks, then the pointer lines, the first fire's
     before the second's, and what was left out is counted on a line of its own."""
+    _SERVED.clear()
     try:
         directive = reconfigure.directive_lines([wr.path for wr in wiki_roots if wr.kind != "external"])
     except Exception:
@@ -281,6 +288,12 @@ def build_focused(wiki_roots: list[WikiRoot], budget: int = DEFAULT_BUDGET) -> s
     fire_no = 0
     pointers: list[str] = []
     hints: list[str] = []
+    pool: list[dict] = []         # learned principles of every wiki in scope
+    fire_text: list[str] = []
+    fire_ids: set = set()
+    awaiting = 0
+    drift_lines: list[str] = []
+    churn_ids: list[str] = []
     ordered = sorted((wr for wr in wiki_roots if wr.kind in ("global", "repo")),
                      key=lambda wr: wr.kind != "global")  # the global northstar leads
     for wr in ordered:
@@ -294,6 +307,14 @@ def build_focused(wiki_roots: list[WikiRoot], budget: int = DEFAULT_BUDGET) -> s
         graph = None
         try:
             f = focus.load(conn)
+            try:  # learning: pending corrections, principles, drift (each its own line; never blocks)
+                awaiting += learn.awaiting_count(conn)
+                pool.extend(learn.principle_candidates(conn, wr.kind, wr.path))
+                churn_ids += [f"{wr.kind}/{r[0]}" for r in conn.execute("SELECT id FROM tags WHERE tag = 'churn'")]
+                if wr.kind == "repo":
+                    drift_lines += learn.drift(conn, wr.path)
+            except Exception:
+                pass
             if wr.kind == "repo" and any(f.fires):
                 try:
                     graph = codemap.open_graph(wr.path)  # read-only; absent until `shapa map`
@@ -308,6 +329,9 @@ def build_focused(wiki_roots: list[WikiRoot], budget: int = DEFAULT_BUDGET) -> s
                 t = focus.tree(conn, fire, i)
                 if fire.feature and t.status in ("closed", "missing"):
                     continue  # closed behind our back: `shapa focus` heals it
+                fire_text.append(" ".join([t.title, *(j.title for j in t.jobs)]))
+                if t.feature:
+                    fire_ids.add(t.feature)
                 head = f"{i}. " + (f"{t.feature} " if t.feature else "") + _clip(t.title, 160)
                 if t.status == "claimed":
                     head += " (claimed)"
@@ -353,7 +377,20 @@ def build_focused(wiki_roots: list[WikiRoot], budget: int = DEFAULT_BUDGET) -> s
             if graph is not None:
                 graph.close()
             conn.close()
-    if not norths and not groups and not hints and not directive and not pointers:
+    learn_lines: list[str] = []
+    if awaiting:
+        learn_lines.append(f"{awaiting} correction{' awaits' if awaiting == 1 else 's await'} learning: "
+                           "shapa learn pending")
+    if churn_ids:
+        drift_lines.append(f"drift: principle {churn_ids[0]} needs enforcement, not rewording "
+                           "(shapa learn pending)")
+    if drift_lines:  # at most one: the first, and a count of the rest
+        learn_lines.append(drift_lines[0] + (f" (+{len(drift_lines) - 1} more: shapa metrics)"
+                                             if len(drift_lines) > 1 else ""))
+    shown_principles = learn.rank_principles(pool, " ".join(fire_text), fire_ids)
+    prin_lines = [f"learned [{p['wiki']} {p['id']}]: {_clip(p['text'], 160)}"
+                  + (f" (violated {p['violations']}x)" if p["violations"] else "") for p in shown_principles]
+    if not (norths or groups or hints or directive or pointers or learn_lines or prin_lines):
         return ""
     head = (["<shapa-action>", *directive, "</shapa-action>"] if directive else [])
     top = [*head, "<shapa-memory>",
@@ -363,6 +400,7 @@ def build_focused(wiki_roots: list[WikiRoot], budget: int = DEFAULT_BUDGET) -> s
     if not norths and not groups:
         top.append("no northstar or fires set: `shapa focus northstar TEXT --scope global`")
     top += norths
+    top += [_clip(x, 220) for x in learn_lines]
     fixed = len("\n".join(top)) + len("\n</shapa-memory>")
     for label, fires in groups:
         fixed += len(f"\nfires [{label}]:")
@@ -376,6 +414,8 @@ def build_focused(wiki_roots: list[WikiRoot], budget: int = DEFAULT_BUDGET) -> s
                 optional.append((level, e["no"], n, line))
     for k, line in enumerate(hints + pointers):
         optional.append((LEVEL_POINTER, 0, k, line))
+    for k, line in enumerate(prin_lines):  # after every fire's job and names lines, before its tasks
+        optional.append((LEVEL_NAMES, 9, k, line))
     room = budget - fixed
     keep: set[tuple[int, int, int]] = set()
     for level, no, n, line in sorted(optional, key=lambda x: x[:3]):
@@ -395,6 +435,10 @@ def build_focused(wiki_roots: list[WikiRoot], budget: int = DEFAULT_BUDGET) -> s
                     left += 1
             if left:
                 lines.append(f"   … {left} more not shown (shapa focus, or a bigger --budget)")
+    for k, line in enumerate(prin_lines):
+        if (LEVEL_NAMES, 9, k) in keep:
+            lines.append(line)
+            _SERVED.append((shown_principles[k]["root"], shown_principles[k]["id"]))
     for k, line in enumerate(hints + pointers):
         if (LEVEL_POINTER, 0, k) in keep:
             lines.append(line)
@@ -542,18 +586,22 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(0)
 
     start = args.cwd
+    session = ""
     if start is None:
         # Hook mode: the payload arrives as JSON on stdin (SessionStart).
         try:
             data = json.load(sys.stdin)
             start = data.get("cwd") if isinstance(data, dict) else None
+            session = str(data.get("session_id") or "") if isinstance(data, dict) else ""
         except (json.JSONDecodeError, ValueError):
             start = None
 
+    t0 = time.perf_counter()
     try:
         text = build_context(start=start, budget=args.budget, full=args.full)
     except Exception:
         text = ""  # never block session start
+    elapsed_ms = (time.perf_counter() - t0) * 1000
 
     try:
         roots = config.wiki_roots(start)
@@ -584,7 +632,17 @@ def main(argv: list[str] | None = None) -> None:
             "hookEventName": "SessionStart",
             "additionalContext": text,
         }
-    }))
+    }), flush=True)
+
+    try:  # measurement, after the output: the session start itself, the principles it served
+        home = metrics.home_root(start)
+        if home is not None:
+            metrics.record(home, "latency", ref="bootstrap", val=round(elapsed_ms, 3))
+            metrics.record(home, "session", session=session)
+            for root, rid in dict.fromkeys(_SERVED):
+                learn.mark_served(root, [rid])
+    except Exception:
+        pass
     sys.exit(0)
 
 

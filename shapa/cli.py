@@ -121,6 +121,18 @@ commands:
                  only the fires' own tree after them
   skill ...      skills as versioned records, global or per repo: list,
                  show, add, update (a new pending version), activate
+  learn ...      close the loop on corrections: pending [--json] lists the
+                 corrections not yet generalized with their nearest rules,
+                 skills and issues and whether each is a repeat; apply ISSUE
+                 --principle TEXT files the principle (global by default,
+                 --scope repo needs --why, skill:NAME for a skill), merging
+                 into a close rule, never stacking; dismiss ISSUE
+  metrics [--since DATE] [--json] [--snapshot] [--all] [--repo KEY]
+                 whether the wiki is working: fetch latency, corrections and
+                 repeats per session, learned vs pending, skill use, feature
+                 lead time, work on the fires vs off them, frustration, with
+                 a 7-day trend; --snapshot stores today's row, --all rolls
+                 up every repo; `metrics record skill-use NAME --session ID`
   map [--seconds N] [--rebuild] [--json]
                  build or refresh the code map of this checkout: files,
                  functions, imports and calls (Python by ast, JS/TS by
@@ -439,6 +451,10 @@ def main(argv: list[str] | None = None) -> None:
         from shapa import skills
 
         skills.main(rest)
+        return
+    if cmd in ("learn", "metrics"):
+        mod = importlib.import_module(f"shapa.{cmd}")
+        mod.main(rest)
         return
     if cmd in ("map", "partition"):
         from shapa import partition

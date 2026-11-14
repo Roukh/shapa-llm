@@ -82,6 +82,52 @@ This project follows [Semantic Versioning](https://semver.org/).
   adds one `code map:` line per fire (when a map exists) inside its budget. The
   MCP tool `partition` (`map` builds). The hosted Worker stores nothing of it.
 
+- The learning loop: a correction is made once, learned once, and serves every
+  repo. `shapa correction` now compares each new correction (stemmed-token
+  Dice over an inverted index, plus vector cosine with `[semantic]`) with every
+  earlier issue and rule of the repo wiki and the global wiki; a close match is
+  a repeat (tags `repeat`, `repeat-of:REF`, a `related` link, `repeats:N` on
+  the earlier row, the session column as the mark), a repeat of a learned
+  principle is a violation, and the hook says so. `shapa learn pending [--json]`
+  lists the corrections not yet generalized with their nearest rules, skills
+  and issues; `shapa learn apply ISSUE --principle TEXT [--scope
+  global|repo|skill:NAME] [--why TEXT] [--into R<n>|skill:NAME] [--serves
+  F<n>|northstar]` records the principle (global by default, `--scope repo`
+  needs `--why`), merging into the rule that already holds it instead of
+  adding a near-duplicate, keeping the evidence (source corrections, at most
+  12) in the row, filing a contradicting principle beside the rule linked
+  `conflicts`, and refusing an `--into` of a contradicted rule; a skill version
+  derived from a correction the hook itself filed activates at once (a manual,
+  synced or hand-written row only files a pending one). `shapa learn
+  principles` lists principles with evidence, violations, revisions and serves;
+  `shapa learn dismiss` retires a correction with no general principle. Guards:
+  a correction is learned once, a principle revised three times that is still
+  violated is `churn` (no fourth revision; `learn pending` says it needs
+  enforcement, not rewording), and corrections about the learning system
+  itself are applied at most 3 a week. Principles are screened (one line, no
+  markup, tags, URLs, shell fragments or instruction-injection phrases), and
+  `shapa row add` refuses the engine's own sources `correction` and `learn`.
+- Session start adds, inside its budget: `N corrections await learning`, up to
+  4 principles ranked by the fires (`learned [global R5]:`), and at most one
+  `drift:` line (jobs closing outside every fire, a stalled fire, a principle
+  that needs enforcement, or fetch latency rising at least as fast as the
+  data).
+- `shapa metrics [--since DATE] [--json] [--snapshot] [--all] [--repo KEY]
+  [--history DAYS]`: fetch and bootstrap latency (p50, p95), corrections per
+  session, repeat rate, learned against pending, skills created, updated,
+  activated and used (`shapa metrics record skill-use NAME --session ID`),
+  feature lead time and jobs per feature, a deterministic frustration score,
+  goal measures (jobs closed under a fire against outside every fire, fires
+  closed and their lead time, stalled fires, learns that served nothing) and a
+  7-day trend against the 7 before, plus fetch p95 per 1,000 records. Raw
+  events live per device in the gitignored index (60 days, 20,000 rows) and are
+  folded into daily snapshots (`metrics_daily`, with the record count) by the
+  sweep and `--snapshot`; the global wiki's table rolls every repo up. Schema
+  stays 2: `metrics_daily` is additive and local to the committed file, and a
+  feature that was ever a fire carries the tag `fire`. The Worker is unchanged:
+  principles, evidence and counters are ordinary row tags and bodies that sync;
+  events, latency, use and serve counts and snapshots never do.
+
 ### Changed
 
 - `shapa bootstrap` (the SessionStart hook) prints the northstar first, then
