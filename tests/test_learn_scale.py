@@ -20,7 +20,11 @@ from shapa import bootstrap, config, db, focus, learn, ledger, metrics
 from tests.learnkit import at, lexical_only  # noqa: F401
 
 SIZES = (500, 5_000, 50_000)
-BUDGET_MS = {"on_correction": 150, "pending_20": 500, "metrics": 300, "session_start_added": 10}
+#: The budgets as measured on a developer machine; a shared CI runner is about three times slower, so
+#: every absolute bound in this file is tripled when CI is set. The growth ratios are not.
+_SLOW = 3 if os.environ.get("CI") else 1
+BUDGET_MS = {op: ms * _SLOW for op, ms in
+             {"on_correction": 150, "pending_20": 500, "metrics": 300, "session_start_added": 10}.items()}
 #: Under the floor a difference is timer noise, not growth. A shared CI runner is about three times slower.
 FLOOR_MS = 90 if os.environ.get("CI") else 30
 WORDS = ("cache deploy worktree header payment queue webhook retry schema migration index latency "
