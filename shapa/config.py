@@ -43,6 +43,26 @@ WIKI_MARKER = "AGENTS.md"
 WIKI_DIRNAMES = (".shapa", WIKI_DIRNAME)
 
 
+def self_argv(module: str) -> list[str]:
+    """argv that runs one of this package's own modules in a child process. ``-P`` keeps the
+    child's cwd off ``sys.path``: a hook runs with the session's repo as its cwd, and a ``shapa/``
+    directory in that repo must never be imported in place of this package."""
+    import sys
+
+    return [sys.executable, "-P", "-m", module]
+
+
+def self_env() -> dict[str, str]:
+    """The environment for a `self_argv` child: this package's own parent directory first on
+    ``PYTHONPATH``, so the child imports the code that is already running (an install or a clone),
+    whatever its cwd is."""
+    env = dict(os.environ)
+    here = str(Path(__file__).resolve().parent.parent)
+    rest = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = here + (os.pathsep + rest if rest else "")
+    return env
+
+
 def discover(start: str | Path | None = None) -> Path | None:
     """Return the nearest repo-root wiki at or above *start* (default: cwd).
 

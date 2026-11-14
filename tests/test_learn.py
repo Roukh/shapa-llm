@@ -527,7 +527,7 @@ def test_a_real_session_start_launches_its_snapshot_detached_and_computes_nothin
     capsys.readouterr()
     assert len(launched) == 1                                           # the second session start is within the retry window
     argv, kw = launched[0]
-    assert argv[1:5] == ["-m", "shapa", "metrics", "--auto-snapshot"] and kw["start_new_session"] is True
+    assert argv[1:6] == ["-P", "-m", "shapa", "metrics", "--auto-snapshot"] and kw["start_new_session"] is True
     assert metrics.snapshot_rows(wikis.wiki) == []                      # nothing was computed in the hook process
     assert metrics.run_metrics(["--auto-snapshot", "--cwd", str(wikis.repo)]) == 0   # what the child does
     assert len(metrics.snapshot_rows(wikis.wiki)) == 1

@@ -626,7 +626,7 @@ def _spawn_distill_worker(transcript, session, root, scope, applies_to, cwd,
     the (possibly slow) model call and writes on its own. The hook payload
     (which may carry the final assistant message) goes over a pipe, never
     argv."""
-    argv = [sys.executable, "-m", "shapa.capture", "--_worker", "--distill"]
+    argv = [*config.self_argv("shapa.capture"), "--_worker", "--distill"]
     if root:
         argv += ["--root", str(root)]
     if scope:
@@ -641,7 +641,8 @@ def _spawn_distill_worker(transcript, session, root, scope, applies_to, cwd,
                           "last_assistant_message": last_msg})
     try:
         proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
-                                stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True)
+                                stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True,
+                                env=config.self_env())
         proc.stdin.write(payload.encode("utf-8"))
         proc.stdin.close()
     except (OSError, ValueError):

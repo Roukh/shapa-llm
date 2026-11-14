@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "shapa"
-version = "0.9.0"
+version = "0.10.0"
 description = "Memory and a work ledger for coding agents, in one SQLite file per wiki, with harness hooks for Claude Code, Codex and OpenCode."
 readme = "README.md"
 requires-python = ">=3.11"

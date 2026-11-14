@@ -280,6 +280,32 @@ within eight seconds and never fails the session. Note files (`arch/`, `research
 --revoke ID` cuts a device off. The URL must be HTTPS (plain HTTP is allowed
 only for localhost).
 
+### One brain for every agent
+
+Give any agent the store's address. `GET /` is a public card with no stored
+data that says how to connect: remote MCP at `/mcp` (OAuth), REST at `/v1`
+(a device token), the API description at `/openapi.json`. On connect an
+agent calls `session_start` (or `GET /v1/instructions`) and gets the same
+text every agent gets, in this order: a line saying these rules replace its
+own defaults, the northstar and fires, the stage-0 baseline in full, a topic
+index, the projects, and your open tasks.
+
+- **Stages.** Tag a rule, memory or skill `stage:0` (`shapa stage set ID 0`)
+  and every session starts with it. Everything else is fetched on demand by
+  tag, search or `related`. The baseline lives in the global wiki, is capped
+  at 6,000 characters, and is written only from your own machine.
+- **Reach.** An agent that connects over OAuth (a chat app, a phone) reads
+  the stage-0 baseline, notes, documents, tasks, ideas and decisions, and
+  nothing else: the rest answers as if it did not exist. It can add notes,
+  files, tasks, project items, ideas and decisions. It cannot write a rule,
+  memory or skill, sync, set the focus or delete.
+- **Tasks and projects.** The global wiki holds your tasks (`human_task`),
+  agent tasks, ideas, decisions and one file per project. Ask any connected
+  agent what you need to do: it answers from `tasks` (`GET /v1/tasks`,
+  `shapa tasks`).
+
+Deploy the Worker before upgrading the CLI.
+
 ## Files and privacy
 
 Everything shapa reads or writes stays on disk, in files you own:

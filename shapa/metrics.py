@@ -880,9 +880,10 @@ def snapshot_in_background(root, cwd=None, now: datetime | None = None) -> None:
             return
         import subprocess
 
-        subprocess.Popen([sys.executable, "-m", "shapa", "metrics", "--auto-snapshot", "--cwd",
+        subprocess.Popen([*config.self_argv("shapa"), "metrics", "--auto-snapshot", "--cwd",
                           str(cwd or Path(root).parent)], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                         stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True)
+                         stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True,
+                         env=config.self_env())
     except Exception:
         pass
 

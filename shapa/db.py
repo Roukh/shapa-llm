@@ -645,8 +645,12 @@ def close(conn: sqlite3.Connection, item_id: str, reason: str, *, git_ref: str |
                      (reason, ts, ts, git_ref, item.id))
         closed = [item.id]
         for child in _descendants(conn, item.id):
-            if reason == "expired" and any(t in OWNER_TAGS for t in _tags_of(conn, child)):
-                continue  # an expiring parent never takes the operator's task list with it
+            if any(t in OWNER_TAGS for t in _tags_of(conn, child)):
+                # A closing parent (merged, expired, closed by hand) never takes the operator's
+                # task list with it: the task stays open and stands alone from here on.
+                conn.execute("UPDATE items SET parent=NULL, updated=? WHERE id=? AND status != 'closed'",
+                             (ts, child))
+                continue
             cur = conn.execute("UPDATE items SET status='closed', closed_reason='parent', "
                                "closed=?, updated=? WHERE id=? AND status != 'closed'",
                                (ts, ts, child))
