@@ -21,7 +21,8 @@ from tests.learnkit import at, lexical_only  # noqa: F401
 
 SIZES = (500, 5_000, 50_000)
 BUDGET_MS = {"on_correction": 150, "pending_20": 500, "metrics": 300, "session_start_added": 10}
-FLOOR_MS = 30
+#: Under the floor a difference is timer noise, not growth. A shared CI runner is about three times slower.
+FLOOR_MS = 90 if os.environ.get("CI") else 30
 WORDS = ("cache deploy worktree header payment queue webhook retry schema migration index latency "
          "button modal session token billing invoice scraper parser router hook ledger branch commit "
          "feature wiki memory skill vector tag stage project tracing lint format compile bundle "
