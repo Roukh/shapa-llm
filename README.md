@@ -3,352 +3,177 @@
 [![tests](https://github.com/Roukh/shapa-llm/actions/workflows/test.yml/badge.svg)](https://github.com/Roukh/shapa-llm/actions/workflows/test.yml)
 [![PyPI](https://img.shields.io/pypi/v/shapa.svg)](https://pypi.org/project/shapa/)
 [![Python versions](https://img.shields.io/pypi/pyversions/shapa.svg)](https://pypi.org/project/shapa/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/Roukh/shapa-llm/blob/main/LICENSE)
 
-shapa gives a coding agent memory and a work ledger that live in one SQLite
-file per project, checked into git, with hooks for Claude Code, Codex and
-OpenCode.
+shapa gives coding agents memory and a work ledger. Each project keeps them in one SQLite file
+that is checked into git. Claude Code loads them through hooks; Codex, OpenCode and any other MCP
+client reach the same data through `shapa mcp`. An optional hosted store gives every agent
+(coding, chat, phone) the same rules, tasks and memory.
 
 ## Install
 
-shapa is on [PyPI](https://pypi.org/project/shapa/):
-
 ```bash
-uv tool install 'shapa[semantic,mcp]'
-# or
-pipx install shapa
+uv tool install 'shapa[semantic,mcp]'    # or: pipx install shapa
 ```
 
-Upgrade with `uv tool upgrade shapa` (or `pipx upgrade shapa`), then run
-`shapa upgrade --all --check`. The core has no dependencies; `[semantic]`
-adds fused vector recall and `[mcp]` the MCP server library.
+The core needs Python 3.11 and no packages. `[semantic]` adds fused vector and BM25 recall,
+`[mcp]` the MCP SDK. Upgrade with `uv tool upgrade shapa` (or `pipx upgrade shapa`), then run
+`shapa upgrade --all --check`.
 
-To install and wire Claude Code's hooks in one step:
+The package installs the command only. To wire Claude Code's hooks too, run the installer; it
+also installs the command, from the repo's `main`, and a re-run upgrades it:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Roukh/shapa-llm/main/bootstrap.sh | sh
 ```
 
-`bootstrap.sh` installs the `shapa` command (pipx, then uv, then `pip
---user`) and wires Claude Code's hooks. Pass `--with-semantic`, `--with-mcp`
-or `--full` to add the optional extras up front; see the comments at the top
-of the script for every flag and environment variable.
+Flags: `--with-semantic`, `--with-mcp`, `--full`, `--harness claude|codex|opencode|all`. The
+header of [bootstrap.sh](https://github.com/Roukh/shapa-llm/blob/main/bootstrap.sh) lists the
+rest. Hooks exist for Claude Code only; Codex and OpenCode are registered as MCP servers.
 
-## 60-second quickstart
+## Start
 
 ```bash
-# 1. Install shapa (see above).
-
-# 2. In a git repo, create its wiki:
-cd your-project
-shapa init
-
-# 3. Check that everything is wired correctly:
+cd your-project && shapa init
 shapa doctor
-
-# 4. Start your agent as usual. In Claude Code, shapa's hooks load memory
-#    at session start and on every prompt; Codex and OpenCode reach the
-#    same memory through shapa's MCP tools.
 ```
 
-`shapa init` finds the git top level, creates `.shapa/` there and nothing
-else, and installs two git hooks: `pre-commit` keeps the database off
-feature branches, and `post-commit` closes the job a `J<n>:` commit names.
-It never writes into a machine-wide `core.hooksPath` or into hooks owned by
-husky, lefthook or the pre-commit framework; it prints the lines to add
-there instead.
+`init` creates `.shapa/` at the git top level (the wiki schema and `shapa.db`) and links two git
+hooks: `pre-commit` keeps the database off feature branches, `post-commit` closes the job a
+`J<n>:` commit names. It never writes into a shared `core.hooksPath` or a hook manager's
+directory (husky, lefthook, pre-commit); it prints the lines to add there. `doctor` exits 1 and
+names the fix when something is missing. Then use your agent as usual.
 
-## What it does
+## Model
 
-- Starts a session on what matters: the northstar, then the three big fires
-  (`shapa focus`) and only their tree, not every row. Closing a fire's
-  feature frees its slot and promotes the next candidate.
-- Partitions the code per fire. `shapa map` builds a graph of the checkout
-  (files, functions, imports and calls; Python by `ast`, JavaScript and
-  TypeScript by regex) into a derived, gitignored index; `shapa partition`
-  lists a fire's related files, bounded: the files its feature, jobs and
-  tasks name, the files recalled for their words, and the callers and
-  importers a change reaches, each with why it is there. Session start shows
-  each fire's top files. It is local: it needs the checkout, so the hosted
-  store neither holds nor serves it.
-- Injects relevant memory on every prompt, ranked by relevance.
-- Keeps skills as versioned records and one document per project; a
-  correction that names a skill files a pending new version of it, never an
-  active one.
-- Turns an operator's correction ("no", "wrong", "not like this") into an
-  attributed issue row, not a buried chat line, and closes the loop so it is
-  never made twice (see Learning loop below).
-- Tracks work as a three-level ledger: a feature (`F`, a new capability
-  with its own branch and PR) holds jobs (`J`, one commit each), and a job
-  holds tasks (`T`). Fixes, docs and release work are standalone jobs that
-  share one batch branch and PR per session. A commit whose subject starts
-  `J<n>:` closes that job automatically.
-- Sweeps the database after every merged feature: closed, expired,
-  duplicate, superseded and stale rows are deleted, and the database's git
-  history keeps the record.
-- Commits `.shapa/` on the default branch at the end of each Claude Code
-  session (`shapa commit`), so a clone of the repo carries its memory. It
-  commits only wiki paths and never pushes.
-
-## How it works
-
-```mermaid
-flowchart LR
-    subgraph Harness
-        H["Claude Code / Codex / OpenCode\n(hooks or MCP)"]
-    end
-    H --> CLI["shapa CLI"]
-    CLI --> DB[("shapa.db\ntracked in git")]
-    CLI --> IDX[(".shapa-index.db\ngitignored, derived")]
-    DB -.rebuilds.-> IDX
-    CLI --> GW["global wiki\n~/.shapa/memory"]
-    CLI --> RW["repo wiki\n.shapa/"]
-```
-
-A repo's wiki is `.shapa/` at its git top level; the global wiki defaults to
-`~/.shapa/memory`. Each holds `shapa.db`: the work ledger plus memory, rule
-and issue rows. A second file, `.shapa-index.db`, holds the search index and
-vectors; it is derived from `shapa.db`, gitignored, and rebuilt on demand. A
-session reads from the global wiki and the current repo's wiki together, and
-writes are scoped to one or the other.
-
-## Harness support
-
-| Harness | Hooks | MCP |
-|---|---|---|
-| Claude Code | yes | yes |
-| Codex | no | yes |
-| OpenCode | no | yes |
-| anything else that speaks MCP | no | by hand (see `shapa mcp`) |
-
-Hooked harnesses get memory pushed to them automatically; any MCP client can
-pull the same `search`, `get` and `save` tools by registering `shapa mcp` as
-a stdio server itself.
-
-## How it compares
-
-Figures below are each project's own numbers, checked in October 2026; they
-move fast and several benchmark claims in this space are disputed.
-
-| Tool | Storage | Git-tracked | Work ledger | License |
-|---|---|---|---|---|
-| **shapa** | one SQLite file per wiki | yes, on the default branch | yes (F/J/T) | MIT |
-| claude-mem | SQLite plus Chroma | no | no | Apache-2.0 |
-| mem0 + OpenMemory MCP | vector DB plus graph | no | no | Apache-2.0 |
-| basic-memory | Markdown plus wikilinks, Obsidian sync | if you commit the files | no | AGPL-3.0 |
-| beads | Dolt, JSONL export | yes | yes (dependency graph, not memory) | MIT |
-| native harness memory (Claude Code, Codex, Cursor, ...) | machine-local files | no | no | - |
-
-None of the native, per-harness memory features are git-tracked, shared
-across harnesses, split into a global and a repo tier, or tied to a work
-ledger. The trade-off: a SQLite file does not diff or merge like Markdown,
-which is why shapa commits it only on the default branch.
+- **Wikis.** One per repo (`.shapa/`) and one global (`~/.shapa/memory`). A session reads both;
+  a write goes to one (`--scope global|repo`).
+- **Ledger.** Features (a capability: one branch and PR) hold jobs (one commit, subject
+  `J<n>:`) and jobs hold tasks. Closing a merged feature sweeps closed, expired, duplicate and
+  stale rows; git history of the database is the record.
+- **Rows and documents.** Rows are memories, rules and issues. Documents are titled bodies kept
+  whole, never swept. Notes are `arch/` and `research/` files. Recall ranks them by fused
+  vectors and BM25 (`fused`), or BM25 alone without `[semantic]`.
+- **Northstar and fires.** A session starts from one northstar and three ranked big fires
+  (`shapa focus`) and only their tree. Closing a fire's feature promotes the next candidate.
+- **Stages.** Stage 0 is the baseline every session starts with: rules, memories and skills in
+  the global wiki, at most 6,000 characters, set only from the CLI (`shapa stage set ID 0`).
+  The rest is fetched on demand by tag (`fetch --tag`), search or `related`.
+- **Tasks and projects.** The global wiki holds your tasks, ideas and decisions and one file per
+  project (`shapa project`); a project keeps one document.
+- **Skills.** Versioned records, global or per repo. A rule, memory or issue that names a skill
+  files a pending new version with the lesson quoted. Nothing goes live except through
+  `shapa skill activate`. `shapa skill uproot NAME` moves a repo skill to the global wiki.
+- **Learning loop.** A correction ("no", "not like this") becomes an issue row. A close match
+  to an earlier one is a repeat. `shapa learn apply` files one principle, which you merge into
+  the closest rule or skill (or add as new). It is global by default, so it holds across repos.
+  `shapa metrics` shows whether it works.
+- **Code partitions.** `shapa map` builds a derived graph of the checkout; `shapa partition`
+  lists the files a fire touches, each with why. Local only.
 
 ## Commands
 
+`shapa COMMAND --help` for flags. `shapa --version` prints the version.
+
 | Command | Does |
 |---|---|
-| `shapa init [DIR] [--no-git] [--obsidian] [--global]` | create and register a wiki, with git hooks in a repo |
-| `shapa doctor` | check the whole install; exits 1 with a fix command per problem |
-| `shapa status` | the same report as `doctor`, without the exit code |
-| `shapa commit [--hook] [--dry-run] [--json] [--scrub TERM]` | commit `.shapa/` on the default branch |
-| `shapa bootstrap [--full] [--stage N] [--budget N]` | session start: the precedence line, the northstar and three fires with only their tree, the baseline, topics, projects and the operator's open tasks, then learned context (`--full`: every ranked row and the open ledger) |
-| `shapa focus show\|northstar\|fire\|unfire\|order\|rank\|candidates\|promote` | the northstar and the three ranked big fires of a wiki scope |
-| `shapa skill list\|show\|add\|update\|activate\|uproot` | skills as versioned records, global or per repo; `uproot` moves a repo's skill to the global wiki |
-| `shapa stage set\|clear\|list\|pending` | which rules, memories and skills every session starts with (`stage:0` is the baseline, set only from this CLI) |
-| `shapa tags` / `shapa related ID` | every tag with its counts; the records linked to or sharing tags with one (`shapa fetch --tag NAME` reads a tag) |
-| `shapa tasks [--owner human\|agent] [--project KEY] [--all]` | the operator's open tasks across the wikis in scope |
-| `shapa project new\|show\|list\|add` | a project's one file (issues, questions, implementations, problem, solution, ...) |
-| `shapa learn pending\|apply\|dismiss\|merge\|principles` | generalize corrections into cross-repo principles (see Learning loop) |
-| `shapa metrics [--since DATE] [--json] [--snapshot] [--all] [--repo KEY] [--history DAYS]` | whether the wiki is working: latency against record count, repeats, learning, work on the fires; `record skill-use NAME --session ID` |
-| `shapa map [--seconds N] [--rebuild] [--json]` | build or refresh this checkout's code map (a derived, gitignored `.shapa-code.db`) |
-| `shapa partition [F<n>\|1\|2\|3] [--max-files N] [--max-bytes N] [--no-refresh] [--json]` | a fire's related files as one bounded partition, each with why |
-| `shapa fetch` | rank and surface memory relevant to a prompt |
-| `shapa get ID` | print a row's or a note's full text |
-| `shapa save` | write one note or row (`--scope global\|repo\|external`) |
-| `shapa row add\|edit\|rm\|link\|tag\|list` | manage memory, rule and issue rows |
-| `shapa doc add\|edit\|rm\|list\|merge` | manage documents (a titled body kept whole; `shapa get D<n>` prints one); a project keeps one, a second is refused naming it or appended with `--merge` |
-| `shapa remote login\|sync\|status\|devices\|logout\|instructions` | the opt-in hosted store (see Hosted) |
-| `shapa ledger add\|claim\|close\|tree\|issues` | manage the work ledger |
-| `shapa correction` | record an operator correction as an issue row |
-| `shapa maintain [--prune] [--dry-run]` | self-heal: merge duplicates, prune stale and orphaned rows |
-| `shapa validate` | check note and wiki frontmatter |
-| `shapa upgrade [--all] [--check]` | bring a wiki to the current format |
-| `shapa mcp` | run the MCP stdio server (`search`, `get`, `save`, `placement`, `focus`, `skill`, `partition`, `tags`, `related`, `tasks`, `projects`, `project`, `project_new`, `project_add`) |
-| `shapa serve` | run the optional warm per-wiki daemon |
-
-Run `shapa` with no arguments for the full, versioned usage text.
-
-## Learning loop
-
-A correction is made once. The `UserPromptSubmit` hook files it as an issue
-row and compares it (stemmed-token similarity, plus vector cosine with
-`[semantic]`) with every earlier issue and rule of the repo wiki and the
-global wiki. A close match is a **repeat**: it is tagged `repeat`, linked
-`related`, the earlier row's count goes up, and when the earlier row was a
-learned principle it is a **violation** of it.
-
-`shapa learn pending [--json] [--limit N]` lists what no one has generalized yet
-(newest cap first, the limit applied before any search), each with its nearest
-rules, skills and issues (score, and whether it would merge), the corrections
-that are only *soft* candidates, and the skill versions a learned principle
-filed that await `shapa skill activate`. `shapa learn apply ISSUE --principle
-TEXT` records the principle the correction implies, and you choose where it
-goes:
-
-- **`--into R<n>` (or `global/R<n>`, `repo/R<n>`) merges, `--new` adds, `--into
-  skill:NAME` files a lesson for a skill.** Matching words cannot decide
-  meaning, so with neither flag and any candidate the call exits 2 and prints
-  the candidates (`--json`: `{"error":"choose","candidates":[...]}`). A wiki
-  keeps at most 60 principles; `shapa learn merge SRC DST` folds two.
-- **Global by default.** Principles hold across repos; `--scope repo` is the
-  exception and needs `--why`, stored on the row. A principle for a skill is a
-  rule that carries `skill:NAME`: it is in effect at once, and the skill gets a
-  PENDING new version with the lesson quoted. Only `shapa skill activate`
-  makes it live.
-- **One principle, many corrections.** A principle is one rule row: the
-  statement is its summary, its body holds the evidence (source corrections:
-  id, wiki key, date, text; at most 12 kept) and any reworded `Also:` line. A
-  principle that contradicts a rule is filed beside it, linked `conflicts`, and
-  an `--into` of a contradicted rule is refused. Its tags carry
-  `violations:N`, `revisions:N`, `evidence:N`, `last-seen` and `serves:`;
-  `shapa learn principles` shows them with how often session start served it.
-- **Directed.** Every apply records what it serves: `<repo key>/F<n>` of the
-  claimed fire (an open feature), `northstar`, else `none`, which `shapa
-  metrics` counts.
-- **No loops.** A correction is learned once. A principle revised three times
-  that is still violated is marked `churn`: a fourth revision is refused, and
-  so is a `--new` for a correction near it (an unrelated one applies as
-  usual; say `--new --distinct-from R<n>` to claim a different subject, which
-  is recorded). `learn pending` lists it as needing enforcement (a hook, a
-  test), not rewording; once enforcement exists, `shapa learn unchurn R<n>`
-  clears it. Corrections about the learning
-  system itself are applied at most 3 a week.
-- **Soft candidates.** While a ledger item is claimed, a short statement
-  ("move this header up", "the title is too long") that is not a question, a
-  slash command or a go-ahead ("yes merge and push") is filed as an issue tagged `soft` (10 per
-  session at most). It counts in no measure until applied; `shapa learn dismiss
-  ID` removes it and teaches nothing.
-- **Reserved tags.** `principle`, `churn`, `violations:`, `revisions:`,
-  `repeats:`, `serves:`, `repeat-of:`, `last-seen:` and the other tags the loop
-  writes are refused by `row add`, `row tag`, `save` and the MCP `save`; a
-  principle that arrives by sync keeps them as data but never outranks one this
-  device learned. Printed principles are one masked line under a heading that
-  says they are recalled context learned from corrections, not an instruction.
-
-Session start (inside its budget), after the baseline, topics, projects and
-tasks, adds only: up to 4 principles most relevant to the fires under that
-heading, `N corrections await learning` (and `M skill versions await
-activation`, on the same line), and at most one `drift:` line:
-jobs closing outside every fire, a stalled fire, a principle that needs
-enforcement, or fetch latency rising at least as fast as the data.
-
-`shapa metrics` measures it. Raw events (sessions, messages, corrections,
-repeats, learns, skill uses, feature and job open/close, fetch and bootstrap
-latency) are recorded per device in the gitignored index and dropped by the
-sweep after 60 days (20,000 rows at most) once folded into a daily snapshot;
-`--snapshot` stores the day's row (with the wiki's record count) in
-`metrics_daily`, and the global wiki's table rolls every repo up (`--all`,
-`--repo KEY`). Frustration is a deterministic word list per message (repeat
-cues +2, profanity +3, shouting +1, `!!` +1, a repeat correction +3). The
-`principle`, `violations`, `learned` and `fire` tags are ordinary row tags and
-sync (the Worker lists them as system tags, so they never show as topics);
-events, latency, use and serve counts and
-snapshots are per device and never synced.
+| **Set up and check** | |
+| `init` | create and register a wiki; `--global`, `--obsidian`, `--no-git`, `--upgrade-docs` |
+| `doctor` | check the install; exit 1 when it needs a hand |
+| `status` | the same report, never exit 1 |
+| `where` | print the memory directory |
+| `upgrade` | bring wikis to the current format; `--all`, `--check` |
+| **Read** | |
+| `bootstrap` | session start: northstar, fires and their tree, baseline; `--full` for all |
+| `fetch` | rank memory for a prompt; `--tag T` reads a tag |
+| `get ID` | the full text behind an id |
+| `tags`, `related ID` | tags with counts; records linked to or sharing tags with one |
+| `tasks` | open tasks across the wikis in scope |
+| **Write** | |
+| `save` | write one note or row; `--scope global\|repo\|external`, `--type` |
+| `row` | memories, rules, issues: `add`, `edit`, `rm`, `link`, `tag`, `list` |
+| `doc` | documents: `add`, `edit`, `rm`, `list`, `merge` |
+| `project` | a project's one file: `new`, `add`, `show`, `list` |
+| `capture` | Stop hook: extract memories from a finished session |
+| `correction` | prompt hook: file an operator correction as an issue row |
+| **Work** | |
+| `ledger` | features, jobs, tasks: `add`, `claim`, `close`, `tree`, `issues`, git triggers |
+| `focus` | northstar and three fires: `show`, `northstar`, `fire`, `order`, `promote` |
+| `commit` | commit the wiki database on the default branch (a hook) |
+| `map`, `partition` | code map of the checkout; a fire's bounded file set |
+| **Learn** | |
+| `stage` | `set`, `clear`, `list`, `pending` (records proposed for stage 0) |
+| `skill` | `list`, `show`, `add`, `update`, `activate`, `uproot` |
+| `learn` | `pending`, `apply`, `dismiss`, `merge`, `unchurn`, `principles`, `reindex` |
+| `metrics` | whether the wiki is working; `--snapshot`, `--all`, `--history DAYS` |
+| **Maintain** | |
+| `maintain` | merge duplicates, prune stale rows; use `--dry-run`, prune is operator-run |
+| `heartbeat`, `score` | prune orphan notes (`--dry-run`); rank notes by value |
+| `validate` | check note frontmatter |
+| **Serve** | |
+| `mcp` | MCP stdio server (`search`, `get`, `save` and more) |
+| `serve` | optional warm per-wiki daemon, latency only |
+| `remote` | the hosted store: `login`, `sync`, `status`, `devices`, `logout`, `instructions` |
 
 ## Hosted
 
-Opt-in and off by default. A hosted store lets chat apps and phones, which
-have no hooks, read and write the same memory through remote MCP or REST,
-and keeps every machine's wikis in step. It is one Cloudflare Worker you
-deploy to your own account, with a single Durable Object holding the data;
-nobody else sees it. Without a remote configured, nothing here runs and
-shapa makes no network call for it.
+Off by default. Without a remote, shapa makes no network call for it. The store is one
+Cloudflare Worker with one Durable Object that you deploy to your own account
+([`hosted/`](https://github.com/Roukh/shapa-llm/tree/main/hosted), Node 22 or newer):
 
-Self-host in three commands, then log this machine in:
-
-```sh
-cd hosted && npm install
+```bash
+cd hosted && npm ci
+npx wrangler secret put SHAPA_OWNER_KEY    # 32 or more characters
 npx wrangler deploy
-npx wrangler secret put SHAPA_OWNER_KEY      # at least 32 characters
-shapa remote login URL                       # prompts for the owner key
+shapa remote login https://YOUR-WORKER-URL   # asks for the owner key
+shapa remote sync
 ```
 
-`shapa remote login URL` asks for the owner key (or reads `$SHAPA_OWNER_KEY`),
-registers this machine as a device and stores a device token in `~/.shapa`
-(mode 0600). A repo with no git origin has no automatic key: run `shapa remote sync --key KEY` once. `shapa remote sync` then syncs this repo's wiki and the global
-one both ways: ledger items, rows, documents and the `arch/` and `research/`
-notes. Wire it to a session hook with `shapa remote sync --hook`, which stays
-within eight seconds and never fails the session. Note files (`arch/`, `research/`) sync only while the repo is on its default branch, and a note deleted locally comes back: delete it through the API. `shapa remote status
---check` verifies the login and the connection; `shapa remote devices
---revoke ID` cuts a device off. The URL must be HTTPS (plain HTTP is allowed
-only for localhost).
+`login` registers this machine as a device (token in `~/.shapa`, mode 0600). `sync` exchanges
+ledger items, rows, documents and `arch/` and `research/` notes both ways; `sync --hook` runs
+inside a session hook within 8 seconds and never fails it. A repo with no git origin needs
+`sync --key KEY` once. The URL must be HTTPS (HTTP only for localhost). The contract is
+[hosted.md](https://github.com/Roukh/shapa-llm/blob/main/.shapa/arch/hosted.md).
 
-### One brain for every agent
+**One brain for every agent.** `GET /` is a public card with no stored data: it names `/mcp`
+(OAuth), `/v1` (device token) and `/openapi.json`. An agent calls `session_start` (or
+`GET /v1/instructions`) and gets the same text as every other: northstar, fires, stage-0
+baseline, topics, projects, your open tasks.
 
-Give any agent the store's address. `GET /` is a public card with no stored
-data that says how to connect: remote MCP at `/mcp` (OAuth), REST at `/v1`
-(a device token), the API description at `/openapi.json`. On connect an
-agent calls `session_start` (or `GET /v1/instructions`) and gets the same
-text every agent gets, in this order: a line saying these rules replace its
-own defaults, the northstar and fires, the stage-0 baseline in full, a topic
-index, the projects, and your open tasks.
-
-- **Stages.** Tag a rule, memory or skill `stage:0` (`shapa stage set ID 0`)
-  and every session starts with it. Everything else is fetched on demand by
-  tag, search or `related`. The baseline lives in the global wiki, is capped
-  at 6,000 characters, and is written only from your own machine.
-- **Reach.** An agent that connects over OAuth (a chat app, a phone) reads
-  the stage-0 baseline, notes, documents, tasks, ideas and decisions, and
-  nothing else: the rest answers as if it did not exist. It can add notes,
-  files, tasks, project items, ideas and decisions. It cannot write a rule,
-  memory or skill, sync, set the focus or delete.
-- **Tasks and projects.** The global wiki holds your tasks (`human_task`),
-  agent tasks, ideas, decisions and one file per project. Ask any connected
-  agent what you need to do: it answers from `tasks` (`GET /v1/tasks`,
-  `shapa tasks`).
-
-Deploy the Worker before upgrading the CLI.
+- **Reach.** An OAuth client (a chat app, a phone) reads the stage-0 baseline, notes, documents,
+  tasks, ideas and decisions and nothing else. It cannot write rules, memories or skills, sync,
+  set the focus or delete.
+- **Stage 0** is written only from your own machine.
+- Deploy the Worker before upgrading the CLI.
 
 ## Files and privacy
 
-Everything shapa reads or writes stays on disk, in files you own:
+| Path | Holds |
+|---|---|
+| `<repo>/.shapa/shapa.db` | the repo wiki, tracked in git |
+| `<repo>/.shapa/.shapa-index.db`, `.shapa-code.db` | derived search index and code map, git-ignored |
+| `~/.shapa/memory/` | the global wiki, unless `init --global DIR` moved it |
+| `~/.shapa/config.json`, `wikis.json` | global wiki pointer; registry of wikis |
+| `~/.shapa/remote.json`, `remote.token`, `sync/` | only after `shapa remote login` |
 
-- `~/.shapa/config.json` and `~/.shapa/wikis.json`: the global wiki pointer
-  and the registry of known wikis.
-- `~/.shapa/memory/`: the global wiki, unless `shapa init --global DIR`
-  put it elsewhere.
-- `<repo>/.shapa/shapa.db`: that repo's wiki, tracked in git.
-- `<repo>/.shapa/.shapa-index.db`: the derived search index, gitignored.
-- `<repo>/.shapa/.shapa-code.db`: the derived code map (`shapa map`), gitignored.
-- `~/.shapa/remote.json`, `remote.token` (mode 0600) and `sync/`: only after
-  `shapa remote login`.
+`shapa commit` commits the database at session end on the default branch only, never pushes, and
+redacts `scrub_terms` from `~/.shapa/config.json` first. Nothing leaves the machine unless a
+remote is configured. Opt-in exceptions: `shapa remote`; the `[semantic]` extra fetches its
+model once; `SHAPA_CAPTURE_DISTILL=1` and `shapa maintain --resolve` run the `claude` CLI.
 
-There is no hosted service and no account, and shapa makes no network calls
-of its own. Three exceptions you opt into: `shapa remote` talks to the store
-you deployed (see Hosted), the `[semantic]` extra downloads
-its embedding model once, and session distillation
-(`SHAPA_CAPTURE_DISTILL=1`) and `shapa maintain --resolve` run the `claude`
-CLI you already use. The core engine has no dependencies beyond the Python
-standard library.
-
-## Configuration
-
-- `$SHAPA_MEMORY` overrides the resolved wiki directory for one process.
-- `[semantic]` extra (`model2vec`) turns on local embeddings for fetch and
-  maintain; without it, shapa uses BM25 and token overlap.
-- `[mcp]` extra (`mcp`) upgrades `shapa mcp` to the reference MCP SDK; it
-  works without the extra too, through a standard-library JSON-RPC shim.
-- `scrub_terms` in `~/.shapa/config.json`: an optional list of terms
-  `shapa commit` redacts before committing `.shapa/`.
-- `install.sh --no-auto-commit` skips wiring `shapa commit` into Claude
-  Code's session hooks; run `shapa commit` yourself instead.
+Environment: `SHAPA_MEMORY` (wiki directory), `SHAPA_REMOTE_DIR` (login and sync state),
+`SHAPA_OWNER_KEY` (read by `remote login`), `SHAPA_CAPTURE_DISTILL`, `SHAPA_CAPTURE_SUBAGENTS`,
+`SHAPA_LEARNING=0` (no learning lines or metrics at session start).
 
 ## Development
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the dev setup, the test matrix
-and the house rules this project runs on.
+```bash
+python3 -m venv .venv && .venv/bin/pip install -e '.[semantic,mcp]' pytest
+.venv/bin/python -m pytest -q
+```
+
+See [CONTRIBUTING.md](https://github.com/Roukh/shapa-llm/blob/main/CONTRIBUTING.md).
 
 ## License
 
-MIT, see [LICENSE](LICENSE).
+MIT, see [LICENSE](https://github.com/Roukh/shapa-llm/blob/main/LICENSE).
