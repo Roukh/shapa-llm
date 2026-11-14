@@ -5,12 +5,18 @@
 import { ApiError } from "./errors.js";
 import { SCOPES, WIKI_KEY_RE, nowIso, type Scope } from "./records.js";
 
+/** What a device may read and write (hosted.md, "Reach"): `full` is the operator's own machine and its agents;
+ *  `baseline` (every OAuth grant, and a token minted so) reads stage 0 and writes notes, tasks, ideas and files. */
+export const REACHES = ["full", "baseline"] as const;
+export type Reach = (typeof REACHES)[number];
+
 export interface Device {
   id: string;
   name: string;
   scopes: Scope[];
   wikis: string[] | null;
   source: "token" | "oauth";
+  reach: Reach;
   created: string;
   last_seen: string;
   revoked: string | null;
@@ -63,6 +69,8 @@ function fromRow(r: Row): Device {
     scopes: JSON.parse(r["scopes"] as string) as Scope[],
     wikis: r["wikis"] === null ? null : (JSON.parse(r["wikis"] as string) as string[]),
     source: r["source"] as "token" | "oauth",
+    // An OAuth grant is baseline whatever the row says; a token is full unless minted baseline.
+    reach: r["source"] === "oauth" || r["reach"] === "baseline" ? "baseline" : "full",
     created: r["created"] as string,
     last_seen: r["last_seen"] as string,
     revoked: (r["revoked"] as string | null) ?? null,
@@ -72,12 +80,13 @@ function fromRow(r: Row): Device {
 export class Devices {
   constructor(private readonly sql: SqlStorage) {}
 
-  create(d: { name: string; scopes: Scope[]; wikis: string[] | null; source: "token" | "oauth"; tokenHash: string }): Device {
+  create(d: { name: string; scopes: Scope[]; wikis: string[] | null; source: "token" | "oauth"; tokenHash: string; reach?: Reach }): Device {
     const id = randomHex(8);
     const scopes = SCOPES.filter((s) => d.scopes.includes(s));
     this.sql.exec(
-      `INSERT INTO devices (id, name, scopes, wikis, token_hash, source, created) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      id, d.name, JSON.stringify(scopes), d.wikis === null ? null : JSON.stringify([...new Set(d.wikis)]), d.tokenHash, d.source, nowIso(),
+      `INSERT INTO devices (id, name, scopes, wikis, token_hash, source, reach, created) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      id, d.name, JSON.stringify(scopes), d.wikis === null ? null : JSON.stringify([...new Set(d.wikis)]), d.tokenHash, d.source,
+      d.source === "oauth" ? "baseline" : (d.reach ?? "full"), nowIso(),
     );
     return this.get(id)!;
   }

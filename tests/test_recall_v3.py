@@ -215,7 +215,7 @@ class TestBootstrap(RecallCase):
         for i in range(12):
             _mem(self.wiki, f"distinct memory {chr(97 + i)}lpha {chr(98 + i)}eta topic {i}x"
                  f" {chr(99 + i)}amma", kind="preference")
-        text = bootstrap.build_context(roots=self.roots)
+        text = bootstrap.build_context(roots=self.roots, full=True)
         mem_lines = [l for l in text.splitlines() if l.startswith("- [") and " (memory): " in l]
         self.assertTrue(mem_lines)
         self.assertLessEqual(len(mem_lines), bootstrap.MEMORY_CAP_PER_ROOT)

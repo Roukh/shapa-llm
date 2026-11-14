@@ -4,6 +4,8 @@
 .shapa-index.db-wal
 .shapa-index.db-shm
 .shapa-vectors.json
+.shapa-code.db
+.shapa-code.db-journal
 # shapa: read-path caches (shapa.store/shapa.embed) - rebuilt
 .shapa-index.db.corrupt
 # shapa: read-path caches (shapa.store/shapa.embed) - rebuilt

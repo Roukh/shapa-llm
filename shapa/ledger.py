@@ -24,6 +24,7 @@ import argparse
 import json
 import re
 import shutil
+import sqlite3
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -33,6 +34,7 @@ from shapa import config, db, githooks
 
 VERIFY_TIMEOUT = 300
 GIT_TIMEOUT = 10
+HOOK_BUSY_MS = 1000     # the prompt hook never waits longer than this on a lock
 GH_TIMEOUT = 8
 LIVE_FEATURES_SHOWN = 8
 TEMP_DIRNAME = "temp"
@@ -398,9 +400,33 @@ def run_sweep(root: Path, *, keep_closed_since: str | None = None) -> db.SweepRe
         uses = None  # no stale-memory step on a synced wiki
     conn = _connect(root)
     try:
-        return db.sweep(conn, vectors=vectors, uses=uses, keep_closed_since=keep_closed_since)
+        try:
+            from shapa import metrics
+
+            metrics.harvest(conn, root)  # the sweep deletes closed items: archive them as events first
+        except Exception:
+            pass
+        report = db.sweep(conn, vectors=vectors, uses=uses, keep_closed_since=keep_closed_since)
     finally:
         conn.close()
+    try:
+        from shapa import metrics
+
+        metrics.prune(root)  # raw events past their window are folded into snapshots, then dropped
+    except Exception:
+        pass
+    try:
+        from shapa import learn
+
+        conn = _connect(root)
+        try:
+            with learn.LearnIndex(root, timeout=5.0) as ix:
+                ix.sync(conn)  # the derived similarity index follows the rows (the hook path only catches up a bounded part)
+        finally:
+            conn.close()
+    except Exception:
+        pass
+    return report
 
 
 def remove_temp(root: Path, feature: str) -> bool:
@@ -511,6 +537,28 @@ def _subcommand_adder(sub):
     return add
 
 
+def _add_task_cmd(args) -> int:
+    """``shapa ledger add human_task|agent_task TITLE [--scope global|repo]``: a task alias, or
+    any task into the global wiki (which holds tasks only, each standalone and owned)."""
+    from shapa import tasks
+
+    scope = args.scope or "repo"
+    owner = db.OWNER_TAGS.get(args.kind, "")
+    if scope == "global" and args.kind.upper() in ("F", "J"):
+        raise CommandError("the global wiki holds tasks only: features and jobs are bound to a "
+                           "branch and a commit, so they live in a repo wiki")
+    if args.verify:
+        raise CommandError("a task alias takes no --verify")
+    conn = _connect(scoped_root(scope, args.cwd), create=scope == "global")
+    try:
+        tid, created = tasks.add_task(conn, args.title, owner, args.body or "", project=args.project,
+                                      standalone_only=scope == "global", parent=args.parent)
+    finally:
+        conn.close()
+    print(tid if created else f"{tid} (the same open task is already stored)")
+    return 0
+
+
 def ledger_main(argv: list[str]) -> int:
     p = argparse.ArgumentParser(prog="shapa ledger", description="The work ledger: features "
                                 "(a new capability: branch + PR), jobs (one commit; fixes, docs "
@@ -520,24 +568,33 @@ def ledger_main(argv: list[str]) -> int:
     add = _subcommand_adder(sub)
     ls = add("list", help="live features with their jobs and tasks (default)")
     ls.add_argument("--all", action="store_true", help="include closed items")
-    a = add("add", help="add a feature, job or task")
-    a.add_argument("kind", choices=["F", "J", "T", "f", "j", "t"])
+    ls.add_argument("--scope", choices=["repo", "global"], default=None, help="the global wiki holds tasks")
+    a = add("add", help="add a feature, job or task (human_task and agent_task are task aliases)")
+    a.add_argument("kind", choices=["F", "J", "T", "f", "j", "t", *db.OWNER_TAGS])
     a.add_argument("title")
     a.add_argument("--parent")
     a.add_argument("--body", default="")
     a.add_argument("--verify", help="shell command that exits 0 only when the item is done")
+    a.add_argument("--scope", choices=["repo", "global"], default=None,
+                   help="where it goes (default repo); the global wiki takes human_task and "
+                        "agent_task only, standalone")
+    a.add_argument("--project", default=None, help="a task: the project it belongs to (project:KEY)")
     for name in ("claim", "release"):
         c = add(name)
         c.add_argument("ids", nargs="+")
         c.add_argument("--session", default="")
+        c.add_argument("--scope", choices=["repo", "global"], default=None)
     cl = add("close", help="close an item (runs its verify first)")
     cl.add_argument("id")
     cl.add_argument("--reason", default="agent", choices=list(db.CLOSE_REASONS))
     cl.add_argument("--ref")
+    cl.add_argument("--scope", choices=["repo", "global"], default=None,
+                    help="close a task of the global wiki")
     cl.add_argument("--no-verify", action="store_true",
                     help="operator closes only: skip the verify command")
     t = add("tree")
     t.add_argument("id")
+    t.add_argument("--scope", choices=["repo", "global"], default=None)
     br = add("branch", help="name a feature's branch and record it")
     br.add_argument("id")
     br.add_argument("--name", help="the branch name (default F<n>-<title slug>)")
@@ -624,7 +681,9 @@ def ledger_main(argv: list[str]) -> int:
                 conn.close()
         return 0
 
-    root = repo_root(args.cwd)
+    if cmd == "add" and (args.scope == "global" or args.kind in db.OWNER_TAGS):
+        return _add_task_cmd(args)
+    root = scoped_root(getattr(args, "scope", None) or "repo", args.cwd)
     if cmd == "close":
         return cmd_close(root, args.id, args.reason, args.ref, args.no_verify)
     conn = _connect(root, create=False)
@@ -632,8 +691,9 @@ def ledger_main(argv: list[str]) -> int:
         if cmd == "list":
             _print_list(conn, getattr(args, "all", False))
         elif cmd == "add":
+            key = db.clean_project(args.project)
             new = db.add_item(conn, args.kind, args.title, parent=args.parent, body=args.body,
-                              verify=args.verify)
+                              verify=args.verify, tags=[db.PROJECT_PREFIX + key] if key else ())
             print(new)
         elif cmd in ("claim", "release"):
             for i in args.ids:
@@ -752,11 +812,19 @@ def row_main(argv: list[str]) -> int:
                 conn.close()
         return 0
     if cmd == "add":
+        if re.split(r"[:\s/]", db.normalize_label(args.source))[0] in ("correction", "learn"):
+            raise CommandError("the sources `correction` and `learn` are the engine's own: the hook and "
+                               "`shapa learn` file those rows")
+        try:
+            db.check_row_tags(args.tag)
+        except db.LedgerError as exc:
+            raise CommandError(str(exc))
         root = scoped_root(args.scope, args.cwd)
         conn = _connect(root, create=True)
         try:
             rid, created = db.add_row(conn, args.kind, args.summary, args.body, tags=args.tag,
-                                      about=args.about, alias=args.alias, source=args.source)
+                                      about=args.about, alias=args.alias, source=args.source,
+                                      privileged=True)  # the local CLI is the operator's
         finally:
             conn.close()
         print(rid if created else f"{rid} (identical row already stored)")
@@ -767,15 +835,17 @@ def row_main(argv: list[str]) -> int:
     conn = _connect(root)
     try:
         if cmd == "edit":
-            r = db.update_row(conn, args.id, summary=args.summary, body=args.body, alias=args.alias)
+            r = db.update_row(conn, args.id, summary=args.summary, body=args.body, alias=args.alias,
+                              privileged=True)
             print(f"{r.id} {r.summary}")
         elif cmd == "rm":
             print(f"removed {db.delete(conn, args.ids)}")
         elif cmd == "link":
-            db.link(conn, args.src, args.dst, args.rel)
+            db.link(conn, args.src, args.dst, args.rel, privileged=True)
             print(f"{args.src} {args.rel} {args.dst}")
         elif cmd == "tag":
-            db.tag(conn, args.id, args.tags)
+            db.check_row_tags(args.tags)
+            db.tag(conn, args.id, args.tags, privileged=True)
             print(f"{args.id}: {', '.join(db._tags_of(conn, args.id))}")
     finally:
         conn.close()
@@ -805,36 +875,105 @@ def is_correction(text: str) -> bool:
     return bool(CORRECTION_RE.search(text or ""))
 
 
+#: A prompt that is only a go-ahead teaches nothing: never a soft candidate.
+APPROVALS = frozenset(("yes y yep yeah ok okay k continue go proceed merge done thanks thx ty sure fine great "
+                       "good nice perfect lgtm approved next").split()) | {
+    "go ahead", "do it", "ship it", "thank you", "please continue", "sounds good", "looks good"}
+_DO_N = re.compile(r"^do\s+#?\d+\b")
+#: A message made only of these words (or numbers) is a go-ahead, never a candidate: "yes merge and push".
+APPROVAL_WORDS = frozenset(("yes yep yeah ok okay sure fine good great nice perfect thanks thank you please go "
+                            "ahead continue proceed merge ship push commit do it that this done approved lgtm "
+                            "and now then all both the first second one two three y k thx ty next").split())
+SOFT_MAX_CHARS = 240
+SOFT_PER_SESSION = 10
+
+
+def is_soft_candidate(text: str) -> bool:
+    """Only the cheap string tests (microseconds): a short statement, no question, no slash command,
+    not a bare approval. Whether work is claimed, and the session cap, are asked of the database after."""
+    t = (text or "").strip()
+    if not t or len(t) > SOFT_MAX_CHARS or "?" in t or t.startswith("/"):
+        return False
+    plain = re.sub(r"[^\w\s]", "", t.lower()).strip()
+    words = plain.split()
+    if all(w in APPROVAL_WORDS or w.isdigit() for w in words):
+        return False                      # also an empty message (emoji, punctuation)
+    return plain not in APPROVALS and not _DO_N.match(plain)
+
+
+def _soft_unapplied(conn, session: str) -> int:
+    return conn.execute(
+        "SELECT COUNT(*) FROM tags s JOIN mri m ON m.id = s.id WHERE s.tag = 'soft' AND m.session = ? "
+        "AND NOT EXISTS (SELECT 1 FROM tags l WHERE l.id = s.id AND l.tag = 'learned')",
+        ((session or "")[:8],)).fetchone()[0]
+
+
 def record_correction(prompt: str, *, cwd=None, session: str = "",
-                      transcript_path: str | None = None, now: datetime | None = None
-                      ) -> tuple[Path, str] | None:
+                      transcript_path: str | None = None, now: datetime | None = None,
+                      hook: bool = True, info: dict | None = None) -> tuple[Path, str] | None:
     """Write an issue row for an operator correction. ``None`` when *prompt*
     is not a correction, is text the harness wrote (an agent's hand-back, a
     task notice, command output: capture skips the same turns), or no wiki in
-    scope has a database."""
+    scope has a database. A prompt the strong cues miss is filed as a soft
+    candidate (tag ``soft``) while a ledger item is claimed and it is a short
+    statement, not a question, a slash command or an approval, at most
+    SOFT_PER_SESSION unapplied per session. *hook* is false for a manual
+    ``--text`` filing (source ``correction:manual``). *info* receives what
+    :func:`shapa.learn.on_correction` found. Waits at most a second on any lock."""
     from shapa import capture
 
     text = capture._clean_user_text(prompt or "")
-    if not capture._is_operator_text(text) or not is_correction(text):
+    if not capture._is_operator_text(text):
         return None
+    strong = is_correction(text)
     root = default_root_for_hook(cwd)
     if root is None:
         return None
-    conn = db.connect(root)
+    _note_prompt(root, session, text, now)
+    if not strong and not is_soft_candidate(text):
+        return None
+    try:
+        conn = db.connect(root, busy_ms=HOOK_BUSY_MS)
+    except Exception:
+        return None
     if conn is None:
         return None
     try:
         claimed = [i.id for i in db.items(conn, status="claimed")]
+        if not strong and (not claimed or _soft_unapplied(conn, session) >= SOFT_PER_SESSION):
+            return None
         before = _last_assistant_text(transcript_path)
         body = f"Operator: {text[:600]}"
         if before:
             body += f"\nAgent before: {before}"
         first = re.split(r"(?<=[.!?])\s+", text.strip(), maxsplit=1)[0]
-        rid, _ = db.add_row(conn, "I", first, body, tags=["correction"], about=claimed,
-                            source="correction", session=(session or "")[:8], now=now)
+        rid, created = db.add_row(conn, "I", first, body, tags=["correction"] + ([] if strong else ["soft"]),
+                                  about=claimed, source="correction" if hook else "correction:manual",
+                                  session=(session or "")[:8], now=now)
+    except Exception:
+        return None  # a locked or unwritable database never stalls the prompt
     finally:
         conn.close()
+    found = {"soft": not strong}
+    try:
+        from shapa import learn
+
+        found.update(learn.on_correction(root, rid, created, session=session, hook=hook, now=now))
+    except Exception:
+        pass  # learning never blocks a correction from being recorded
+    if info is not None:
+        info.update(found)
     return root, rid
+
+
+def _note_prompt(root, session: str, text: str, now) -> None:
+    """One operator message's frustration signal, kept per device (never the text)."""
+    try:
+        from shapa import metrics
+
+        metrics.record_prompt(root, session, text, now=now)
+    except Exception:
+        pass
 
 
 def correction_main(argv: list[str]) -> int:
@@ -848,15 +987,28 @@ def correction_main(argv: list[str]) -> int:
         print("correction" if is_correction(args.text) else "not a correction")
         return 0
     data = {"prompt": args.text} if args.text is not None else _read_hook_stdin()
+    found: dict = {}
     try:
         hit = record_correction(str(data.get("prompt") or ""), cwd=data.get("cwd"),
                                 session=str(data.get("session_id") or ""),
-                                transcript_path=data.get("transcript_path"))
+                                transcript_path=data.get("transcript_path"),
+                                hook=args.text is None, info=found)
     except Exception:
         hit = None
     if hit is not None:
         root, rid = hit
-        print(f"shapa: logged this correction as issue {rid} ({root})")
+        line = f"shapa: logged this correction as issue {rid} ({root})"
+        if found.get("soft"):
+            line = (f"shapa: noted this as a possible correction, issue {rid} "
+                    f"(soft: `shapa learn dismiss {rid}` if it is not)")
+        if found.get("repeat"):
+            line += (f"; a REPEAT of {found.get('of')} (seen {max(found.get('count') or 1, 2)} times)"
+                     + (f", and {found['violation']} is a principle already learned: it did not hold"
+                        if found.get("violation") else "")
+                     + ("; it was revised without effect and needs enforcement, not rewording"
+                        if found.get("churn") else ""))
+        if not found.get("soft") or found.get("repeat"):
+            print(line)
     return 0
 
 
@@ -876,4 +1028,8 @@ def run(entry, argv) -> None:
     except (CommandError, db.LedgerError) as exc:
         print(f"shapa: {exc}", file=sys.stderr)
         code = 2
+    except sqlite3.Error as exc:  # a locked or corrupt database: one line, no traceback
+        print(f"shapa: the database is locked or unreadable ({type(exc).__name__}); try again",
+              file=sys.stderr)
+        code = 1
     sys.exit(code)

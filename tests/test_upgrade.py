@@ -586,7 +586,7 @@ class TestHookIntegration(UpgradeTestCase):
         sys.stdin, sys.stdout = io.StringIO(json.dumps({"cwd": str(cwd)})), io.StringIO()
         try:
             with self.assertRaises(SystemExit):
-                bootstrap.main([])
+                bootstrap.main(["--full"])
             out = sys.stdout.getvalue()
         finally:
             sys.stdin, sys.stdout = old_stdin, old_stdout

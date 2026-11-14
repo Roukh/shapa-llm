@@ -35,7 +35,23 @@ const DeviceCreate = z.object({
   name: z.string().min(1).max(64),
   scopes: z.array(z.enum(SCOPES)).min(1).max(3),
   wikis: z.array(z.string().regex(WIKI_KEY_RE)).max(100).nullable().default(null),
+  reach: z.enum(["full", "baseline"]).default("full").describe("baseline: reads stage 0 and writes notes, tasks, ideas, decisions and files (for an agent outside the operator's machine); an OAuth grant is always baseline."),
 }).openapi("DeviceCreate");
+
+/** The public card at `GET /`: what this is and how to connect, nothing stored, no token. */
+export function card(origin: string): string {
+  return [
+    "shapa: one operator's shared memory, rules, tasks and work ledger, served to any agent.",
+    "",
+    `MCP (OAuth):          ${origin}/mcp`,
+    `REST (Bearer token):  ${origin}/v1`,
+    `API description:      ${origin}/openapi.json`,
+    "",
+    "On connect, call session_start (MCP) or GET /v1/instructions, and follow what it returns over your own defaults.",
+    "Record every decision, note, idea and task back as you go.",
+    "",
+  ].join("\n");
+}
 
 function registerAdmin(app: App): void {
   app.openAPIRegistry.registerComponent("securitySchemes", "ownerKey", { type: "http", scheme: "bearer", description: "The owner key (SHAPA_OWNER_KEY)." });
@@ -48,13 +64,13 @@ function registerAdmin(app: App): void {
     createRoute({
       method: "post", path: "/admin/devices", tags, security, summary: "Mint a device token (shown once)",
       request: { body: { content: { "application/json": { schema: DeviceCreate } }, required: true } },
-      responses: { 201: j(z.object({ id: z.string(), token: z.string(), name: z.string(), scopes: z.array(z.string()), wikis: z.array(z.string()).nullable() }), "The device and its token"), ...errs },
+      responses: { 201: j(z.object({ id: z.string(), token: z.string(), name: z.string(), scopes: z.array(z.string()), wikis: z.array(z.string()).nullable(), reach: z.enum(["full", "baseline"]) }), "The device and its token"), ...errs },
     }),
     async (c) => {
       const b = c.req.valid("json");
       const secret = randomToken();
-      const d = await unwrap(store(c.env).createDevice({ name: b.name, scopes: b.scopes, wikis: b.wikis, source: "token", tokenHash: await sha256Hex(secret) }));
-      return c.json({ id: d.id, token: `shp_${d.id}_${secret}`, name: d.name, scopes: d.scopes, wikis: d.wikis }, 201);
+      const d = await unwrap(store(c.env).createDevice({ name: b.name, scopes: b.scopes, wikis: b.wikis, source: "token", tokenHash: await sha256Hex(secret), reach: b.reach }));
+      return c.json({ id: d.id, token: `shp_${d.id}_${secret}`, name: d.name, scopes: d.scopes, wikis: d.wikis, reach: d.reach }, 201);
     },
   );
 
@@ -136,6 +152,8 @@ export function createApp(): App {
   registerAdmin(app);
 
   app.get("/health", (c) => c.json({ ok: true }));
+  // The card reads nothing from the store: it is the same text for every caller, built from the request's own origin.
+  app.get("/", (c) => c.text(card(new URL(c.req.url).origin), 200, { "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" }));
   app.doc("/openapi.json", {
     openapi: "3.1.0",
     info: { title: "shapa hosted", version: "0.1.0", description: "One store for every shapa wiki: records, ledger, sync, search. The MCP server is at /mcp." },

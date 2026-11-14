@@ -22,7 +22,7 @@ export const LIMITS = {
   links: 200,
   searchK: 50,
   listLimit: 200,
-  instructionsBudget: { min: 2000, default: 6000, max: 40_000 },
+  instructionsBudget: { min: 2000, default: 14_000, max: 40_000 },
 } as const;
 
 export const KINDS = ["F", "J", "T", "M", "R", "I", "D", "N"] as const;
@@ -418,6 +418,7 @@ export const SYNC_STATUSES = ["accepted", "renamed", "noop", "rejected"] as cons
 export const SyncResult = z.object({
   id: z.string(), status: z.enum(SYNC_STATUSES), rev: z.number().int(),
   new_id: z.string().optional(), error: z.string().optional().describe("Why a record was rejected, when it was invalid."),
+  note: z.string().optional().describe("What the server changed in an accepted record (a stage:0 tag from a device that may not set it is stored as stage-proposed:0)."),
 }).openapi("SyncResult");
 export const SyncResponse = z.object({
   cursor: z.number().int(), results: z.array(SyncResult), changes: z.array(RecordOut),
@@ -428,7 +429,7 @@ export type SyncResponseOut = z.infer<typeof SyncResponse>;
 
 // REST record writes --------------------------------------------------------------------------
 
-export const CREATE_TYPES = ["feature", "job", "task", "memory", "idea", "rule", "issue", "document", "note"] as const;
+export const CREATE_TYPES = ["feature", "job", "task", "human_task", "agent_task", "memory", "idea", "decision", "rule", "issue", "document", "note"] as const;
 export type CreateType = (typeof CREATE_TYPES)[number];
 
 export const CreateBody = z.object({
@@ -441,6 +442,8 @@ export const CreateBody = z.object({
   parent: z.string().max(120).optional(),
   path: z.string().max(200).optional().describe("Note path, for type note."),
   mime: z.string().max(100).optional(),
+  project: z.string().max(80).optional().describe("The project key. A document is the project's file (default: the wiki's own project; a project keeps one document); a task, idea, decision, rule or memory is tagged project:KEY and linked to the file."),
+  merge: z.boolean().optional().describe("Document only: append to the project's existing document as a section instead of refusing (409)."),
 }).openapi("CreateRecord");
 
 export const PatchBody = z.object({
@@ -462,12 +465,126 @@ export const CloseBody = z.object({
   git_ref: z.string().max(200).optional(),
 }).openapi("CloseRecord");
 
+// Focus and skills -------------------------------------------------------------------------------
+// Neither is a record kind: both are documents told apart by tags (hosted.md, "Focus and skills").
+
+export const MAX_FIRES = 3;
+export const FOCUS_ALIAS = "focus";
+export const FOCUS_TAG = "focus";
+export const SKILL_TAG = "skill";
+export const RESERVED_DOC_TAGS: readonly string[] = [FOCUS_TAG, SKILL_TAG];
+export const PROJECT_PREFIX = "project:";
+export const RANK_PREFIX = "rank:";
+export const NORTHSTAR_MAX = 600;
+export const FIRE_TEXT_MAX = 200;
+export const DOC_BODY_MAX = 1_000_000;
+const PROJECT_RE = /^[a-z0-9][a-z0-9._/-]{0,79}$/;
+
+/** The project key of a document's tags: `project:KEY`, "" (the wiki's own project) without
+ *  one, null for a focus record or a skill version (not project documents, never gated). */
+export function projectOf(tags: readonly string[]): string | null {
+  if (tags.some((t) => RESERVED_DOC_TAGS.includes(t))) return null;
+  const t = [...tags].sort(cmp).find((x) => x.startsWith(PROJECT_PREFIX));
+  return t === undefined ? "" : t.slice(PROJECT_PREFIX.length);
+}
+
+export function cleanProject(project: unknown): string {
+  const key = String(project ?? "").trim().toLowerCase();
+  if (key && !PROJECT_RE.test(key)) throw new Invalid(`invalid project ${JSON.stringify(String(project))}: lowercase letters, digits and . _ / - only`);
+  return key;
+}
+
+export const FireIn = z.object({
+  feature: z.string().max(120).optional(),
+  text: z.string().max(5000).optional(),
+}).openapi("FireIn");
+
+export const FocusPut = z.object({
+  northstar: z.string().max(5000).optional(),
+  fires: z.array(FireIn.nullable()).max(MAX_FIRES, "there are three fires").optional()
+    .describe("Replaces the fires: up to three, in rank order; null leaves a slot free."),
+}).openapi("FocusPut");
+
+export const FocusPromote = z.object({
+  feature: z.string().max(120).optional(),
+  slot: z.number().int().min(1).max(MAX_FIRES).optional(),
+}).openapi("FocusPromote");
+
+export const FireOut = z.object({
+  slot: z.number().int(), feature: z.string(), text: z.string(), title: z.string(), status: z.string(),
+  jobs: z.array(z.object({
+    id: z.string(), title: z.string(), status: z.string(),
+    tasks: z.array(z.object({ id: z.string(), title: z.string(), status: z.string() })),
+  })),
+  files: z.array(z.string()), boxes: z.array(z.string()),
+}).openapi("Fire");
+export const FocusOut = z.object({
+  wiki: z.string(), northstar: z.string(), fires: z.array(FireOut.nullable()),
+  candidates: z.array(z.object({ id: z.string(), title: z.string(), rank: z.number().int().nullable() })),
+}).openapi("Focus");
+
+export const SkillSummary = z.object({
+  name: z.string(), description: z.string(), active: z.number().int().nullable(),
+  pending: z.array(z.number().int()), versions: z.number().int(),
+}).openapi("SkillSummary");
+export const SkillVersionOut = z.object({
+  name: z.string(), version: z.number().int(), status: z.enum(["active", "pending", "previous"]),
+  description: z.string(), id: z.string(), body: z.string(),
+}).openapi("SkillVersion");
+
 export const SearchHit = z.object({
   wiki: z.string(), id: z.string(), type: z.string(), summary: z.string(), updated: z.string(),
 }).openapi("SearchHit");
 export const SearchOut = z.object({ results: z.array(SearchHit), mode: z.literal("bm25") }).openapi("SearchResults");
 
+// Tags, relations, tasks and projects ---------------------------------------------------------------
+
+export const TagRowOut = z.object({
+  tag: z.string(), total: z.number().int(),
+  counts: z.record(z.string(), z.number().int()).describe("Live records carrying the tag, by type: rule, memory, issue, skill, document, task, job, feature, note."),
+}).openapi("TagRow");
+export const TagsOut = z.object({ tags: z.array(TagRowOut) }).openapi("Tags");
+
+export const RelatedHitOut = z.object({
+  id: z.string(), type: z.string(), summary: z.string(), updated: z.string(),
+  via: z.enum(["link", "tags"]).describe("link: linked to the record (either direction); tags: shares its tags."),
+  shared: z.number().int().describe("Non-system tags shared with the record."),
+}).openapi("RelatedHit");
+export const RelatedOut = z.object({ id: z.string(), wiki: z.string(), related: z.array(RelatedHitOut) }).openapi("Related");
+
+export const TaskOut = z.object({
+  wiki: z.string(), id: z.string(), title: z.string(), project: z.string(), owner: z.enum(["human", "agent", ""]),
+  status: z.string(), created: z.string(), rank: z.number().int().nullable(),
+}).openapi("Task");
+export const TasksOut = z.object({ tasks: z.array(TaskOut), total: z.number().int().describe("How many match, past the 100 returned.") }).openapi("Tasks");
+
+export const ProjectSections = z.record(z.string(), z.array(z.string())).describe("issues, questions, implementations, problem, solution, diff, advantages, villains, loop_market, loop_product: the numbered items of each.");
+export const ProjectCardOut = z.object({
+  key: z.string(), wiki: z.string(), title: z.string(),
+  document: z.object({ id: z.string(), sections: ProjectSections }).nullable(),
+}).openapi("ProjectCard");
+const Brief = z.object({ id: z.string(), summary: z.string() });
+export const ProjectOut = ProjectCardOut.extend({
+  tasks: z.array(z.object({ id: z.string(), title: z.string(), status: z.string(), owner: z.enum(["human", "agent", ""]) })),
+  ideas: z.array(Brief), decisions: z.array(Brief),
+  rules: z.array(Brief.extend({ stage: z.number().int().nullable() })),
+  skills: z.array(z.object({ id: z.string(), name: z.string(), description: z.string(), stage: z.number().int().nullable() })),
+  memories: z.array(Brief),
+  features: z.array(z.object({ id: z.string(), title: z.string() })),
+  more: z.record(z.string(), z.number().int()).describe("How many more of each list exist past its 50."),
+}).openapi("Project");
+export const ProjectsOut = z.object({
+  projects: z.array(z.object({ key: z.string(), title: z.string(), open_tasks: z.number().int() })), total: z.number().int(),
+}).openapi("Projects");
+export const ProjectNewBody = z.object({
+  title: z.string().max(5000).optional(), wiki: z.string().regex(WIKI_KEY_RE).optional().describe("Default: global."),
+}).openapi("ProjectNew");
+export const ProjectItemBody = z.object({
+  section: z.string().max(40), text: z.string().max(5000).describe("One line, at most 500 characters; masked."), wiki: z.string().regex(WIKI_KEY_RE).optional(),
+}).openapi("ProjectItem");
+export const ProjectItemOut = z.object({ project: ProjectCardOut, section: z.string(), n: z.number().int(), added: z.boolean() }).openapi("ProjectItemResult");
+
 export const DeviceOut = z.object({
-  id: z.string(), name: z.string(), scopes: z.array(z.enum(SCOPES)), wikis: z.array(z.string()).nullable(),
+  id: z.string(), name: z.string(), scopes: z.array(z.enum(SCOPES)), wikis: z.array(z.string()).nullable(), reach: z.enum(["full", "baseline"]),
   source: z.enum(["token", "oauth"]), created: z.string(), last_seen: z.string(), revoked: z.string().nullable(),
 }).openapi("Device");

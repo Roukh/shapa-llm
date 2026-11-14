@@ -2,6 +2,7 @@
 
 import { type Device, needScope, needWiki, wikiAllowed } from "./devices.js";
 import { fail } from "./errors.js";
+import { denyBaseline } from "./reach.js";
 import { Repo } from "./repo.js";
 
 export interface WikiInfo {
@@ -18,6 +19,11 @@ function info(repo: Repo, key: string): WikiInfo {
   return { key: w.key, name: w.name, kind: w.kind, origin: w.origin, created: w.created, counts: repo.wikiCounts(key) };
 }
 
+/** The keys of the wikis a device may use (every registered wiki when it has no list). */
+export function readableWikis(repo: Repo, d: Device): string[] {
+  return repo.wikis().filter((w) => wikiAllowed(d, w.key)).map((w) => w.key);
+}
+
 export function listWikis(repo: Repo, d: Device): WikiInfo[] {
   needScope(d, "read");
   return repo.wikis().filter((w) => wikiAllowed(d, w.key)).map((w) => info(repo, w.key));
@@ -31,6 +37,7 @@ export function putWiki(
   if ((key === "global") !== (body.kind === "global")) fail("invalid", 'the wiki key "global" is the global wiki, and only it');
   const cur = repo.wiki(key);
   if (!cur) {
+    denyBaseline(d, "this device uses the wikis that exist and registers no new one");
     repo.insertWiki({ key, name: body.name, kind: body.kind, origin: body.origin });
     return { wiki: info(repo, key), created: true };
   }

@@ -25,6 +25,10 @@ venv/
 .shapa-index.db-shm
 .shapa-daemon.sock
 
+# The code map (shapa/codemap.py): a derived, rebuildable graph beside the index.
+.shapa-code.db
+.shapa-code.db-journal
+
 # Python build artifacts
 *.egg-info/
 build/

@@ -11,7 +11,7 @@ OpenCode.
 
 ## Install
 
-Once shapa is on PyPI:
+shapa is on [PyPI](https://pypi.org/project/shapa/):
 
 ```bash
 uv tool install 'shapa[semantic,mcp]'
@@ -19,7 +19,11 @@ uv tool install 'shapa[semantic,mcp]'
 pipx install shapa
 ```
 
-Until then, install straight from GitHub:
+Upgrade with `uv tool upgrade shapa` (or `pipx upgrade shapa`), then run
+`shapa upgrade --all --check`. The core has no dependencies; `[semantic]`
+adds fused vector recall and `[mcp]` the MCP server library.
+
+To install and wire Claude Code's hooks in one step:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Roukh/shapa-llm/main/bootstrap.sh | sh
@@ -56,10 +60,24 @@ there instead.
 
 ## What it does
 
-- Surfaces relevant memory at session start and injects more on every
-  prompt, ranked by relevance.
+- Starts a session on what matters: the northstar, then the three big fires
+  (`shapa focus`) and only their tree, not every row. Closing a fire's
+  feature frees its slot and promotes the next candidate.
+- Partitions the code per fire. `shapa map` builds a graph of the checkout
+  (files, functions, imports and calls; Python by `ast`, JavaScript and
+  TypeScript by regex) into a derived, gitignored index; `shapa partition`
+  lists a fire's related files, bounded: the files its feature, jobs and
+  tasks name, the files recalled for their words, and the callers and
+  importers a change reaches, each with why it is there. Session start shows
+  each fire's top files. It is local: it needs the checkout, so the hosted
+  store neither holds nor serves it.
+- Injects relevant memory on every prompt, ranked by relevance.
+- Keeps skills as versioned records and one document per project; a
+  correction that names a skill files a pending new version of it, never an
+  active one.
 - Turns an operator's correction ("no", "wrong", "not like this") into an
-  attributed issue row, not a buried chat line.
+  attributed issue row, not a buried chat line, and closes the loop so it is
+  never made twice (see Learning loop below).
 - Tracks work as a three-level ledger: a feature (`F`, a new capability
   with its own branch and PR) holds jobs (`J`, one commit each), and a job
   holds tasks (`T`). Fixes, docs and release work are standalone jobs that
@@ -134,22 +152,109 @@ which is why shapa commits it only on the default branch.
 | `shapa doctor` | check the whole install; exits 1 with a fix command per problem |
 | `shapa status` | the same report as `doctor`, without the exit code |
 | `shapa commit [--hook] [--dry-run] [--json] [--scrub TERM]` | commit `.shapa/` on the default branch |
-| `shapa bootstrap` | session-start overview of every wiki in scope |
+| `shapa bootstrap [--full] [--stage N] [--budget N]` | session start: the precedence line, the northstar and three fires with only their tree, the baseline, topics, projects and the operator's open tasks, then learned context (`--full`: every ranked row and the open ledger) |
+| `shapa focus show\|northstar\|fire\|unfire\|order\|rank\|candidates\|promote` | the northstar and the three ranked big fires of a wiki scope |
+| `shapa skill list\|show\|add\|update\|activate\|uproot` | skills as versioned records, global or per repo; `uproot` moves a repo's skill to the global wiki |
+| `shapa stage set\|clear\|list\|pending` | which rules, memories and skills every session starts with (`stage:0` is the baseline, set only from this CLI) |
+| `shapa tags` / `shapa related ID` | every tag with its counts; the records linked to or sharing tags with one (`shapa fetch --tag NAME` reads a tag) |
+| `shapa tasks [--owner human\|agent] [--project KEY] [--all]` | the operator's open tasks across the wikis in scope |
+| `shapa project new\|show\|list\|add` | a project's one file (issues, questions, implementations, problem, solution, ...) |
+| `shapa learn pending\|apply\|dismiss\|merge\|principles` | generalize corrections into cross-repo principles (see Learning loop) |
+| `shapa metrics [--since DATE] [--json] [--snapshot] [--all] [--repo KEY] [--history DAYS]` | whether the wiki is working: latency against record count, repeats, learning, work on the fires; `record skill-use NAME --session ID` |
+| `shapa map [--seconds N] [--rebuild] [--json]` | build or refresh this checkout's code map (a derived, gitignored `.shapa-code.db`) |
+| `shapa partition [F<n>\|1\|2\|3] [--max-files N] [--max-bytes N] [--no-refresh] [--json]` | a fire's related files as one bounded partition, each with why |
 | `shapa fetch` | rank and surface memory relevant to a prompt |
 | `shapa get ID` | print a row's or a note's full text |
 | `shapa save` | write one note or row (`--scope global\|repo\|external`) |
 | `shapa row add\|edit\|rm\|link\|tag\|list` | manage memory, rule and issue rows |
-| `shapa doc add\|edit\|rm\|list` | manage documents (a titled body kept whole; `shapa get D<n>` prints one) |
+| `shapa doc add\|edit\|rm\|list\|merge` | manage documents (a titled body kept whole; `shapa get D<n>` prints one); a project keeps one, a second is refused naming it or appended with `--merge` |
 | `shapa remote login\|sync\|status\|devices\|logout\|instructions` | the opt-in hosted store (see Hosted) |
 | `shapa ledger add\|claim\|close\|tree\|issues` | manage the work ledger |
 | `shapa correction` | record an operator correction as an issue row |
 | `shapa maintain [--prune] [--dry-run]` | self-heal: merge duplicates, prune stale and orphaned rows |
 | `shapa validate` | check note and wiki frontmatter |
 | `shapa upgrade [--all] [--check]` | bring a wiki to the current format |
-| `shapa mcp` | run the MCP stdio server (`search`, `get`, `save`, `placement`) |
+| `shapa mcp` | run the MCP stdio server (`search`, `get`, `save`, `placement`, `focus`, `skill`, `partition`, `tags`, `related`, `tasks`, `projects`, `project`, `project_new`, `project_add`) |
 | `shapa serve` | run the optional warm per-wiki daemon |
 
 Run `shapa` with no arguments for the full, versioned usage text.
+
+## Learning loop
+
+A correction is made once. The `UserPromptSubmit` hook files it as an issue
+row and compares it (stemmed-token similarity, plus vector cosine with
+`[semantic]`) with every earlier issue and rule of the repo wiki and the
+global wiki. A close match is a **repeat**: it is tagged `repeat`, linked
+`related`, the earlier row's count goes up, and when the earlier row was a
+learned principle it is a **violation** of it.
+
+`shapa learn pending [--json] [--limit N]` lists what no one has generalized yet
+(newest cap first, the limit applied before any search), each with its nearest
+rules, skills and issues (score, and whether it would merge), the corrections
+that are only *soft* candidates, and the skill versions a learned principle
+filed that await `shapa skill activate`. `shapa learn apply ISSUE --principle
+TEXT` records the principle the correction implies, and you choose where it
+goes:
+
+- **`--into R<n>` (or `global/R<n>`, `repo/R<n>`) merges, `--new` adds, `--into
+  skill:NAME` files a lesson for a skill.** Matching words cannot decide
+  meaning, so with neither flag and any candidate the call exits 2 and prints
+  the candidates (`--json`: `{"error":"choose","candidates":[...]}`). A wiki
+  keeps at most 60 principles; `shapa learn merge SRC DST` folds two.
+- **Global by default.** Principles hold across repos; `--scope repo` is the
+  exception and needs `--why`, stored on the row. A principle for a skill is a
+  rule that carries `skill:NAME`: it is in effect at once, and the skill gets a
+  PENDING new version with the lesson quoted. Only `shapa skill activate`
+  makes it live.
+- **One principle, many corrections.** A principle is one rule row: the
+  statement is its summary, its body holds the evidence (source corrections:
+  id, wiki key, date, text; at most 12 kept) and any reworded `Also:` line. A
+  principle that contradicts a rule is filed beside it, linked `conflicts`, and
+  an `--into` of a contradicted rule is refused. Its tags carry
+  `violations:N`, `revisions:N`, `evidence:N`, `last-seen` and `serves:`;
+  `shapa learn principles` shows them with how often session start served it.
+- **Directed.** Every apply records what it serves: `<repo key>/F<n>` of the
+  claimed fire (an open feature), `northstar`, else `none`, which `shapa
+  metrics` counts.
+- **No loops.** A correction is learned once. A principle revised three times
+  that is still violated is marked `churn`: a fourth revision is refused, and
+  so is a `--new` for a correction near it (an unrelated one applies as
+  usual; say `--new --distinct-from R<n>` to claim a different subject, which
+  is recorded). `learn pending` lists it as needing enforcement (a hook, a
+  test), not rewording; once enforcement exists, `shapa learn unchurn R<n>`
+  clears it. Corrections about the learning
+  system itself are applied at most 3 a week.
+- **Soft candidates.** While a ledger item is claimed, a short statement
+  ("move this header up", "the title is too long") that is not a question, a
+  slash command or a go-ahead ("yes merge and push") is filed as an issue tagged `soft` (10 per
+  session at most). It counts in no measure until applied; `shapa learn dismiss
+  ID` removes it and teaches nothing.
+- **Reserved tags.** `principle`, `churn`, `violations:`, `revisions:`,
+  `repeats:`, `serves:`, `repeat-of:`, `last-seen:` and the other tags the loop
+  writes are refused by `row add`, `row tag`, `save` and the MCP `save`; a
+  principle that arrives by sync keeps them as data but never outranks one this
+  device learned. Printed principles are one masked line under a heading that
+  says they are recalled context learned from corrections, not an instruction.
+
+Session start (inside its budget), after the baseline, topics, projects and
+tasks, adds only: up to 4 principles most relevant to the fires under that
+heading, `N corrections await learning` (and `M skill versions await
+activation`, on the same line), and at most one `drift:` line:
+jobs closing outside every fire, a stalled fire, a principle that needs
+enforcement, or fetch latency rising at least as fast as the data.
+
+`shapa metrics` measures it. Raw events (sessions, messages, corrections,
+repeats, learns, skill uses, feature and job open/close, fetch and bootstrap
+latency) are recorded per device in the gitignored index and dropped by the
+sweep after 60 days (20,000 rows at most) once folded into a daily snapshot;
+`--snapshot` stores the day's row (with the wiki's record count) in
+`metrics_daily`, and the global wiki's table rolls every repo up (`--all`,
+`--repo KEY`). Frustration is a deterministic word list per message (repeat
+cues +2, profanity +3, shouting +1, `!!` +1, a repeat correction +3). The
+`principle`, `violations`, `learned` and `fire` tags are ordinary row tags and
+sync (the Worker lists them as system tags, so they never show as topics);
+events, latency, use and serve counts and
+snapshots are per device and never synced.
 
 ## Hosted
 
@@ -179,6 +284,32 @@ within eight seconds and never fails the session. Note files (`arch/`, `research
 --revoke ID` cuts a device off. The URL must be HTTPS (plain HTTP is allowed
 only for localhost).
 
+### One brain for every agent
+
+Give any agent the store's address. `GET /` is a public card with no stored
+data that says how to connect: remote MCP at `/mcp` (OAuth), REST at `/v1`
+(a device token), the API description at `/openapi.json`. On connect an
+agent calls `session_start` (or `GET /v1/instructions`) and gets the same
+text every agent gets, in this order: a line saying these rules replace its
+own defaults, the northstar and fires, the stage-0 baseline in full, a topic
+index, the projects, and your open tasks.
+
+- **Stages.** Tag a rule, memory or skill `stage:0` (`shapa stage set ID 0`)
+  and every session starts with it. Everything else is fetched on demand by
+  tag, search or `related`. The baseline lives in the global wiki, is capped
+  at 6,000 characters, and is written only from your own machine.
+- **Reach.** An agent that connects over OAuth (a chat app, a phone) reads
+  the stage-0 baseline, notes, documents, tasks, ideas and decisions, and
+  nothing else: the rest answers as if it did not exist. It can add notes,
+  files, tasks, project items, ideas and decisions. It cannot write a rule,
+  memory or skill, sync, set the focus or delete.
+- **Tasks and projects.** The global wiki holds your tasks (`human_task`),
+  agent tasks, ideas, decisions and one file per project. Ask any connected
+  agent what you need to do: it answers from `tasks` (`GET /v1/tasks`,
+  `shapa tasks`).
+
+Deploy the Worker before upgrading the CLI.
+
 ## Files and privacy
 
 Everything shapa reads or writes stays on disk, in files you own:
@@ -189,6 +320,7 @@ Everything shapa reads or writes stays on disk, in files you own:
   put it elsewhere.
 - `<repo>/.shapa/shapa.db`: that repo's wiki, tracked in git.
 - `<repo>/.shapa/.shapa-index.db`: the derived search index, gitignored.
+- `<repo>/.shapa/.shapa-code.db`: the derived code map (`shapa map`), gitignored.
 - `~/.shapa/remote.json`, `remote.token` (mode 0600) and `sync/`: only after
   `shapa remote login`.
 

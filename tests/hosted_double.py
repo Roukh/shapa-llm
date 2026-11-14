@@ -27,6 +27,7 @@ def now_iso():
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+
 def clamp_future(stamp):
     """A stamp more than five minutes ahead of the server clock is clamped to it."""
     limit = (datetime.now(timezone.utc) + CLOCK_SKEW).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -222,6 +223,10 @@ class HostedDouble:
                 res["new_id"] = twin["id"]
                 renames[orig] = twin["id"]
             return {**res, "id": orig}
+        held = self.focus_holder(wiki, rec)
+        if held is not None:  # a wiki has one focus record (the Worker refuses a second uid)
+            return {"id": orig, "status": "rejected", "rev": 0,
+                    "error": f"this wiki already has its focus record {held}"}
         cur = wiki.records.get(orig)
         if cur is None:
             return self.store(wiki, device, rec, "accepted", orig)
@@ -231,6 +236,17 @@ class HostedDouble:
         res = self.store(wiki, device, rec, "renamed", orig)
         res["new_id"] = new
         return res
+
+    @staticmethod
+    def focus_holder(wiki, rec):
+        """The id of the live focus record of another uid, if *rec* is a focus record."""
+        if rec["kind"] != "D" or "focus" not in (rec.get("tags") or []):
+            return None
+        for other in wiki.records.values():
+            if (other["kind"] == "D" and not other["deleted"] and other["uid"] != rec["uid"]
+                    and "focus" in (other.get("tags") or [])):
+                return other["id"]
+        return None
 
     def same_uid(self, wiki, device, cur, rec, base_rev):
         rec = {**rec, "id": cur["id"]}

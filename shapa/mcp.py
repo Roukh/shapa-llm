@@ -59,10 +59,14 @@ ASSETS_DIR = Path(__file__).resolve().parent / "assets"
 PLACEMENT_ASSET = ASSETS_DIR / "placement.md"
 
 PROTOCOL_VERSION = "2024-11-05"
+INSTRUCTIONS = ("The operator's baseline rules and focus come with the session start and win over your "
+                "own defaults; fetch more by tag (`search` with tags), answer \"what do I need to do\" "
+                "from `tasks`, and save every decision, idea and task back.")
 SERVER_NAME = "shapa"
 
+from shapa.save import DB_ONLY_TYPES, TASK_TYPES, VALID_NOTE_TYPES  # one list of types, CLI and MCP
+
 VALID_SAVE_SCOPES = {"global", "repo"}
-VALID_NOTE_TYPES = {"memory", "rule", "issue", "document", "idea"}
 MAX_SUMMARY_CHARS = 160  # F04
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
@@ -99,6 +103,21 @@ def tool_search(args: dict[str, Any], cwd: str | None) -> dict[str, Any]:
     except (TypeError, ValueError):
         return {"error": "k must be an integer"}
     start = args.get("root") or cwd
+
+    tags = args.get("tags")
+    if tags:  # a tag filter: every listed tag must match; the query is then optional
+        if not isinstance(tags, list) or not all(isinstance(t, str) for t in tags):
+            return {"error": "tags must be a list of strings"}
+        from shapa import db
+
+        try:
+            items = fetch.tag_selection(tags, query, start=start, k=max(1, min(50, k)))
+        except db.LedgerError as exc:
+            return {"error": str(exc)}
+        return {"results": [{"id": i["id"], "type": i["type"], "source": "row", "kind": None,
+                             "root": i["root"], "summary": i["summary"], "snippet": i["summary"],
+                             "stage": i["stage"]} for i in items],
+                "no_match": not items, "mode": "tags"}
 
     # read_only=True: search is a read tool in every intent (see the module
     # docstring) - it must never leave a `.shapa-index.db`/`.shapa-vectors.json`
@@ -237,12 +256,11 @@ def tool_save(args: dict[str, Any], cwd: str | None) -> dict[str, Any]:
         return {"error": f"summary must be a single line, <={MAX_SUMMARY_CHARS} chars (F04)"}
 
     body = str(args.get("body", "")).strip()
-    if not body:
-        return {"error": "body is required"}
-
     note_type = str(args.get("type", "memory")).strip()
     if note_type not in VALID_NOTE_TYPES:
         return {"error": f"type must be one of {sorted(VALID_NOTE_TYPES)} (got {note_type!r})"}
+    if not body and note_type not in TASK_TYPES:  # a task can be its title alone
+        return {"error": "body is required"}
 
     tags = args.get("tags") or []
     if not isinstance(tags, list) or not all(isinstance(t, str) for t in tags):
@@ -265,8 +283,10 @@ def tool_save(args: dict[str, Any], cwd: str | None) -> dict[str, Any]:
 
     if db.exists(root):
         return save_mod.save_row(root, scope, note_type, summary, body, tags,
-                                 alias=str(args.get("id") or "").strip())
-    if note_type in save_mod.DB_ONLY_TYPES:
+                                 alias=str(args.get("id") or "").strip(),
+                                 project=str(args.get("project") or "").strip() or None,
+                                 merge=bool(args.get("merge")))
+    if note_type in DB_ONLY_TYPES:
         return {"error": f"type {note_type!r} needs a format-4 wiki (a shapa.db) - "
                          f"run `shapa upgrade {root}` first"}
 
@@ -336,11 +356,300 @@ def tool_placement(args: dict[str, Any], cwd: str | None) -> dict[str, Any]:
     return {"text": text}
 
 
+def _scope_root(args: dict[str, Any], cwd: str | None, *, required: bool):
+    """The wiki root a focus or skill tool writes to, or an error dict."""
+    scope = str(args.get("scope") or "").strip()
+    if scope not in VALID_SAVE_SCOPES:
+        return None, {"error": f"scope must be one of {sorted(VALID_SAVE_SCOPES)} (got {scope!r})"}
+    if scope == "global":
+        return config.global_root(), None
+    found = config.discover(args.get("root") or cwd)
+    if found is None:
+        return None, {"error": "scope 'repo' requires a repo-local wiki here - run `shapa init`"}
+    return found, None
+
+
+def tool_focus(args: dict[str, Any], cwd: str | None) -> dict[str, Any]:
+    from shapa import db, focus
+
+    action = str(args.get("action") or "show").strip()
+    if action == "show":
+        out: dict[str, Any] = {}
+        for wr in config.wiki_roots(args.get("root") or cwd):
+            if wr.kind in ("global", "repo") and db.exists(wr.path):
+                conn = db.connect(wr.path)
+                try:
+                    out[wr.kind] = focus.as_dict(conn)
+                finally:
+                    conn.close()
+        return out
+    if action not in ("northstar", "fire", "unfire", "order", "rank", "promote", "candidates"):
+        return {"error": f"action must be show, northstar, fire, unfire, order, rank, promote "
+                         f"or candidates (got {action!r})"}
+    root, err = _scope_root(args, cwd, required=True)
+    if err:
+        return err
+    if not db.exists(root):
+        return {"error": f"{root} has no database - run `shapa upgrade {root}`"}
+    conn = db.connect(root)
+    try:
+        try:
+            if action == "northstar":
+                focus.set_northstar(conn, str(args.get("text") or ""))
+            elif action == "fire":
+                if args.get("feature") and args.get("scope") == "global":
+                    return {"error": "the global wiki has no ledger: a global fire is free text"}
+                focus.set_fire(conn, args.get("slot"), feature=args.get("feature") or None,
+                               text=args.get("text") or None)
+            elif action == "unfire":
+                focus.clear_fire(conn, args.get("slot"))
+            elif action == "order":
+                focus.reorder(conn, args.get("order") or [])
+            elif action == "rank":
+                rank = args.get("rank")
+                focus.rank_feature(conn, str(args.get("feature") or ""),
+                                   None if rank in (None, "", "none") else int(rank))
+            elif action == "promote":
+                focus.promote(conn, feature=args.get("feature") or None, slot=args.get("slot"))
+            elif action == "candidates":
+                return {"candidates": [{"id": i.id, "title": i.title, "rank": focus.rank_of(conn, i.id)}
+                                       for i in focus.candidates(conn)]}
+        except (db.LedgerError, ValueError, TypeError) as exc:
+            return {"error": str(exc)}
+        return focus.as_dict(conn)
+    finally:
+        conn.close()
+
+
+def tool_skill(args: dict[str, Any], cwd: str | None) -> dict[str, Any]:
+    from shapa import db, skills
+
+    action = str(args.get("action") or "list").strip()
+    if action in ("list", "show"):
+        out: list[Any] = []
+        for wr in config.wiki_roots(args.get("root") or cwd):
+            if wr.kind not in ("global", "repo") or not db.exists(wr.path):
+                continue
+            conn = db.connect(wr.path)
+            try:
+                if action == "list":
+                    out += [{**s, "scope": wr.kind} for s in skills.summaries(conn)]
+                else:
+                    v = skills.get(conn, str(args.get("name") or ""),
+                                   int(args["version"]) if args.get("version") else None)
+                    if v is not None:
+                        out.append({**skills.as_dict(v, body=True), "scope": wr.kind})
+            except (ValueError, TypeError) as exc:
+                return {"error": str(exc)}
+            finally:
+                conn.close()
+        if action == "show" and not out:
+            return {"error": f"no skill {args.get('name')!r} in any wiki in scope"}
+        return {"skills": out}
+    # Activation is the operator's: `shapa skill activate` on the command line, never an MCP
+    # tool, so an agent cannot put into use a version it (or a lesson it filed) wrote.
+    if action not in ("add", "update"):
+        return {"error": f"action must be list, show, add or update (got {action!r}); "
+                         "a version is activated with `shapa skill activate`, not over MCP"}
+    root, err = _scope_root(args, cwd, required=True)
+    if err:
+        return err
+    conn = db.connect(root) if db.exists(root) else None
+    if conn is None:
+        return {"error": f"{root} has no database - run `shapa upgrade {root}`"}
+    try:
+        try:
+            v = skills.add_version(conn, str(args.get("name") or ""), str(args.get("description") or ""),
+                                   str(args.get("body") or ""), new=action == "add", active=False,
+                                   source="mcp")
+        except (db.LedgerError, ValueError, TypeError) as exc:
+            return {"error": str(exc)}
+        return skills.as_dict(v)
+    finally:
+        conn.close()
+
+
+def tool_partition(args: dict[str, Any], cwd: str | None) -> dict[str, Any]:
+    """A fire's related files (``partition``), or the code map's build (``map``). Both are local:
+    they read this checkout, so the hosted store neither holds nor serves them."""
+    from shapa import codemap, partition
+
+    action = str(args.get("action") or "partition").strip()
+    if action not in ("partition", "map"):
+        return {"error": f"action must be partition or map (got {action!r})"}
+    root = config.discover(args.get("root") or cwd)
+    if root is None:
+        return {"error": "no repo-local wiki here - run `shapa init`"}
+
+    def num(key: str, default: float, low: float, high: float) -> float:
+        try:
+            return min(high, max(low, float(args.get(key, default))))
+        except (TypeError, ValueError):
+            return default
+
+    if action == "map":
+        return codemap.build(root, seconds=num("seconds", partition.REFRESH_SECONDS, 0, 60)).as_dict()
+    target = args.get("target")
+    return partition.compute(
+        root, None if target in (None, "") else str(target), refresh=args.get("refresh", True) is not False,
+        max_files=int(num("max_files", partition.MAX_MEMBERS, 1, 200)),
+        max_bytes=int(num("max_bytes", partition.MAX_BYTES, 1, 4_000_000)),
+        seconds=num("seconds", partition.REFRESH_SECONDS, 0, 60))
+
+
+def _in_scope(args: dict[str, Any], cwd: str | None) -> list[Path]:
+    from shapa import tasks
+
+    return tasks.scope_roots(args.get("root") or cwd)
+
+
+def tool_tags(args: dict[str, Any], cwd: str | None) -> dict[str, Any]:
+    from shapa import db, relate, tasks
+
+    wiki = str(args.get("wiki") or "").strip() or None
+    merged: dict[str, dict] = {}
+    for root in _in_scope(args, cwd):
+        if wiki and wiki != tasks.wiki_label(root):
+            continue
+        conn = db.connect(root)
+        if conn is None:
+            continue
+        try:
+            for e in relate.tag_index(conn):
+                m = merged.setdefault(e["tag"], {"tag": e["tag"], "total": 0,
+                                                 "counts": {k: 0 for k in relate.COUNT_KEYS}})
+                m["total"] += e["total"]
+                for k, n in e["counts"].items():
+                    m["counts"][k] += n
+        finally:
+            conn.close()
+    return {"tags": sorted(merged.values(), key=lambda e: (-e["total"], e["tag"]))}
+
+
+def tool_related(args: dict[str, Any], cwd: str | None) -> dict[str, Any]:
+    from shapa import db, relate
+
+    ident = str(args.get("id", "")).strip()
+    if not ident:
+        return {"error": "id is required"}
+    try:
+        limit = int(args.get("limit", relate.RELATED_DEFAULT))
+    except (TypeError, ValueError):
+        return {"error": "limit must be an integer"}
+    for root in _in_scope(args, cwd):
+        conn = db.connect(root)
+        if conn is None:
+            continue
+        try:
+            rid = relate.resolve(conn, ident)
+            if rid is not None:
+                return {"id": rid, "related": relate.related(conn, rid, limit)}
+        finally:
+            conn.close()
+    return {"error": f"no record {ident!r} in any wiki in scope"}
+
+
+def _project_conn(args: dict[str, Any], cwd: str | None, *, create: bool = False):
+    """``(connection, error)`` of the wiki that holds a project: ``wiki`` global (default) or repo."""
+    from shapa import config, db
+
+    wiki = str(args.get("wiki") or "global").strip()
+    if wiki not in VALID_SAVE_SCOPES:
+        return None, {"error": f"wiki must be one of {sorted(VALID_SAVE_SCOPES)} (got {wiki!r})"}
+    root = config.global_root() if wiki == "global" else config.discover(args.get("root") or cwd)
+    if root is None:
+        return None, {"error": "wiki 'repo' needs a repo-local wiki here - run `shapa init`"}
+    conn = db.connect(root, create=create and wiki == "global")
+    if conn is None:
+        return None, {"error": f"{root} has no database - run `shapa upgrade {root}`"}
+    return conn, None
+
+
+def tool_project(args: dict[str, Any], cwd: str | None) -> dict[str, Any]:
+    from shapa import db, projectfile, tasks
+
+    conn, err = _project_conn(args, cwd)
+    if err:
+        return err
+    try:
+        key = db.clean_project(str(args.get("key") or ""))
+        return projectfile.show(conn, key, features=projectfile.repo_features(_in_scope(args, cwd), key))
+    except db.LedgerError as exc:
+        return {"error": str(exc)}
+    finally:
+        conn.close()
+
+
+def tool_projects(args: dict[str, Any], cwd: str | None) -> dict[str, Any]:
+    from shapa import projectfile
+
+    conn, err = _project_conn(args, cwd)
+    if err:
+        return err
+    try:
+        return {"projects": projectfile.listing(conn)}
+    finally:
+        conn.close()
+
+
+def tool_project_new(args: dict[str, Any], cwd: str | None) -> dict[str, Any]:
+    from shapa import db, projectfile
+
+    conn, err = _project_conn(args, cwd, create=True)
+    if err:
+        return err
+    try:
+        doc_id, created = projectfile.new_project(conn, str(args.get("key") or ""),
+                                                  str(args.get("title") or "") or None)
+        return {"id": doc_id, "created": created}
+    except db.LedgerError as exc:
+        return {"error": str(exc)}
+    finally:
+        conn.close()
+
+
+def tool_project_add(args: dict[str, Any], cwd: str | None) -> dict[str, Any]:
+    from shapa import db, projectfile
+
+    conn, err = _project_conn(args, cwd)
+    if err:
+        return err
+    try:
+        return projectfile.add_item(conn, str(args.get("key") or ""), str(args.get("section") or ""),
+                                    args.get("text") if isinstance(args.get("text"), str) else "")
+    except db.LedgerError as exc:
+        return {"error": str(exc)}
+    finally:
+        conn.close()
+
+
+def tool_tasks(args: dict[str, Any], cwd: str | None) -> dict[str, Any]:
+    from shapa import db, tasks
+
+    try:
+        return tasks.open_tasks(_in_scope(args, cwd), owner=str(args.get("owner") or "human"),
+                                project=str(args.get("project") or "") or None,
+                                status=str(args.get("status") or "open"),
+                                wiki=str(args.get("wiki") or "") or None)
+    except db.LedgerError as exc:
+        return {"error": str(exc)}
+
+
 _HANDLERS: dict[str, Callable[[dict[str, Any], str | None], dict[str, Any]]] = {
+    "tags": tool_tags,
+    "related": tool_related,
+    "project": tool_project,
+    "projects": tool_projects,
+    "project_new": tool_project_new,
+    "project_add": tool_project_add,
+    "tasks": tool_tasks,
     "search": tool_search,
     "get": tool_get,
     "save": tool_save,
     "placement": tool_placement,
+    "focus": tool_focus,
+    "skill": tool_skill,
+    "partition": tool_partition,
 }
 
 TOOLS: list[dict[str, Any]] = [
@@ -359,6 +668,11 @@ TOOLS: list[dict[str, Any]] = [
             "properties": {
                 "query": {"type": "string", "description": "The search text."},
                 "k": {"type": "integer", "description": "Max results (default 8)."},
+                "tags": {
+                    "type": "array", "items": {"type": "string"},
+                    "description": "Only records carrying EVERY one of these tags (a stage:N, a topic, "
+                                   "project:KEY); then the query may be empty. Lower stages rank first.",
+                },
                 "root": {
                     "type": "string",
                     "description": "Directory to resolve wikis from (default: this server's cwd).",
@@ -366,6 +680,70 @@ TOOLS: list[dict[str, Any]] = [
             },
             "required": ["query"],
         },
+    },
+    {
+        "name": "tags",
+        "description": "Every tag in the wikis in scope with its record counts per type (rule, memory, "
+                       "issue, skill, document, task, job, feature, note). Tags relate rules, memories, "
+                       "skills, tasks and projects; fetch one with `search` {tags}.",
+        "inputSchema": {"type": "object", "properties": {
+            "wiki": {"type": "string", "description": "global, or a repo wiki's key; default all in scope"},
+            "root": {"type": "string"}}},
+    },
+    {
+        "name": "related",
+        "description": "Records related to one id: those linked to it first, then those sharing the most "
+                       "non-system tags, then the newest (default 10, at most 50).",
+        "inputSchema": {"type": "object", "properties": {
+            "id": {"type": "string"}, "limit": {"type": "integer"}, "root": {"type": "string"}},
+            "required": ["id"]},
+    },
+    {
+        "name": "tasks",
+        "description": "The operator's task list: open human_task tasks of every wiki in scope, rank first "
+                       "then oldest (at most 100, `total` says how many exist). Answer \"what do I need to "
+                       "do\" from this. owner human|agent, status open|closed|all, optional project and wiki.",
+        "inputSchema": {"type": "object", "properties": {
+            "owner": {"type": "string", "enum": ["human", "agent"]}, "project": {"type": "string"},
+            "status": {"type": "string", "enum": ["open", "closed", "all"]}, "wiki": {"type": "string"},
+            "root": {"type": "string"}}},
+    },
+    {
+        "name": "projects",
+        "description": "The projects of a wiki (default global) with their titles and open task counts.",
+        "inputSchema": {"type": "object", "properties": {
+            "wiki": {"type": "string", "enum": ["global", "repo"]}, "root": {"type": "string"}}},
+    },
+    {
+        "name": "project",
+        "description": "One project: its document's sections (issues, questions, implementations, problem, "
+                       "solution, diff, advantages, villains, loop_market, loop_product) and every task, "
+                       "idea, rule, memory, skill and feature tied to it (project:KEY).",
+        "inputSchema": {"type": "object", "properties": {
+            "key": {"type": "string"}, "wiki": {"type": "string", "enum": ["global", "repo"]},
+            "root": {"type": "string"}}, "required": ["key"]},
+    },
+    {
+        "name": "project_new",
+        "description": "Create a project's document from the template (idempotent). key: lowercase letters, "
+                       "digits and . _ / -.",
+        "inputSchema": {"type": "object", "properties": {
+            "key": {"type": "string"}, "title": {"type": "string"},
+            "wiki": {"type": "string", "enum": ["global", "repo"]}, "root": {"type": "string"}},
+            "required": ["key"]},
+    },
+    {
+        "name": "project_add",
+        "description": "Append one numbered line (one line, at most 500 characters, masked) to a section of "
+                       "a project's document; the same text twice changes nothing.",
+        "inputSchema": {"type": "object", "properties": {
+            "key": {"type": "string"},
+            "section": {"type": "string", "enum": ["issues", "questions", "implementations", "problem",
+                                                   "solution", "diff", "advantages", "villains",
+                                                   "loop_market", "loop_product"]},
+            "text": {"type": "string"},
+            "wiki": {"type": "string", "enum": ["global", "repo"]}, "root": {"type": "string"}},
+            "required": ["key", "section", "text"]},
     },
     {
         "name": "get",
@@ -404,20 +782,37 @@ TOOLS: list[dict[str, Any]] = [
                 "body": {"type": "string", "description": "The note's full body."},
                 "type": {
                     "type": "string",
-                    "enum": ["memory", "rule", "issue", "document", "idea"],
+                    "enum": sorted(VALID_NOTE_TYPES),
                     "default": "memory",
+                    "description": "idea and decision are memories tagged so; human_task (the operator "
+                                   "must do it) and agent_task are tasks, standalone in the global "
+                                   "wiki. stage:0 in `tags` is stored as stage-proposed:0 (the "
+                                   "operator accepts it).",
                 },
                 "tags": {"type": "array", "items": {"type": "string"}},
                 "id": {
                     "type": "string",
                     "description": "Optional explicit id; slugified from `summary` otherwise.",
                 },
+                "project": {
+                    "type": "string",
+                    "description": "the project key this belongs to (the project:KEY tag, and an about "
+                                   "link to the project's document). For a document: the project it "
+                                   "documents (default: this wiki's own); a project keeps ONE "
+                                   "document, a second is refused with the first one's id unless "
+                                   "`merge` is true.",
+                },
+                "merge": {
+                    "type": "boolean",
+                    "description": "document only: append this one as a section of the project's "
+                                   "existing document instead of refusing it.",
+                },
                 "root": {
                     "type": "string",
                     "description": "Directory to resolve 'repo' scope from (default: this server's cwd).",
                 },
             },
-            "required": ["scope", "summary", "body"],
+            "required": ["scope", "summary"],  # body too, except for a task (its title is enough)
         },
     },
     {
@@ -427,6 +822,68 @@ TOOLS: list[dict[str, Any]] = [
             "wiki or this repo's own wiki. Call this before `save` if unsure."
         ),
         "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "focus",
+        "description": (
+            "The northstar and the three ranked big fires of the global wiki and this "
+            "repo's own. action `show` (default) reads both; `northstar` {text}, "
+            "`fire` {slot 1-3, feature | text}, `unfire` {slot}, `order` {order: [2,1,3]}, "
+            "`rank` {feature, rank}, `promote` {feature?, slot?}, `candidates` set or move "
+            "them and need `scope` (global or repo). A global fire is free text; a repo "
+            "fire points at a ledger feature."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["show", "northstar", "fire", "unfire",
+                                                      "order", "rank", "promote", "candidates"]},
+                "scope": {"type": "string", "enum": ["global", "repo"]},
+                "text": {"type": "string"}, "slot": {"type": "integer"},
+                "feature": {"type": "string"}, "rank": {"type": "integer"},
+                "order": {"type": "array", "items": {"type": "integer"}},
+                "root": {"type": "string"},
+            },
+        },
+    },
+    {
+        "name": "skill",
+        "description": (
+            "Skills stored as versioned records, global or per repo. action `list` (default) "
+            "and `show` {name, version?} read them; `add` {name, description, body} and "
+            "`update` {name, body} write a PENDING version (they need `scope`). Nothing here "
+            "activates a version: the operator does, with `shapa skill activate`."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["list", "show", "add", "update"]},
+                "scope": {"type": "string", "enum": ["global", "repo"]},
+                "name": {"type": "string"}, "description": {"type": "string"},
+                "body": {"type": "string"}, "version": {"type": "integer"},
+                "root": {"type": "string"},
+            },
+        },
+    },
+    {
+        "name": "partition",
+        "description": (
+            "A big fire's related files as one bounded partition, without reading the rest of the "
+            "codebase: files the fire's feature, jobs, tasks and linked rows name, files recalled for "
+            "their words, and files impacted along the code graph (callers, importers), each with why "
+            "it is there. `target` is F<n>, a fire slot 1-3, or none for every fire. action `map` "
+            "(re)builds the code map, a derived local index; `partition` refreshes it first unless "
+            "refresh is false. Local only: it reads this checkout."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["partition", "map"]},
+                "target": {"type": "string"}, "refresh": {"type": "boolean"},
+                "max_files": {"type": "integer"}, "max_bytes": {"type": "integer"},
+                "seconds": {"type": "number"}, "root": {"type": "string"},
+            },
+        },
     },
 ]
 
@@ -456,6 +913,7 @@ def dispatch(request: dict[str, Any], cwd: str | None) -> dict[str, Any] | None:
             "protocolVersion": PROTOCOL_VERSION,
             "capabilities": {"tools": {}},
             "serverInfo": {"name": SERVER_NAME, "version": __version__},
+            "instructions": INSTRUCTIONS,
         })
     if method in ("notifications/initialized", "initialized"):
         return None

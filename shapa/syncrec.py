@@ -280,4 +280,12 @@ def validate_record(raw) -> dict | None:
                          _tags(raw.get("tags")), _links(raw.get("links")))
     if data is None or tags is None or links is None:
         return None
+    try:
+        # A stage is one digit on a rule, a memory or a skill version, never two, never on a task
+        # or a plain document: a record that breaks it is refused here, so a server cannot put
+        # an ill-formed stage (or a second one beside the baseline's) into the local database.
+        db.check_stage_tags(tags, kind)
+        db.check_tag_spelling(tags)
+    except db.LedgerError:
+        return None
     return {**base, "data": data, "tags": tags, "links": links}

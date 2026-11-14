@@ -38,7 +38,7 @@ describe("OAuth 2.1", () => {
     // the token works for real operations, attributed to this device
     const w = (await setup()).w;
     await send("PUT", `/v1/wikis/${w}`, { token: access, body: { name: w, kind: "repo" } });
-    const made = await send("POST", rec(w), { token: access, body: { type: "memory", summary: "from the phone" } });
+    const made = await send("POST", rec(w), { token: access, body: { type: "idea", summary: "from the phone" } }); // an OAuth grant writes ideas, not memories
     expect(made.body.device).toBe(deviceName);
     // the grant shows up as a device, source oauth
     const list = await send("GET", "/admin/devices", { token: OWNER });

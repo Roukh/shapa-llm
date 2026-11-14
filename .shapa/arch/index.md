@@ -16,7 +16,7 @@ summary: shapa-llm as a diagram - six boxes (read path, write path, database, CL
 
 | Box | File | Owns | Purpose |
 |---|---|---|---|
-| read path | [[read-path]] | `shapa/bootstrap.py`, `fetch.py`, `rank.py`, `bm25.py`, `embed.py`, `get.py`, `store.py`, `serve.py` | surfaces relevant rows/notes at session start and per prompt |
+| read path | [[read-path]] | `shapa/bootstrap.py`, `fetch.py`, `rank.py`, `bm25.py`, `embed.py`, `get.py`, `store.py`, `serve.py`, `codemap.py`, `partition.py` | surfaces relevant rows/notes at session start and per prompt, and a fire's code partition from the derived code map |
 | write path | [[write-path]] | `shapa/capture.py`, `redact.py`, `save.py`, `memlog.py` | distils and records new M/I rows from hooks and explicit saves |
 | database | [[database]] | `shapa/db.py`, `ledger.py`, `migrate4.py` | the one `shapa.db` ledger (F/J/T work items) and MRI rows |
 | CLI and hooks | [[cli-and-hooks]] | `shapa/cli.py`, `maintain.py`, `heartbeat.py`, `score.py`, `validate.py`, `upgrade.py`, `mcp.py`, `frontmatter.py`, `nodes.py`, `status.py` | the `shapa` command, hook dispatch, maintenance, and the MCP surface |
@@ -33,6 +33,5 @@ summary: shapa-llm as a diagram - six boxes (read path, write path, database, CL
 | cli-and-hooks | database | `ledger`/`row`/`upgrade`/`validate` dispatch |
 | read-path | database | ranks ledger items and M/R/I rows together with any remaining note files |
 | write-path | database | new M/I rows (`db.add_row`) |
-| database | read-path | rows backing the derived, gitignored `.shapa-index.db` |
-| cli-and-hooks | hosted | `shapa remote` dispatch; `shapa remote sync --hook` at session start, stop and end, where a harness installer wires it (shapa's own `install.sh` does not) |
+| database | read-path | rows backing the derived, gitignored `.shapa-index.db`; items and rows read by `partition.py` for a fire's text || cli-and-hooks | hosted | `shapa remote` dispatch; `shapa remote sync --hook` at session start, stop and end, where a harness installer wires it (shapa's own `install.sh` does not) |
 | hosted | database | pulled records written through explicit-id upserts; local changes and tombstones read for the push |

@@ -259,7 +259,7 @@ def ensure_running(root, *, idle_timeout: float | None = DEFAULT_IDLE_TIMEOUT) -
         os.chmod(SOCKET_DIR, 0o700)
     except OSError:
         return False
-    argv = [sys.executable, "-m", "shapa.serve", str(root)]
+    argv = [*config.self_argv("shapa.serve"), str(root)]
     if idle_timeout is not None:
         argv += ["--idle-timeout", str(idle_timeout)]
     try:
@@ -271,6 +271,7 @@ def ensure_running(root, *, idle_timeout: float | None = DEFAULT_IDLE_TIMEOUT) -
         subprocess.Popen(
             argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             stdin=subprocess.DEVNULL, start_new_session=True,
+            env=config.self_env(),
         )
     except OSError:
         return False

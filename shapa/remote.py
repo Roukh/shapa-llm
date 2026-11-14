@@ -7,7 +7,7 @@
     shapa remote status [--check] [--json]
     shapa remote devices [--revoke ID]
     shapa remote logout
-    shapa remote instructions [--client NAME]
+    shapa remote instructions [--client NAME] [--full]
 
 The login lives in ``~/.shapa`` (``$SHAPA_REMOTE_DIR``): ``remote.json`` (url,
 device name, device id) and ``remote.token`` (mode 0600). The owner key comes
@@ -124,6 +124,8 @@ def _print_result(r: sync.SyncResult) -> None:
                   f"received {r.received}, applied {r.applied}{extra}")
         for rid, message in r.refused[:10]:
             print(f"{r.key}: the server refused {rid}: {message}", file=sys.stderr)
+        for rid, message in r.notes[:10]:
+            print(f"{r.key}: note on {rid}: {message}")
         if r.oversized:
             print(f"{r.key}: skipped {len(r.oversized)} record(s) over the server limit of 1 MB: "
                   f"{', '.join(r.oversized[:10])}", file=sys.stderr)
@@ -229,7 +231,8 @@ def cmd_instructions(args) -> int:
     if not _CLIENT_RE.match(args.client):
         raise UsageError("--client must be a short lowercase name such as mcp or rest")
     text = _client(_creds()).request(
-        "GET", f"/v1/instructions?client={args.client}&budget={int(args.budget)}", accept="text/plain")
+        "GET", f"/v1/instructions?client={args.client}&budget={int(args.budget)}"
+        + ("&full=1" if getattr(args, "full", False) else ""), accept="text/plain")
     print(text.rstrip("\n"))
     return 0
 
@@ -265,6 +268,9 @@ def build_parser() -> argparse.ArgumentParser:
     ins = sub.add_parser("instructions", help="print the server's session defaults")
     ins.add_argument("--client", default="mcp")
     ins.add_argument("--budget", type=int, default=6000)
+    ins.add_argument("--full", action="store_true",
+                     help="also the rules and the other live features (default: the northstar, "
+                          "the three fires and their tree)")
     return p
 
 

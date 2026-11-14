@@ -57,7 +57,7 @@ class ReconfigureCase(unittest.TestCase):
         (self.wiki / "checklist.md").write_text("## Ship\n- [ ] **A1** first item\n", encoding="utf-8")
 
     def context(self):
-        return bootstrap.build_context(roots=[WikiRoot(path=self.wiki, kind="repo", repo="repo")])
+        return bootstrap.build_context(roots=[WikiRoot(path=self.wiki, kind="repo", repo="repo")], full=True)
 
 
 class TestWhoNeedsIt(ReconfigureCase):

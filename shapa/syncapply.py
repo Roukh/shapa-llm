@@ -30,6 +30,7 @@ class _Apply:
     def __init__(self, conn, wiki_dir, local, hashes, state, ex, result, notes):
         self.conn, self.wiki_dir, self.state, self.ex, self.result = conn, wiki_dir, state, ex, result
         self.notes = notes
+        self.is_global = db.is_global(conn)
         self.base = state["base"]
         self.snap = {key_of(local[i]): h for i, h in hashes.items()}
         self.refresh()
@@ -83,6 +84,8 @@ class _Apply:
             self.result.renamed += 1
 
     def ack(self, op, res) -> None:
+        if res.get("note"):
+            self.result.notes.append((op["record"]["id"] if op["op"] == "put" else op["id"], res["note"]))
         if res["status"] == "rejected" and res["error"]:
             # the server refused the op itself (invalid record, missing scope): not an answer to retry
             rid = op["record"]["id"] if op["op"] == "put" else op["id"]
@@ -130,11 +133,33 @@ class _Apply:
             self.skip(rid)  # edited since the snapshot: pushed next time
             return
         if mine is None or syncrec.record_hash(rec) != self.cur_hash[key]:
+            if any(t in (f"{db.STAGE_PREFIX}0", db.STAGE_PROPOSED) for t in rec["tags"]) and not self.is_global:
+                self.result.invalid += 1  # the baseline is the global wiki's: a repo wiki takes none
+                return
+            if f"{db.STAGE_PREFIX}0" in rec["tags"] and not self.fits_baseline(rec):
+                self.skip(rid)  # a server cannot take the baseline past its cap
+                return
             dbsync.upsert(self.conn, rec)
             self.result.applied += 1
             self.cur[key], self.cur_hash[key] = rec, syncrec.record_hash(rec)
             self.by_id[rid] = key
         self.written.append(rec)
+
+    def fits_baseline(self, rec: dict) -> bool:
+        """A pulled stage-0 rule or memory is applied only while the local baseline stays within
+        its cap (the server enforces the same cap; this keeps a faulty or hostile one honest)."""
+        from shapa import stages
+
+        d = rec["data"]
+        if rec["kind"] in ("R", "M"):
+            size = len(d["summary"]) + len(d["body"])
+        elif rec["kind"] == db.DOC_KIND and db.SKILL_TAG in rec["tags"]:
+            if "status:active" not in rec["tags"]:
+                return True  # a pending or previous version is not served: activation is what counts
+            size = stages.description_size(d["body"])
+        else:
+            return True
+        return stages.baseline_size(self.conn, exclude=rec["id"]) + size <= db.BASELINE_BUDGET
 
     def note_change(self, rec: dict) -> None:
         rid = rec["id"]
