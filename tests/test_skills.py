@@ -211,16 +211,15 @@ def test_the_cli_body_comes_from_stdin_and_scope_is_required(wikis):
 def test_the_mcp_tool_lists_shows_and_writes(wikis):
     r = mcp.tool_skill({"action": "add", "scope": "repo", "name": "tdd", "description": "d",
                         "body": "b"}, str(wikis.repo))
-    assert r["version"] == 1 and r["status"] == "active"
+    assert r["version"] == 1 and r["status"] == "pending"  # nothing over MCP activates
     r = mcp.tool_skill({"action": "update", "scope": "repo", "name": "tdd", "body": "b2"},
                        str(wikis.repo))
     assert r["status"] == "pending"
     listed = mcp.tool_skill({"action": "list"}, str(wikis.repo))["skills"]
-    assert listed[0]["name"] == "tdd" and listed[0]["scope"] == "repo" and listed[0]["pending"] == [2]
+    assert listed[0]["name"] == "tdd" and listed[0]["scope"] == "repo" and listed[0]["pending"] == [1, 2]
     shown = mcp.tool_skill({"action": "show", "name": "tdd", "version": 2}, str(wikis.repo))
     assert shown["skills"][0]["body"].strip() == "b2"
-    assert mcp.tool_skill({"action": "activate", "scope": "repo", "name": "tdd"},
-                          str(wikis.repo))["status"] == "active"
+    assert "error" in mcp.tool_skill({"action": "activate", "scope": "repo", "name": "tdd"}, str(wikis.repo))
     assert "error" in mcp.tool_skill({"action": "add", "name": "x"}, str(wikis.repo))  # no scope
     assert "error" in mcp.tool_skill({"action": "show", "name": "ghost"}, str(wikis.repo))
 

@@ -145,4 +145,22 @@ describe("skills: a lesson files a pending version, never an active one", () => 
     expect(r.status).toBe(403);
     expect((await send("GET", skillsPath(w), { token })).body.skills[0].versions).toBe(3);
   });
+
+  it("cannot be activated through the API or the MCP update tool: a pending version stays pending", async () => {
+    const { token, w } = await setup();
+    await seed(token, w);
+    const flip = ["skill", "skill:tdd", "status:active", "v:3"];
+    const viaRest = await send("PATCH", rec(w, "/D3"), { token, body: { tags: flip } });
+    expect(viaRest.status).toBe(400);
+    expect(viaRest.body.error.message).toContain("shapa skill");
+    const viaMcp = await tool(token, "update", { wiki: w, id: "D3", tags: flip });
+    expect(viaMcp.isError).toBe(true);
+    const body = await tool(token, "update", { wiki: w, id: "D2", body: "swapped text" });
+    expect(body.isError).toBe(true);
+    const list = (await send("GET", skillsPath(w), { token })).body.skills;
+    expect(list[0]).toMatchObject({ active: 2, pending: [3] });
+    // the operator's CLI activates by sync, which still works
+    const res = await sync(token, w, { ops: [put({ ...version("D3", "tdd", 3, "active", "v3 text"), updated: "2026-02-01T00:00:00Z" })] });
+    expect(res.body.results[0].status).toBe("accepted");
+  });
 });

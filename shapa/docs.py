@@ -123,6 +123,10 @@ def run_doc(argv: list[str]) -> int:
                 for d in db.documents(conn):
                     alias = f" [{d.alias}]" if d.alias else ""
                     print(f"{d.id}{alias} {d.title}")
+                for key, ids in db.project_overages(conn).items():
+                    what = f"project {key!r}" if key else "this wiki's project"
+                    print(f"! {what} is over the limit: {len(ids)} documents ({', '.join(ids)}), "
+                          f"a project keeps one - fold them with `shapa doc merge {ids[-1]} {ids[0]}`")
             finally:
                 conn.close()
         return 0

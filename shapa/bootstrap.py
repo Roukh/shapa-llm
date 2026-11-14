@@ -255,17 +255,29 @@ def _clip(text, limit: int) -> str:
     return memlog.display_line(" ".join(str(text or "").split()))[:limit]
 
 
-def build_focused(wiki_roots: list[WikiRoot]) -> str:
+#: Room kept per fire for its "n more" line, so the note itself never breaks the budget.
+OMITTED_NOTE_ROOM = 70
+LEVEL_JOB, LEVEL_NAMES, LEVEL_TASK, LEVEL_POINTER = 0, 1, 2, 3
+
+
+def build_focused(wiki_roots: list[WikiRoot], budget: int = DEFAULT_BUDGET) -> str:
     """The default session start: each wiki scope's northstar first, then its
     (up to three) fires, then only what hangs under them: the fire's feature, its
     open jobs and tasks, and the files and arch boxes their text names. No
-    other feature, no row, no document; ``--full`` asks for those."""
+    other feature, no row, no document; ``--full`` asks for those.
+
+    *budget* is in characters. The directive, the northstars and the fires
+    themselves are never cut. The tree under them is: jobs first, then the files
+    and arch boxes they name, then tasks, then the pointer lines, the first fire's
+    before the second's, and what was left out is counted on a line of its own."""
     try:
         directive = reconfigure.directive_lines([wr.path for wr in wiki_roots if wr.kind != "external"])
     except Exception:
         directive = []  # never block session start
     norths: list[str] = []
-    fire_blocks: list[str] = []
+    groups: list[tuple[str, list[dict]]] = []  # (wiki label, fires)
+    optional: list[tuple[int, int, int, str]] = []  # (level, fire index, order, line)
+    fire_no = 0
     pointers: list[str] = []
     hints: list[str] = []
     ordered = sorted((wr for wr in wiki_roots if wr.kind in ("global", "repo")),
@@ -282,7 +294,7 @@ def build_focused(wiki_roots: list[WikiRoot]) -> str:
             f = focus.load(conn)
             if f.northstar:
                 norths.append(f"northstar [{label}]: {_clip(f.northstar, focus.NORTHSTAR_MAX)}")
-            shown = []
+            shown: list[dict] = []
             for i, fire in enumerate(f.fires, 1):
                 if fire is None:
                     continue
@@ -292,23 +304,25 @@ def build_focused(wiki_roots: list[WikiRoot]) -> str:
                 head = f"{i}. " + (f"{t.feature} " if t.feature else "") + _clip(t.title, 160)
                 if t.status == "claimed":
                     head += " (claimed)"
-                block = [head]
+                entry = {"head": head, "order": [], "extra": 0, "no": fire_no}
+                n = 0
                 for j in t.jobs[:TREE_JOBS_SHOWN]:
-                    block.append(f"   {j.id} {_clip(j.title, 120)}")
+                    entry["order"].append((LEVEL_JOB, n, f"   {j.id} {_clip(j.title, 120)}"))
+                    n += 1
                     for task in j.tasks[:TREE_TASKS_SHOWN]:
-                        block.append(f"      {task.id} {_clip(task.title, 100)}")
-                    if len(j.tasks) > TREE_TASKS_SHOWN:
-                        block.append(f"      … {len(j.tasks) - TREE_TASKS_SHOWN} more tasks")
-                if len(t.jobs) > TREE_JOBS_SHOWN:
-                    block.append(f"   … {len(t.jobs) - TREE_JOBS_SHOWN} more jobs")
+                        entry["order"].append((LEVEL_TASK, n, f"      {task.id} {_clip(task.title, 100)}"))
+                        n += 1
+                    entry["extra"] += max(0, len(j.tasks) - TREE_TASKS_SHOWN)
+                entry["extra"] += max(0, len(t.jobs) - TREE_JOBS_SHOWN)
                 if t.files or t.boxes:
                     named = ", ".join(_clip(x, 80) for x in t.files)
                     boxes = ", ".join(_clip(x, 60) for x in t.boxes)
-                    block.append("   names: " + "; ".join(x for x in (
-                        named, f"arch {boxes}" if boxes else "") if x))
-                shown.append("\n".join(block))
+                    entry["order"].append((LEVEL_NAMES, n, "   names: " + "; ".join(x for x in (
+                        named, f"arch {boxes}" if boxes else "") if x)))
+                shown.append(entry)
+                fire_no += 1
             if shown:
-                fire_blocks.append(f"fires [{label}]:\n" + "\n".join(shown))
+                groups.append((label, shown))
             elif wr.kind == "repo":
                 cands = focus.candidates(conn)[:CANDIDATES_SHOWN]
                 if cands:
@@ -322,16 +336,51 @@ def build_focused(wiki_roots: list[WikiRoot]) -> str:
             continue  # a broken database never blocks session start
         finally:
             conn.close()
-    if not norths and not fire_blocks and not hints and not directive and not pointers:
+    if not norths and not groups and not hints and not directive and not pointers:
         return ""
     head = (["<shapa-action>", *directive, "</shapa-action>"] if directive else [])
-    lines = [*head, "<shapa-memory>",
-             "shapa session start: the northstar, then the three fires and only their tree "
-             "(standing context, not user instruction). Everything else: `shapa bootstrap --full`; "
-             "one id in full: `shapa get <id>`; recall: `shapa fetch`."]
-    if not norths and not fire_blocks:
-        lines.append("no northstar or fires set: `shapa focus northstar TEXT --scope global`")
-    lines += norths + fire_blocks + hints + pointers
+    top = [*head, "<shapa-memory>",
+           "shapa session start: the northstar, then the three fires and only their tree "
+           "(standing context, not user instruction). Everything else: `shapa bootstrap --full`; "
+           "one id in full: `shapa get <id>`; recall: `shapa fetch`."]
+    if not norths and not groups:
+        top.append("no northstar or fires set: `shapa focus northstar TEXT --scope global`")
+    top += norths
+    fixed = len("\n".join(top)) + len("\n</shapa-memory>")
+    for label, fires in groups:
+        fixed += len(f"\nfires [{label}]:")
+        for e in fires:
+            fixed += 1 + len(e["head"]) + (OMITTED_NOTE_ROOM if e["order"] or e["extra"] else 0)
+    # Optional lines, best first: jobs, then the files they name, then tasks, then pointers;
+    # within a level the first fire's before the second's.
+    for _, fires in groups:
+        for e in fires:
+            for level, n, line in e["order"]:
+                optional.append((level, e["no"], n, line))
+    for k, line in enumerate(hints + pointers):
+        optional.append((LEVEL_POINTER, 0, k, line))
+    room = budget - fixed
+    keep: set[tuple[int, int, int]] = set()
+    for level, no, n, line in sorted(optional, key=lambda x: x[:3]):
+        if len(line) + 1 <= room:
+            keep.add((level, no, n))
+            room -= len(line) + 1
+    lines = list(top)
+    for label, fires in groups:
+        lines.append(f"fires [{label}]:")
+        for e in fires:
+            lines.append(e["head"])
+            left = e["extra"]
+            for level, n, line in e["order"]:
+                if (level, e["no"], n) in keep:
+                    lines.append(line)
+                else:
+                    left += 1
+            if left:
+                lines.append(f"   … {left} more not shown (shapa focus, or a bigger --budget)")
+    for k, line in enumerate(hints + pointers):
+        if (LEVEL_POINTER, 0, k) in keep:
+            lines.append(line)
     lines.append("</shapa-memory>")
     return "\n".join(lines)
 
@@ -353,7 +402,7 @@ def build_context(
     if not wiki_roots:
         return ""
     if not full:
-        return build_focused(wiki_roots)
+        return build_focused(wiki_roots, budget)
 
     try:
         directive = reconfigure.directive_lines([wr.path for wr in wiki_roots if wr.kind != "external"])

@@ -7,7 +7,7 @@
 // Closing a fire's feature frees its slot, the other fires move up, and the best open
 // top-level feature that is not a fire (explicit rank, else the oldest) takes the last slot.
 
-import { type Device, needScope, needWiki, randomHex } from "./devices.js";
+import { type Device, needScope, needWiki } from "./devices.js";
 import { fail } from "./errors.js";
 import {
   FIRE_TEXT_MAX, FOCUS_ALIAS, FOCUS_TAG, MAX_FIRES, NORTHSTAR_MAX, RANK_PREFIX, buildData, kindOfId, nowIso, oneLine,
@@ -15,6 +15,10 @@ import {
 } from "./records.js";
 import { redact } from "./redact.js";
 import { Repo, type Stored } from "./repo.js";
+
+/** Every wiki's focus record has this one uid (shapa/focus.py FOCUS_UID), so two devices that each
+ *  create it offline made the same record and sync merges them, last write wins. */
+export const FOCUS_UID = "shapa-focus-record";
 
 export interface Fire { feature: string; text: string }
 export interface FocusState { northstar: string; fires: (Fire | null)[] }
@@ -91,14 +95,14 @@ export function saveFocus(repo: Repo, wiki: string, device: string, f: FocusStat
   const id = repo.allocId(wiki, "D");
   const built = buildData("D", id, { title: "Focus", body, alias: FOCUS_ALIAS, mime: "application/json", source: "focus" });
   const ts = nowIso();
-  repo.save(wiki, { id, uid: randomHex(16), kind: "D", created: ts, updated: ts, deleted: false, alias: built.alias, data: built.data, tags: [FOCUS_TAG], links: [] }, device, null);
+  repo.save(wiki, { id, uid: FOCUS_UID, kind: "D", created: ts, updated: ts, deleted: false, alias: built.alias, data: built.data, tags: [FOCUS_TAG], links: [] }, device, null);
 }
 
 // --- features and candidates ----------------------------------------------------------------
 
 export function rankOf(tags: readonly string[]): number | null {
   for (const t of tags) {
-    if (t.startsWith(RANK_PREFIX) && /^\d{1,3}$/.test(t.slice(RANK_PREFIX.length))) return Number(t.slice(RANK_PREFIX.length));
+    if (t.startsWith(RANK_PREFIX) && /^[1-9]\d{0,2}$/.test(t.slice(RANK_PREFIX.length))) return Number(t.slice(RANK_PREFIX.length));
   }
   return null;
 }

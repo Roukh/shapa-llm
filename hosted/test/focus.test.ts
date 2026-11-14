@@ -293,6 +293,46 @@ describe("focus: sync", () => {
     const e = await sync(token, w, { ops: [put({ ...doc("D1", "focus-uid-aaaaaaaaaa", edited), updated: "2026-02-01T00:00:00Z" })] });
     expect(e.body.results[0].status).toBe("accepted");
   });
+
+  it("has one fixed uid per wiki, so two devices that each created the record offline converge on it", async () => {
+    const { token, w } = await setup();
+    const doc = (id: string, body: string, updated: string) => ({
+      id, uid: "shapa-focus-record", kind: "D", created: TS, updated, deleted: false,
+      data: { title: "Focus", body, alias: "focus", mime: "application/json", source: "focus" }, tags: ["focus"], links: [],
+    });
+    const body = (n: string) => JSON.stringify({ v: 1, northstar: n, fires: [null, null, null] });
+    // device a and device b each made their record offline, under the same uid and their own ids
+    const a = await sync(token, w, { ops: [put(doc("D1", body("from a"), TS))] });
+    expect(a.body.results[0].status).toBe("accepted");
+    const b = await sync(token, w, { ops: [put(doc("D5", body("from b"), "2026-02-01T00:00:00Z"))] });
+    expect(b.body.results[0].status).not.toBe("rejected"); // the same record, not a second one
+    expect((await send("GET", rec(w, "?kind=D"), { token })).body.records).toHaveLength(1);
+    expect((await send("GET", focusPath(w), { token })).body.northstar).toBe("from b"); // last write wins
+  });
+
+  it("creates the record under that uid when the server makes it", async () => {
+    const { token, w } = await setup();
+    await putFocus(token, w, { northstar: "north" });
+    const d = (await send("GET", rec(w, "?kind=D"), { token })).body.records[0];
+    expect(d.uid).toBe("shapa-focus-record");
+  });
+});
+
+describe("focus: rank tags are 1 to 999", () => {
+  it("reads rank:1 to rank:999 and treats anything else as unranked", async () => {
+    const { token, w } = await setup();
+    const ids: Record<string, string> = {};
+    for (const tag of ["rank:0", "rank:1000", "rank:007", "rank:-5", "rank:", "rank:999"]) {
+      const f = await mk(token, w, `Feature ${tag}`);
+      await send("PATCH", rec(w, `/${f.body.id}`), { token, body: { tags: [tag] } });
+      ids[tag] = f.body.id;
+    }
+    const r = await send("GET", focusPath(w), { token });
+    const rank = (tag: string) => r.body.candidates.find((c: { id: string }) => c.id === ids[tag]).rank;
+    expect(rank("rank:999")).toBe(999);
+    for (const bad of ["rank:0", "rank:1000", "rank:007", "rank:-5", "rank:"]) expect(rank(bad), bad).toBeNull();
+    expect(r.body.candidates[0].id).toBe(ids["rank:999"]); // the one ranked feature sorts first
+  });
 });
 
 void mintAll;

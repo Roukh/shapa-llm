@@ -72,22 +72,19 @@ def test_a_lesson_filed_on_one_device_arrives_pending_on_the_other(a, b):
     c.close()
 
 
-def test_two_devices_writing_a_project_document_cannot_make_two(a, b, double):
+def test_two_devices_writing_a_project_document_offline_both_sync_then_get_folded(a, b, double):
+    """Sync never refuses a stored document (older clients and first logins are grandfathered), so
+    a race leaves two: `doc list` flags the project and `doc merge` folds them."""
     c = a.conn()
-    first = db.add_doc(c, "Principles", "from device a")
+    db.add_doc(c, "Principles", "from device a")
     c.close()
     c = b.conn()
-    second = db.add_doc(c, "Principles too", "from device b")
+    db.add_doc(c, "Principles too", "from device b")
     c.close()
-    a.sync()
-    res = b.sync()
-    assert len(res.refused) == 1 and "already has document" in res.refused[0][1]  # the server refused it
-    assert first in res.refused[0][1]
-    live = [r for r in double.live(KEY).values() if r["kind"] == "D"]
-    assert len(live) == 1 and live[0]["data"]["body"] == "from device a"
-    # b now holds both locally; the operator folds them
+    assert not a.sync().refused
+    assert not b.sync().refused
     c = b.conn()
-    assert len(db.documents(c)) == 2
+    assert db.project_overages(c) == {"": [d.id for d in db.documents(c)]}
     keep = [d.id for d in db.documents(c) if d.body == "from device a"][0]
     mine = [d.id for d in db.documents(c) if d.body == "from device b"][0]
     db.merge_docs(c, mine, keep)

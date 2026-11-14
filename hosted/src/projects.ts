@@ -4,7 +4,7 @@
 
 import { fail } from "./errors.js";
 import { focusRecord } from "./focus.js";
-import { DOC_BODY_MAX, FOCUS_TAG, PROJECT_PREFIX, SKILL_TAG, cleanProject, projectOf, type Data, type Normalized } from "./records.js";
+import { DOC_BODY_MAX, FOCUS_TAG, LIMITS, PROJECT_PREFIX, SKILL_TAG, cleanProject, projectOf, type Data, type Normalized } from "./records.js";
 import type { Repo, Stored } from "./repo.js";
 import { NAME_RE } from "./skills.js";
 
@@ -30,9 +30,10 @@ export function documentTags(tags: string[], project: string | undefined): strin
 
 /** Refuse a new document whose project already has one (409 naming it), or return that one to merge into. */
 export function gateNewDocument(repo: Repo, wiki: string, tags: string[], merge: boolean): Stored | null {
+  const bad = projectTagProblem(tags);
+  if (bad) fail("invalid", bad);
   const key = projectOf(tags);
   if (key === null) return null;
-  if (key !== cleanProject(key)) fail("invalid", `invalid project tag ${PROJECT_PREFIX}${key}`);
   const held = projectHolder(repo, wiki, key);
   if (!held) return null;
   if (!merge) fail("conflict", refusal(held, key), { existing: held.id });
@@ -46,10 +47,31 @@ export function mergedBody(existing: Data, title: string, body: string): string 
   return text;
 }
 
-/** A sync put of a document: a different uid may not take a project another document holds, and
- *  the reserved tags (focus, skill) must carry what they promise, so they are no way around the gate. */
-export function syncGate(repo: Repo, wiki: string, n: Normalized, target: Stored | null): string | null {
+/** Why a `project:` tag is no project key, or null. A key is exactly what `cleanProject` makes of it:
+ *  `project:Foo`, a zero-width or full-width lookalike and a key cut short by the tag limit would
+ *  otherwise sit next to `project:foo` and slip past the one-document rule. `tags` is the raw list
+ *  (whitespace is normalised as `cleanTag` does, but nothing is cut). */
+export function projectTagProblem(tags: unknown): string | null {
+  if (!Array.isArray(tags)) return null;
+  for (const t of tags) {
+    const tag = String(t ?? "").split(/\s+/).filter(Boolean).join(" ");
+    if (!tag.startsWith(PROJECT_PREFIX)) continue;
+    const key = tag.slice(PROJECT_PREFIX.length);
+    if (!key || key !== key.toLowerCase() || !/^[a-z0-9][a-z0-9._/-]{0,79}$/.test(key) || PROJECT_PREFIX.length + key.length > LIMITS.tag) {
+      return `invalid project tag ${JSON.stringify(tag.slice(0, 90))}: lowercase letters, digits and . _ / - only, one key as written`;
+    }
+  }
+  return null;
+}
+
+/** A sync put of a document. Documents already stored are grandfathered: the lean gate stops the
+ *  creation of a second document (create, merge, retag), not a put of one a client already holds,
+ *  since the server cannot tell the two apart. The reserved tags (focus, skill) must carry what
+ *  they promise, and a project tag must be a clean key. `rawTags` is the put's tag list as sent. */
+export function syncGate(repo: Repo, wiki: string, n: Normalized, rawTags?: unknown): string | null {
   if (n.kind !== "D" || n.deleted) return null;
+  const bad = projectTagProblem(rawTags ?? n.tags);
+  if (bad) return bad;
   if (n.tags.includes(SKILL_TAG)) {
     const t = (p: string) => n.tags.find((x) => x.startsWith(p))?.slice(p.length) ?? "";
     if (!NAME_RE.test(t("skill:")) || !/^\d{1,6}$/.test(t("v:")) || !["active", "pending", "previous"].includes(t("status:"))) {
@@ -66,9 +88,5 @@ export function syncGate(repo: Repo, wiki: string, n: Normalized, target: Stored
     const held = focusRecord(repo, wiki);
     if (held && held.uid !== n.uid) return `this wiki already has its focus record ${held.id}`;
   }
-  const key = projectOf(n.tags);
-  if (key === null) return null;
-  if (target && !target.deleted && projectOf(target.tags) === key) return null; // unchanged project
-  const held = projectHolder(repo, wiki, key, n.uid);
-  return held ? refusal(held, key) : null;
+  return null;
 }

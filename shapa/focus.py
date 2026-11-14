@@ -48,6 +48,8 @@ MAX_FIRES = 3
 NORTHSTAR_MAX = 600
 FIRE_TEXT_MAX = 200
 RANK_PREFIX = "rank:"
+_RANK_RE = re.compile(r"[1-9][0-9]{0,2}")
+FOCUS_UID = "shapa-focus-record"
 FILES_SHOWN = 8
 _FILE_RE = re.compile(
     r"(?<![\w/.:-])((?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]*\.[A-Za-z0-9]{1,6}"
@@ -142,8 +144,11 @@ def save(conn: sqlite3.Connection, f: Focus) -> Focus:
     body = _dump(f)
     d = db.get_doc(conn, ALIAS)
     if d is None:
+        # One fixed uid for every wiki's focus record: two devices that each create it
+        # offline made the same record, so a sync merges them (last write wins) instead
+        # of the store refusing the second.
         db.add_doc(conn, "Focus", body, tags=[db.FOCUS_TAG], alias=ALIAS, system=True,
-                   mime="application/json", source="focus")
+                   mime="application/json", source="focus", uid=FOCUS_UID)
     elif db.FOCUS_TAG in d.tags:
         if d.body != body:
             db.update_doc(conn, d.id, body=body)
@@ -173,12 +178,10 @@ def _feature(conn, feature_id: str) -> db.Item:
 
 
 def rank_of(conn, feature_id: str) -> int | None:
-    for (t,) in conn.execute("SELECT tag FROM tags WHERE id = ? AND tag LIKE ?",
+    for (t,) in conn.execute("SELECT tag FROM tags WHERE id = ? AND tag LIKE ? ORDER BY tag",
                              (feature_id, RANK_PREFIX + "%")):
-        try:
+        if _RANK_RE.fullmatch(t[len(RANK_PREFIX):]):  # 1-999, ASCII digits, no sign, no padding
             return int(t[len(RANK_PREFIX):])
-        except ValueError:
-            continue
     return None
 
 

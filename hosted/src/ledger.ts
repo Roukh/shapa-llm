@@ -6,9 +6,9 @@
 import { type Device, needScope, needWiki, randomHex } from "./devices.js";
 import { fail } from "./errors.js";
 import { onFeatureClosed } from "./focus.js";
-import { documentTags, gateNewDocument, mergedBody, projectHolder, refusal } from "./projects.js";
+import { documentTags, gateNewDocument, mergedBody, projectHolder, projectTagProblem, refusal } from "./projects.js";
 import {
-  CLOSE_REASONS, Invalid, LEDGER_KINDS, PARENT_KIND, RESERVED_DOC_TAGS, TYPE_NAMES, buildData, contentKey, isNoteId, nowIso, normTags, projectOf,
+  CLOSE_REASONS, Invalid, LEDGER_KINDS, PARENT_KIND, RESERVED_DOC_TAGS, SKILL_TAG, TYPE_NAMES, buildData, contentKey, isNoteId, nowIso, normTags, projectOf,
   type CreateIn, type CreateType, type Data, type Kind, type Normalized, type PatchIn, type RecordWire,
 } from "./records.js";
 import { Repo, toWire, type Stored } from "./repo.js";
@@ -67,6 +67,8 @@ export function createRecord(repo: Repo, d: Device, wiki: string, body: CreateIn
   wikiFor(repo, d, wiki);
   const kind = TYPE_KIND[body.type];
   const ts = nowIso();
+  const badProject = kind === "D" ? projectTagProblem(body.tags) : null;
+  if (badProject) fail("invalid", badProject);
   let tags = normTags([...(body.tags ?? []), ...(body.type === "idea" ? ["idea"] : [])]);
   const text = body.title ?? body.summary ?? "";
   if ((body.project !== undefined || body.merge !== undefined) && kind !== "D") fail("invalid", "project and merge apply to a document only");
@@ -165,6 +167,13 @@ export function patchRecord(repo: Repo, d: Device, wiki: string, ref: string, p:
     fail("conflict", `${rec.id} is at rev ${rec.rev}, not ${p.base_rev}`, { current: toWire(rec) });
   }
   const k = rec.kind;
+  if (k === "D" && rec.tags.includes(SKILL_TAG)) {
+    fail("invalid", `${rec.id} is a skill version: it is activated, edited or retired with \`shapa skill\` on the operator's machine, never through the API or MCP`);
+  }
+  if (k === "D" && p.tags !== undefined) {
+    const bad = projectTagProblem(p.tags);
+    if (bad) fail("invalid", bad);
+  }
   const data: Data = { ...rec.data };
   const only = (field: string, ok: boolean) => {
     if (!ok) fail("invalid", `${field} does not apply to a ${TYPE_NAMES[k]}`);

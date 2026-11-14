@@ -89,16 +89,18 @@ describe("the lean gate: one document per project", () => {
 });
 
 describe("the lean gate over sync", () => {
-  it("accepts the first document, refuses a different one for the same project naming the first", async () => {
+  it("grandfathers documents a client already holds: a second one for the project still syncs, so none is refused for good", async () => {
     const { token, w } = await setup();
     const a = await sync(token, w, { ops: [put(doc("D1", "Principles", "from device a", [], { uid: "device-a-uid-0000001" }))] });
     expect(a.body.results[0].status).toBe("accepted");
-    const b = await sync(token, w, { ops: [put(doc("D1", "Principles too", "from device b", [], { uid: "device-b-uid-0000001" }))] });
-    expect(b.body.results[0].status).toBe("rejected");
-    expect(b.body.results[0].error).toContain("already has document D1");
+    const b = await sync(token, w, { ops: [put(doc("D2", "Models", "from device b", [], { uid: "device-b-uid-0000001" }))] });
+    expect(b.body.results[0].status).toBe("accepted");
     const docs = await send("GET", rec(w, "?kind=D"), { token });
-    expect(docs.body.records).toHaveLength(1);
-    expect(docs.body.records[0].data.body).toBe("from device a");
+    expect(docs.body.records).toHaveLength(2);
+    // creation stays gated: a new third document through the API is still refused, naming the first
+    const third = await create(token, w, { title: "Third", body: "x" });
+    expect(third.status).toBe(409);
+    expect(third.body.error.message).toContain("already has document D1");
   });
 
   it("lets the first writer's own edits through, and a second document once the first is deleted", async () => {
@@ -136,13 +138,48 @@ describe("the lean gate over sync", () => {
     expect(sneaky.body.results.map((x: { status: string }) => x.status)).toEqual(["rejected", "rejected", "rejected"]);
   });
 
-  it("is the single writer: two devices racing in one request cannot make two", async () => {
+  it("keeps every put of a race (the server cannot tell it from a stored one); `shapa doc merge` folds them", async () => {
     const { token, w } = await setup();
     const r = await sync(token, w, { ops: [
       put(doc("D1", "From a", "a", [], { uid: "race-uid-aaaaaaaa1" })),
       put(doc("D2", "From b", "b", [], { uid: "race-uid-bbbbbbbb1" })),
     ] });
-    expect(r.body.results.map((x: { status: string }) => x.status)).toEqual(["accepted", "rejected"]);
+    expect(r.body.results.map((x: { status: string }) => x.status)).toEqual(["accepted", "accepted"]);
+  });
+
+  it("refuses a project tag that is not a clean key: Foo, a zero-width or full-width lookalike, an empty or overlong key", async () => {
+    const { token, w } = await setup();
+    const keys = ["Foo", "fo​o", "ｆoo", "", "a".repeat(90), "../x", "fo o"];
+    await sync(token, w, { ops: [put(doc("D1", "Held", "x", ["project:foo"], { uid: "aaaaaaaaaaaaaaaa1" }))] });
+    for (const [i, key] of keys.entries()) {
+      const r = await sync(token, w, { ops: [put(doc(`D${i + 2}`, "Sneaky", "x", [`project:${key}`], { uid: `bbbbbbbbbbbbbbb${i}` }))] });
+      expect(r.body.results[0].status, JSON.stringify(key)).toBe("rejected");
+      expect(r.body.results[0].error).toContain("invalid project tag");
+    }
+    const docs = await send("GET", rec(w, "?kind=D"), { token });
+    expect(docs.body.records).toHaveLength(1);
+  });
+
+  it("refuses the same malformed keys on create and on a PATCH retag", async () => {
+    const { token, w } = await setup();
+    await create(token, w, { title: "Repo", body: "x" });
+    const other = await create(token, w, { title: "Other", body: "y", project: "other" });
+    for (const key of ["Foo", "fo​o", "ｆoo", "", "a".repeat(90)]) {
+      const c = await create(token, w, { title: "t", body: "b", tags: [`project:${key}`] });
+      expect(c.status, `create ${JSON.stringify(key)}`).toBe(400);
+      const p = await send("PATCH", rec(w, `/${other.body.id}`), { token, body: { tags: [`project:${key}`] } });
+      expect(p.status, `patch ${JSON.stringify(key)}`).toBe(400);
+    }
+  });
+
+  it("does not let an edit of a grandfathered document trip the gate", async () => {
+    const { token, w } = await setup();
+    await sync(token, w, { ops: [
+      put(doc("D1", "One", "a", [], { uid: "device-a-uid-0000001" })),
+      put(doc("D2", "Two", "b", [], { uid: "device-b-uid-0000001" })),
+    ] });
+    const edit = await send("PATCH", rec(w, "/D2"), { token, body: { body: "b edited" } });
+    expect(edit.status).toBe(200);
   });
 
   it("needs the write scope: a read-only device cannot push a document or a pending skill", async () => {

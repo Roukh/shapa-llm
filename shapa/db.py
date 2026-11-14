@@ -805,12 +805,34 @@ def clean_project(project: str | None) -> str:
     return key
 
 
-def project_doc(conn: sqlite3.Connection, key: str) -> Doc | None:
+def project_doc(conn: sqlite3.Connection, key: str, *, exclude: str = "") -> Doc | None:
     """The live project document of *key* (``""`` = the wiki's own), if any."""
     for d in documents(conn):
-        if project_of(d.tags) == key:
+        if d.id != exclude and project_of(d.tags) == key:
             return d
     return None
+
+
+def project_overages(conn: sqlite3.Connection) -> dict[str, list[str]]:
+    """Projects that hold more than their one document (stored by an older client, or a
+    second device that raced): ``{key: [ids]}``. Such documents are grandfathered, never
+    refused; ``shapa doc merge`` folds them."""
+    held: dict[str, list[str]] = {}
+    for d in documents(conn):
+        key = project_of(d.tags)
+        if key is not None:
+            held.setdefault(key, []).append(d.id)
+    return {k: v for k, v in held.items() if len(v) > 1}
+
+
+def check_project_tags(tags) -> None:
+    """Refuse a ``project:`` tag whose key is not exactly what :func:`clean_project`
+    makes of it (uppercase, zero-width or full-width look-alikes, empty, too long)."""
+    for t in tags:
+        if t.startswith(PROJECT_PREFIX):
+            key = t[len(PROJECT_PREFIX):]
+            if not key or clean_project(key) != key:
+                raise LedgerError(f"invalid project tag {t!r}: lowercase letters, digits and . _ / - only")
 
 
 def _clean_mime(mime: str | None) -> str:
@@ -822,7 +844,8 @@ def _clean_mime(mime: str | None) -> str:
 
 def add_doc(conn: sqlite3.Connection, title: str, body: str = "", *, tags=(), alias: str | None = None,
             mime: str | None = None, source: str = "", now: datetime | None = None,
-            project: str | None = None, merge: bool = False, system: bool = False) -> str:
+            project: str | None = None, merge: bool = False, system: bool = False,
+            uid: str | None = None) -> str:
     """Write one document (kind ``D``); returns its id.
 
     The lean gate: a project (``project`` or a ``project:KEY`` tag; none means
@@ -837,6 +860,7 @@ def add_doc(conn: sqlite3.Connection, title: str, body: str = "", *, tags=(), al
     if len(body.encode("utf-8")) > DOC_BODY_MAX:
         raise LedgerError(f"a document is at most {DOC_BODY_MAX} bytes")
     mime = _clean_mime(mime)
+    check_project_tags([" ".join(str(x).split()) for x in tags])  # before any truncation
     tags = [t for t in (_clean_tag(x) for x in tags) if t]
     if not system and any(t in RESERVED_DOC_TAGS for t in tags):
         raise LedgerError(f"the tags {', '.join(RESERVED_DOC_TAGS)} are reserved: "
@@ -844,12 +868,11 @@ def add_doc(conn: sqlite3.Connection, title: str, body: str = "", *, tags=(), al
     key = clean_project(project)
     if key:
         tags = [t for t in tags if not t.startswith(PROJECT_PREFIX)] + [PROJECT_PREFIX + key]
+    check_project_tags(tags)
     ts = now_iso(now)
     with write(conn):
         gate = project_of(tags)
         if gate is not None:
-            if clean_project(gate) != gate:
-                raise LedgerError(f"invalid project tag {PROJECT_PREFIX}{gate}")
             held = project_doc(conn, gate)
             if held is not None:
                 if not merge:
@@ -868,7 +891,7 @@ def add_doc(conn: sqlite3.Connection, title: str, body: str = "", *, tags=(), al
                      "updated) VALUES (?,?,?,?,?,?,?,?,?)",
                      (doc_id, alias or None, title, body, mime, source,
                       content_hash(title, body), ts, ts))
-        conn.execute("INSERT OR REPLACE INTO uids(id, uid) VALUES (?, ?)", (doc_id, new_uid()))
+        conn.execute("INSERT OR REPLACE INTO uids(id, uid) VALUES (?, ?)", (doc_id, uid or new_uid()))
         for t in tags:
             t = _clean_tag(t)
             if t:
@@ -957,10 +980,27 @@ def remove(conn: sqlite3.Connection, ids, *, tombstone: bool = True,
 
 
 def tag(conn: sqlite3.Connection, target: str, tags) -> None:
-    if kind_of(target) == DOC_KIND and any(_clean_tag(t) in RESERVED_DOC_TAGS for t in tags):
-        raise LedgerError(f"the tags {', '.join(RESERVED_DOC_TAGS)} are reserved: "
-                          "use `shapa focus` and `shapa skill`")
+    if kind_of(target) == DOC_KIND:
+        clean = [t for t in (_clean_tag(x) for x in tags) if t]
+        if any(t in RESERVED_DOC_TAGS for t in clean):
+            raise LedgerError(f"the tags {', '.join(RESERVED_DOC_TAGS)} are reserved: "
+                              "use `shapa focus` and `shapa skill`")
+        check_project_tags([" ".join(str(x).split()) for x in tags])  # before any truncation
+        moves =sorted({t for t in clean if t.startswith(PROJECT_PREFIX)})
+        if len(moves) > 1:
+            raise LedgerError("a document belongs to one project")
+        doc = get_doc(conn, target)
+        if doc is not None and moves:
+            was, new = project_of(doc.tags), moves[0][len(PROJECT_PREFIX):]
+            # the lean gate also covers a retag: no moving into a project another document holds
+            if was is not None and new != was:
+                held = project_doc(conn, new, exclude=doc.id)
+                if held is not None:
+                    raise DocExists(held.id, held.title, new)
     with write(conn):
+        if kind_of(target) == DOC_KIND and any(
+                _clean_tag(x).startswith(PROJECT_PREFIX) for x in tags):
+            conn.execute("DELETE FROM tags WHERE id = ? AND tag LIKE 'project:%'", (target,))
         for t in tags:
             t = _clean_tag(t)
             if t:

@@ -428,8 +428,11 @@ def tool_skill(args: dict[str, Any], cwd: str | None) -> dict[str, Any]:
         if action == "show" and not out:
             return {"error": f"no skill {args.get('name')!r} in any wiki in scope"}
         return {"skills": out}
-    if action not in ("add", "update", "activate"):
-        return {"error": f"action must be list, show, add, update or activate (got {action!r})"}
+    # Activation is the operator's: `shapa skill activate` on the command line, never an MCP
+    # tool, so an agent cannot put into use a version it (or a lesson it filed) wrote.
+    if action not in ("add", "update"):
+        return {"error": f"action must be list, show, add or update (got {action!r}); "
+                         "a version is activated with `shapa skill activate`, not over MCP"}
     root, err = _scope_root(args, cwd, required=True)
     if err:
         return err
@@ -438,14 +441,9 @@ def tool_skill(args: dict[str, Any], cwd: str | None) -> dict[str, Any]:
         return {"error": f"{root} has no database - run `shapa upgrade {root}`"}
     try:
         try:
-            name = str(args.get("name") or "")
-            if action == "activate":
-                v = skills.activate(conn, name, int(args["version"]) if args.get("version") else None)
-            else:
-                v = skills.add_version(conn, name, str(args.get("description") or ""),
-                                       str(args.get("body") or ""), new=action == "add",
-                                       active=bool(args.get("active")) or action == "add",
-                                       source="mcp")
+            v = skills.add_version(conn, str(args.get("name") or ""), str(args.get("description") or ""),
+                                   str(args.get("body") or ""), new=action == "add", active=False,
+                                   source="mcp")
         except (db.LedgerError, ValueError, TypeError) as exc:
             return {"error": str(exc)}
         return skills.as_dict(v)
@@ -585,19 +583,18 @@ TOOLS: list[dict[str, Any]] = [
         "name": "skill",
         "description": (
             "Skills stored as versioned records, global or per repo. action `list` (default) "
-            "and `show` {name, version?} read them; `add` {name, description, body} makes "
-            "version 1 active; `update` makes a new pending version (`active: true` "
-            "activates it at once); `activate` {name, version?} activates the newest "
-            "pending one. add, update and activate need `scope`."
+            "and `show` {name, version?} read them; `add` {name, description, body} and "
+            "`update` {name, body} write a PENDING version (they need `scope`). Nothing here "
+            "activates a version: the operator does, with `shapa skill activate`."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "action": {"type": "string", "enum": ["list", "show", "add", "update", "activate"]},
+                "action": {"type": "string", "enum": ["list", "show", "add", "update"]},
                 "scope": {"type": "string", "enum": ["global", "repo"]},
                 "name": {"type": "string"}, "description": {"type": "string"},
                 "body": {"type": "string"}, "version": {"type": "integer"},
-                "active": {"type": "boolean"}, "root": {"type": "string"},
+                "root": {"type": "string"},
             },
         },
     },

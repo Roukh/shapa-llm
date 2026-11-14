@@ -2,7 +2,8 @@
 // tagged `skill`, `skill:NAME`, `v:N` and `status:active|pending|previous`; the body is a SKILL.md
 // (frontmatter with the name and a one-line description, then the text). The Worker reads them,
 // and files a *pending* new version when a memory, rule or issue saved through REST or MCP names
-// a skill; it never activates one (activating is a tag change made through sync or PATCH).
+// a skill; it never activates one, and no REST or MCP edit touches a skill version (the
+// operator activates with `shapa skill activate`, which reaches the store through sync).
 
 import { type Device, needScope, needWiki, randomHex } from "./devices.js";
 import { fail } from "./errors.js";

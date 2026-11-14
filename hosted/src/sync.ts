@@ -68,8 +68,9 @@ function applyPut(
   const byUid = repo.byUid(wiki, n.uid);
   const target = byUid ?? (held && held.uid === n.uid ? held : null);
 
-  // The lean gate (a project keeps one document) and the focus and skill record shapes.
-  const refused = syncGate(repo, wiki, n, target);
+  // The focus and skill record shapes and the project key format. Documents already stored are
+  // grandfathered: the one-document rule gates creation, never a put of a document a client holds.
+  const refused = syncGate(repo, wiki, n, (raw as { tags?: unknown } | null)?.tags);
   if (refused) return { id: n.id, status: "rejected", rev: target?.rev ?? 0, error: refused };
 
   if (!target) {

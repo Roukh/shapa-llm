@@ -25,9 +25,20 @@ This project follows [Semantic Versioning](https://semver.org/).
   (`--project KEY`, default the wiki's own) keeps one document; a second is
   refused with a message naming the first, or appended to it as a section
   with `--merge` (`merge: true` over MCP and REST). `shapa doc merge SRC DST`
-  folds two that raced from two devices; the hosted store refuses the second
-  on a sync put, naming the first. Focus records and skill versions are not
-  project documents. The tags `focus` and `skill` are reserved.
+  folds two that raced from two devices. The gate stops the creation of a new
+  second document only: a wiki that already holds two or more for one project
+  keeps and syncs them (`shapa doc list` flags the project as over the limit),
+  so an upgrade refuses nothing for good. A `project:KEY` tag must be exactly
+  the clean key (lowercase letters, digits, `. _ / -`): `project:Foo` and
+  zero-width or full-width lookalikes are refused on both sides, including by
+  `shapa row tag`. Focus records and skill versions are not project
+  documents. The tags `focus` and `skill` are reserved.
+- Every wiki's focus record has one fixed uid, so two devices that each set a
+  northstar offline sync into the same record (last write wins) instead of the
+  hosted store refusing the second. A `rank:N` tag is 1 to 999. `shapa
+  bootstrap --budget` also bounds the focused session start: the northstar and
+  fires are never cut, the tree is, in rank order, and what is left out is
+  said.
 - Skills as stored records: `shapa skill list|show|add|update|activate`, the
   MCP tool `skill`, and on the hosted store `GET /v1/wikis/{wiki}/skills[/{name}]`
   and the tools `skills` and `skill`. A version is a document tagged
@@ -38,7 +49,9 @@ This project follows [Semantic Versioning](https://semver.org/).
   link to one of its versions) files a pending new version whose body is the
   latest version plus the lesson, every lesson line quoted. It is never
   activated by itself; the hosted store does the same for REST and MCP
-  writes.
+  writes. Activation is operator-only: the `skill` MCP tool lists, shows, adds
+  and updates (always pending), and neither the Worker's REST PATCH nor its MCP
+  `update` touches a skill version; `shapa skill activate` does.
 
 ### Changed
 

@@ -27,13 +27,6 @@ def now_iso():
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def project_of(tags):
-    """The project key of a document's tags, ``None`` for a focus record or a skill
-    version (the contract's lean gate, ``hosted.md``)."""
-    if "focus" in tags or "skill" in tags:
-        return None
-    return next((t[len("project:"):] for t in sorted(tags) if t.startswith("project:")), "")
-
 
 def clamp_future(stamp):
     """A stamp more than five minutes ahead of the server clock is clamped to it."""
@@ -230,10 +223,10 @@ class HostedDouble:
                 res["new_id"] = twin["id"]
                 renames[orig] = twin["id"]
             return {**res, "id": orig}
-        held = self.project_holder(wiki, rec)
-        if held is not None:  # the lean gate: a project keeps one document
+        held = self.focus_holder(wiki, rec)
+        if held is not None:  # a wiki has one focus record (the Worker refuses a second uid)
             return {"id": orig, "status": "rejected", "rev": 0,
-                    "error": f"project {project_of(rec['tags'])!r} already has document {held}"}
+                    "error": f"this wiki already has its focus record {held}"}
         cur = wiki.records.get(orig)
         if cur is None:
             return self.store(wiki, device, rec, "accepted", orig)
@@ -245,14 +238,13 @@ class HostedDouble:
         return res
 
     @staticmethod
-    def project_holder(wiki, rec):
-        """The id of the live document already holding *rec*'s project, if any."""
-        if rec["kind"] != "D" or project_of(rec.get("tags") or []) is None:
+    def focus_holder(wiki, rec):
+        """The id of the live focus record of another uid, if *rec* is a focus record."""
+        if rec["kind"] != "D" or "focus" not in (rec.get("tags") or []):
             return None
-        key = project_of(rec["tags"])
         for other in wiki.records.values():
             if (other["kind"] == "D" and not other["deleted"] and other["uid"] != rec["uid"]
-                    and project_of(other.get("tags") or []) == key):
+                    and "focus" in (other.get("tags") or [])):
                 return other["id"]
         return None
 

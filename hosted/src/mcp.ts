@@ -12,7 +12,7 @@ import { LIMITS, type RecordWire } from "./records.js";
 import type { Cred } from "./store.js";
 
 export const SERVER_INSTRUCTIONS =
-  "shapa is the operator's shared memory and work ledger. Call `session_start` first: it returns the operator's standing instructions, rules, live work and exactly how to write back. " +
+  "shapa is the operator's shared memory and work ledger. Call `session_start` first: it returns the northstar, the three fires and only their tree, the operator's style and exactly how to write back (`full` adds the rules and other live work). " +
   "Then use `search` and `get` to recall, `save` to record what matters, and `ledger_list` / `ledger_add` / `ledger_set` for work.";
 
 type ToolResult = { content: { type: "text"; text: string }[]; isError?: boolean };
@@ -47,7 +47,7 @@ export function buildServer(env: Env, cred: Cred): McpServer {
     {
       title: "Start a session",
       description:
-        "Call this first. Returns the operator's session instructions, style, rules, live features, and the exact format for writing back with `save`. Takes no side effects.",
+        "Call this first. Returns the wiki's northstar, its three ranked fires and only their tree (feature, open jobs and tasks, files, arch boxes), then the operator's style and the exact format for writing back with `save`. `full: true` also returns the rules and the other live features. Takes no side effects.",
       inputSchema: z.object({
         client: z.enum(["mcp", "rest"]).default("mcp").describe("Write-back flavor; leave as mcp."),
         wiki: wikiKey.optional().describe("Focus on one repo wiki."),
