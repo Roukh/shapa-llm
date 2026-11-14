@@ -68,10 +68,19 @@ export function projectTagProblem(tags: unknown): string | null {
  *  creation of a second document (create, merge, retag), not a put of one a client already holds,
  *  since the server cannot tell the two apart. The reserved tags (focus, skill) must carry what
  *  they promise, and a project tag must be a clean key. `rawTags` is the put's tag list as sent. */
-export function syncGate(repo: Repo, wiki: string, n: Normalized, rawTags?: unknown): string | null {
+export function syncGate(repo: Repo, wiki: string, n: Normalized, target: Stored | null, rawTags?: unknown): string | null {
   if (n.kind !== "D" || n.deleted) return null;
   const bad = projectTagProblem(rawTags ?? n.tags);
   if (bad) return bad;
+  // A record is the focus record or a skill version from its first put to its last: a put may not add or
+  // remove the reserved tags of a stored record (a focus record retagged `skill` would be an active
+  // skill version), carry both, or change the focus record's tags.
+  if (n.tags.includes(FOCUS_TAG) && n.tags.includes(SKILL_TAG)) return "a record is the focus record or a skill version, not both";
+  if (target && !target.deleted && target.kind === "D") {
+    const reserved = (ts: readonly string[]) => ts.filter((t) => t === FOCUS_TAG || t === SKILL_TAG).sort().join(",");
+    if (reserved(n.tags) !== reserved(target.tags)) return "the focus and skill tags cannot be added to or removed from a stored record";
+    if (target.tags.includes(FOCUS_TAG) && [...n.tags].sort().join("\n") !== [...target.tags].sort().join("\n")) return "the focus record's tags are fixed";
+  }
   if (n.tags.includes(SKILL_TAG)) {
     const t = (p: string) => n.tags.find((x) => x.startsWith(p))?.slice(p.length) ?? "";
     if (!NAME_RE.test(t("skill:")) || !/^\d{1,6}$/.test(t("v:")) || !["active", "pending", "previous"].includes(t("status:"))) {

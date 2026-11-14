@@ -244,8 +244,9 @@ def _py_facts(text: str) -> Facts:
 _JS_SPECIAL = re.compile(r"""["'`/]""")
 _JS_STRING = {'"': re.compile(r'(?:\\.|[^"\\\n])*'), "'": re.compile(r"(?:\\.|[^'\\\n])*"),
               "`": re.compile(r"(?:\\.|[^`\\])*", re.S)}
+# The clause starts and ends on a non-space, so the lazy middle never overlaps the `\s+` around it.
 _JS_IMPORT = re.compile(
-    r"""\bimport\s+(?:type\s+)?([\w$\s,{}*]{1,400}?)\s+from\s*['"]([^'"\n]{1,200})['"]""")
+    r"""\bimport\s+(?:type\s+)?([\w$,{}*](?:[\w$\s,{}*]{0,398}[\w$,{}*])?)\s+from\s*['"]([^'"\n]{1,200})['"]""")
 _JS_IMPORT_BARE = re.compile(r"""\bimport\s*['"]([^'"\n]{1,200})['"]""")
 _JS_REEXPORT = re.compile(r"""\bexport\s+(?:type\s+)?(\*|\{[^}]{0,2000}\})\s*(?:as\s+\w+\s*)?from\s*['"]([^'"\n]{1,200})['"]""")
 _JS_REQUIRE = re.compile(
@@ -323,9 +324,31 @@ def _js_strip(text: str) -> str:
     return "".join(out)
 
 
+_clock = time.monotonic
+JS_FILE_SECONDS = 2.0   # one file's regex passes; the build's own budget is only checked between files
+
+
+class _TooSlow(Exception):
+    pass
+
+
 def _js_facts(text: str) -> Facts:
+    t0 = _clock()
+
+    def check() -> None:
+        if _clock() - t0 > JS_FILE_SECONDS:
+            raise _TooSlow
+
+    try:
+        return _js_facts_timed(text, check)
+    except _TooSlow:
+        return Facts(status="error")
+
+
+def _js_facts_timed(text: str, check) -> Facts:
     f = Facts()
     text = _js_strip(text)
+    check()
     nl = [m.start() for m in re.finditer("\n", text)]
     spans: list[tuple[int, str, str, str]] = []  # offset, qual, name, kind
     for rx, kind in ((_JS_FUNC, "function"), (_JS_CLASS, "class"), (_JS_ARROW, "function"),
@@ -333,6 +356,7 @@ def _js_facts(text: str) -> Facts:
         for m in rx.finditer(text):
             if _IDENT.match(m.group(1)):
                 spans.append((m.start(), m.group(1), m.group(1), kind))
+        check()
     spans.sort()
     seen: set[str] = set()
     for off, qual, name, kind in spans:
@@ -343,8 +367,10 @@ def _js_facts(text: str) -> Facts:
         for name, alias in _js_names(m.group(1)):
             if len(f.imports) < MAX_IMPORTS_PER_FILE:
                 f.imports.append((m.group(2), name, alias, 0))
+    check()
     for m in _JS_IMPORT_BARE.finditer(text):
         f.imports.append((m.group(1), "", "", 0))
+    check()
     for m in _JS_REEXPORT.finditer(text):
         names = _js_names(m.group(1)) if m.group(1) != "*" else []
         for name, _alias in names or [("", "")]:
@@ -360,6 +386,7 @@ def _js_facts(text: str) -> Facts:
             f.imports.append((m.group(2), "", "", 0))
     for m in _JS_DYNAMIC.finditer(text):
         f.imports.append((m.group(1), "", "", 0))
+    check()
     f.imports = f.imports[:MAX_IMPORTS_PER_FILE]
     starts = [s[0] for s in spans]
     quals = [s[1] for s in spans]

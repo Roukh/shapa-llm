@@ -986,10 +986,13 @@ def tag(conn: sqlite3.Connection, target: str, tags) -> None:
             raise LedgerError(f"the tags {', '.join(RESERVED_DOC_TAGS)} are reserved: "
                               "use `shapa focus` and `shapa skill`")
         check_project_tags([" ".join(str(x).split()) for x in tags])  # before any truncation
-        moves =sorted({t for t in clean if t.startswith(PROJECT_PREFIX)})
+        moves = sorted({t for t in clean if t.startswith(PROJECT_PREFIX)})
         if len(moves) > 1:
             raise LedgerError("a document belongs to one project")
         doc = get_doc(conn, target)
+        if doc is not None and any(t in RESERVED_DOC_TAGS for t in doc.tags):
+            raise LedgerError(f"{target} is the focus record or a skill version: its tags are the engine's, "
+                              "use `shapa focus` and `shapa skill`")
         if doc is not None and moves:
             was, new = project_of(doc.tags), moves[0][len(PROJECT_PREFIX):]
             # the lean gate also covers a retag: no moving into a project another document holds

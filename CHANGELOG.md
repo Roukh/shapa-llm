@@ -51,7 +51,17 @@ This project follows [Semantic Versioning](https://semver.org/).
   activated by itself; the hosted store does the same for REST and MCP
   writes. Activation is operator-only: the `skill` MCP tool lists, shows, adds
   and updates (always pending), and neither the Worker's REST PATCH nor its MCP
-  `update` touches a skill version; `shapa skill activate` does.
+  `update` touches a skill version; `shapa skill activate` does. No edit adds
+  or removes the `focus` or `skill` tag of a stored record, so the focus record
+  cannot be retagged into a skill version. On the hosted store a sync put that
+  activates a skill version, or edits an active one, needs a device token with
+  the delete scope (OAuth tokens never): from any other device a new active
+  version is stored pending and an edit of the active one is rejected. A skill
+  with no active version is not served by name (a pending one is read with
+  `--version N` / `?version=N`). A row files lessons for at most 3 skills, and
+  a skill keeps at most 5 pending versions.
+- The code map's JavaScript import pattern no longer backtracks on long runs of
+  whitespace (a 400 KB file took 55 s), and a file's parse stops after 2 s.
 
 - Code partitions per fire. `shapa map` builds a bounded, incremental code map
   of the checkout into `.shapa/.shapa-code.db` (derived, gitignored, never

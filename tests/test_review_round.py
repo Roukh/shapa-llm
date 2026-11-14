@@ -230,7 +230,7 @@ def test_the_mcp_skill_tool_cannot_activate_anything(wikis):
     upd = mcp.tool_skill({"action": "update", "scope": "repo", "name": "tdd", "body": "b2", "active": True}, cwd)
     assert upd["status"] == "pending"  # the flag is ignored
     c = wikis.conn()
-    assert skills.get(c, "tdd").version == 2 and all(v.status != "active" for v in skills.versions(c, "tdd"))
+    assert skills.get(c, "tdd") is None and skills.get(c, "tdd", 2).version == 2 and all(v.status != "active" for v in skills.versions(c, "tdd"))
     skills.activate(c, "tdd", 1)  # the CLI path still activates
     c.close()
     tools = {t["name"]: t for t in mcp.TOOLS}

@@ -8,7 +8,7 @@ import { fail } from "./errors.js";
 import { onFeatureClosed } from "./focus.js";
 import { documentTags, gateNewDocument, mergedBody, projectHolder, projectTagProblem, refusal } from "./projects.js";
 import {
-  CLOSE_REASONS, Invalid, LEDGER_KINDS, PARENT_KIND, RESERVED_DOC_TAGS, SKILL_TAG, TYPE_NAMES, buildData, contentKey, isNoteId, nowIso, normTags, projectOf,
+  CLOSE_REASONS, Invalid, LEDGER_KINDS, PARENT_KIND, RESERVED_DOC_TAGS, FOCUS_TAG, SKILL_TAG, TYPE_NAMES, buildData, contentKey, isNoteId, nowIso, normTags, projectOf,
   type CreateIn, type CreateType, type Data, type Kind, type Normalized, type PatchIn, type RecordWire,
 } from "./records.js";
 import { Repo, toWire, type Stored } from "./repo.js";
@@ -173,6 +173,12 @@ export function patchRecord(repo: Repo, d: Device, wiki: string, ref: string, p:
   if (k === "D" && p.tags !== undefined) {
     const bad = projectTagProblem(p.tags);
     if (bad) fail("invalid", bad);
+    // The focus and skill tags make a record the engine's: no edit adds or removes one (a focus
+    // record retagged `skill` would be an active skill version), and the focus record's tags are fixed.
+    const next = normTags(p.tags);
+    const reserved = (ts: readonly string[]) => ts.filter((t) => RESERVED_DOC_TAGS.includes(t)).sort().join(",");
+    if (reserved(next) !== reserved(rec.tags)) fail("invalid", "the focus and skill tags are reserved for the focus record and skill versions");
+    if (rec.tags.includes(FOCUS_TAG) && next.join("\n") !== [...rec.tags].sort().join("\n")) fail("invalid", "the focus record's tags are fixed");
   }
   const data: Data = { ...rec.data };
   const only = (field: string, ok: boolean) => {

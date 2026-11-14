@@ -284,6 +284,15 @@ export class Repo {
       .map((r) => ({ id: r["id"] as string, uid: r["uid"] as string, title: String(r["title"] ?? ""), tags: JSON.parse(r["tags"] as string) as string[] }));
   }
 
+  /** Whether a lesson from row `rowId` is already filed as a version of skill `name` (no body is loaded). */
+  lessonFiled(wiki: string, name: string, rowId: string): boolean {
+    return this.sql.exec(
+      `SELECT 1 FROM records WHERE wiki = ? AND kind = 'D' AND deleted = 0 AND json_extract(data, '$.source') = ?
+         AND EXISTS (SELECT 1 FROM json_each(records.tags) WHERE value = ?) LIMIT 1`,
+      wiki, `lesson:${rowId}`, `skill:${name}`,
+    ).toArray().length > 0;
+  }
+
   /** Cross-wiki lookup by id or alias (live records only). */
   across(ref: string, wikis: string[] | null, only?: string): Stored[] {
     const rows = this.sql

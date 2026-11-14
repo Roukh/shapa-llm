@@ -49,6 +49,8 @@ from shapa.ledger import CommandError, _connect, _roots, _subcommand_adder, run,
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 DESCRIPTION_MAX = 1024
 LESSON_BODY_MAX = 1500
+MAX_LESSON_SKILLS = 3   # skills one row may file a lesson for
+MAX_PENDING = 5         # pending versions of one skill; lessons past it are not filed
 STATUSES = ("active", "pending", "previous")
 NAME_TAG = "skill:"
 VERSION_TAG = "v:"
@@ -126,21 +128,20 @@ def _all(conn) -> dict[str, list[SkillVersion]]:
 
 
 def get(conn, name: str, version: int | None = None) -> SkillVersion | None:
-    """One version: *version*, else the active one, else the newest."""
+    """One version: *version* (a pending one included), else the active one. A skill with
+    no active version is not served: its pending versions are read by number."""
     vs = versions(conn, name)
-    if not vs:
-        return None
     if version is not None:
         return next((v for v in vs if v.version == version), None)
     active = [v for v in vs if v.status == "active"]
-    return (active or vs)[-1]
+    return active[-1] if active else None
 
 
 def summaries(conn) -> list[dict]:
     out = []
     for name, vs in sorted(_all(conn).items()):
-        cur = get(conn, name)
-        out.append({"name": name, "description": cur.description if cur else "",
+        cur = next((v for v in reversed(vs) if v.status == "active"), vs[-1])
+        out.append({"name": name, "description": cur.description,
                     "active": next((v.version for v in reversed(vs) if v.status == "active"), None),
                     "pending": [v.version for v in vs if v.status == "pending"],
                     "versions": len(vs)})
@@ -246,7 +247,7 @@ def lesson_from_row(conn, row_id: str) -> list[SkillVersion]:
     if row is None:
         return []
     out = []
-    for name in _named_skills(conn, row_id):
+    for name in _named_skills(conn, row_id)[:MAX_LESSON_SKILLS]:
         vs = versions(conn, name)
         if not vs:
             continue
@@ -254,6 +255,8 @@ def lesson_from_row(conn, row_id: str) -> list[SkillVersion]:
         marker = f"[{row.id}]"
         if any(marker in v.body for v in vs):
             continue
+        if sum(1 for v in vs if v.status == "pending") >= MAX_PENDING:
+            continue  # the review queue is full: new lessons wait until the operator clears it
         lesson = f"\n\n## Lesson {marker} ({db.KIND_NAMES[row.kind]}, pending review)\n\n"
         lesson += _quote(row.summary, 200)
         if row.body.strip():
@@ -321,7 +324,8 @@ def run_skill(argv: list[str]) -> int:
             finally:
                 conn.close()
         if cmd == "show" and not found:
-            raise CommandError(f"no skill {args.name!r}" + (f" version {args.version}" if args.version else ""))
+            raise CommandError(f"no skill {args.name!r} version {args.version}" if args.version else
+                               f"no active skill {args.name!r} (a pending version is read with --version N)")
         return 0
 
     conn = _connect(scoped_root(args.scope, args.cwd), create=cmd == "add")

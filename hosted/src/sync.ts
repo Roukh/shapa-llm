@@ -11,6 +11,7 @@ import {
 import { Repo, toWire, type Stored } from "./repo.js";
 import { wikiFor } from "./ledger.js";
 import { syncGate } from "./projects.js";
+import { activationGate } from "./skills.js";
 
 interface SyncIn {
   cursor: number;
@@ -70,8 +71,12 @@ function applyPut(
 
   // The focus and skill record shapes and the project key format. Documents already stored are
   // grandfathered: the one-document rule gates creation, never a put of a document a client holds.
-  const refused = syncGate(repo, wiki, n, (raw as { tags?: unknown } | null)?.tags);
+  const refused = syncGate(repo, wiki, n, target, (raw as { tags?: unknown } | null)?.tags);
   if (refused) return { id: n.id, status: "rejected", rev: target?.rev ?? 0, error: refused };
+  // Activating a skill version needs the delete scope; anyone else's new active version is stored pending.
+  const act = target && !target.deleted && sameContent(target, n) ? null : activationGate(d, n, target);
+  if (act?.error) return { id: n.id, status: "rejected", rev: target?.rev ?? 0, error: act.error };
+  if (act?.put) n = act.put;
 
   if (!target) {
     if (!held) {

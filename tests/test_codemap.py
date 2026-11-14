@@ -282,6 +282,29 @@ def test_source_shaped_to_make_a_regex_quadratic_cannot_stall_the_build(repo, na
     assert time.monotonic() - t0 < 5.0
 
 
+@pytest.mark.parametrize("gap", [1, 50, 400, 3000])
+def test_import_followed_by_long_whitespace_is_linear_in_one_extract(gap):
+    import time
+
+    text = ("import" + " " * gap) * (400_000 // (6 + gap))
+    t0 = time.monotonic()
+    codemap.extract("ts", text)
+    assert time.monotonic() - t0 < 1.0
+
+
+def test_a_file_over_its_time_bound_is_an_error_not_a_stall(monkeypatch):
+    clock = iter(range(0, 1000))
+    monkeypatch.setattr(codemap, "_clock", lambda: next(clock) * 10.0)
+    assert codemap.extract("ts", "import a from './x'\n" * 50).status == "error"
+
+
+def test_a_normal_import_still_parses():
+    f = codemap.extract("ts", "import type { A, B as C } from './ui'\nimport D, * as E from \"lib\"\n")
+    mods = sorted((m, n, a) for m, n, a, _ in f.imports)
+    assert ("./ui", "A", "A") in mods and ("./ui", "B", "C") in mods
+    assert ("lib", "default", "D") in mods and ("lib", "*", "E") in mods
+
+
 def test_a_directory_swapped_for_a_link_after_the_walk_is_not_read(repo, tmp_path):
     outside = tmp_path / "outside"
     outside.mkdir()
