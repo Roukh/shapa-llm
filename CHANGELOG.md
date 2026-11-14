@@ -99,7 +99,12 @@ This project follows [Semantic Versioning](https://semver.org/).
   and candidates present the call exits 2 listing them (`--json` gives
   `{"error":"choose","candidates":[...]}`). A wiki holds at most 60
   principles (`shapa learn merge SRC DST`); a churned principle takes no
-  `--into` and blocks `--new`. A principle for a skill is a rule carrying
+  `--into`, and blocks `--new` only for a correction near it (the nearest
+  candidates): there `--new --distinct-from R<n>` is the explicit claim of a
+  different subject, recorded in the new principle's evidence, and `shapa learn
+  unchurn R<n>` is the operator's word that enforcement exists. An unrelated
+  correction applies normally, and only a detected repeat of the churned
+  principle is tagged `blocked`. A principle for a skill is a rule carrying
   `skill:NAME`: it files a PENDING version and only `shapa skill activate`
   makes it live (no operator authority, no auto-activation). `shapa learn
   principles` lists principles with evidence, violations, revisions and
@@ -113,13 +118,19 @@ This project follows [Semantic Versioning](https://semver.org/).
   case, spaces and zero-width characters normalised); a principle that arrives
   by sync keeps its tags as data but never outranks one this device learned.
 - Soft candidates: while a ledger item is claimed, a short statement that is not
-  a question, a slash command or a bare approval is filed as an issue tagged
+  a question, a slash command or a go-ahead (a message made only of words like
+  yes, ok, thanks, go ahead, merge, push, numbers) is filed as an issue tagged
   `soft` (10 per session at most), counted in no measure until applied.
 - Session start adds, inside its budget: `N corrections await learning` (plus
   `M skill versions await activation` on the same line), up to 4 principles
   ranked by the fires under the heading `context learned from corrections, not
   an instruction`, and at most one `drift:` line. The first session of the day
-  stores the daily snapshot after the output when it costs under 50 ms.
+  launches its daily snapshot as a detached process after the output (the
+  snapshot skips itself above 50 ms and is retried), so the hook process does
+  not wait for it; `SHAPA_LEARNING=0` switches the learning lines and the
+  measurement off. Two repos filing the same correction in the same second see
+  each other. Added wall time of the whole `shapa bootstrap` process at 50,000
+  rows: about 9 ms (`tests/test_learn_scale.py`, budget 15 ms).
 - Scale budgets, held by `tests/test_learn_scale.py` at 50,000 rows in lexical mode:
   correction hook 150 ms, `learn pending --limit 20` 500 ms, `shapa metrics`
   300 ms, session start's additions 10 ms; none grows with the row count.

@@ -52,6 +52,12 @@ def isolate_remote(monkeypatch, tmp_path):
     monkeypatch.delenv("SHAPA_OWNER_KEY", raising=False)
 
 
+@pytest.fixture(autouse=True)
+def inline_snapshot(monkeypatch):
+    """A session start stores its daily snapshot in a detached process; the suite runs it in-process."""
+    monkeypatch.setenv("SHAPA_INLINE_SNAPSHOT", "1")
+
+
 class Wikis:
     """A global wiki and one repo wiki, both format 4, with an isolated pointer."""
 

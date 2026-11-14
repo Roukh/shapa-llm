@@ -128,9 +128,11 @@ commands:
                  --principle TEXT (--into R<n>|skill:NAME | --new) files the
                  principle (global by default, --scope repo needs --why):
                  you choose merge or new, and with candidates and no choice
-                 it exits 2 listing them; merge SRC DST folds two principles
-                 (60 at most a wiki); dismiss ISSUE drops a correction or
-                 removes a soft candidate
+                 it exits 2 listing them (--distinct-from R<n> claims a
+                 different subject from a nearby churned principle); merge
+                 SRC DST folds two principles (60 at most a wiki); unchurn
+                 R<n> clears churn once enforcement exists; dismiss ISSUE
+                 drops a correction or removes a soft candidate
   metrics [--since DATE] [--json] [--snapshot] [--all] [--repo KEY]
                  whether the wiki is working: fetch latency, corrections and
                  repeats per session, learned vs pending, skill use, feature

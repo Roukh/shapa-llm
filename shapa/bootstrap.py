@@ -29,7 +29,7 @@ import sys
 import time
 from pathlib import Path
 
-from shapa import (codemap, config, db, embed, focus, learn, ledger, memlog, metrics, partition,
+from shapa import (codemap, config, db, embed, focus, ledger, memlog, partition,
                    reconfigure, registry, serve)
 from shapa.config import WikiRoot
 from shapa.nodes import Node, load_nodes
@@ -150,6 +150,12 @@ _MEMORY_COUNTS: dict[str, int] = {}
 #: ``main`` counts them as served on this device (the hook path writes; a plain
 #: :func:`build_context` call leaves the wiki untouched).
 _SERVED: list[tuple[str, str]] = []
+
+
+def _learning_off() -> bool:
+    """``SHAPA_LEARNING=0`` switches off what the learning loop adds to a session start (its lines and
+    its measurements): the comparison run for the cost test, and an escape hatch."""
+    return os.environ.get("SHAPA_LEARNING") == "0"
 
 
 def _select_from_loaded(
@@ -295,7 +301,8 @@ def build_focused(wiki_roots: list[WikiRoot], budget: int = DEFAULT_BUDGET) -> s
     activation = 0
     drift_lines: list[str] = []
     churn_ids: list[str] = []
-    home_conn_root = None
+    fire_feats: list[tuple] = []
+    L = None                      # shapa.learn, imported only when a wiki has something for it
     ordered = sorted((wr for wr in wiki_roots if wr.kind in ("global", "repo")),
                      key=lambda wr: wr.kind != "global")  # the global northstar leads
     for wr in ordered:
@@ -310,13 +317,18 @@ def build_focused(wiki_roots: list[WikiRoot], budget: int = DEFAULT_BUDGET) -> s
         try:
             f = focus.load(conn)
             try:  # learning: pending corrections, principles, drift (each its own line; never blocks)
-                awaiting += learn.awaiting_count(conn)
-                activation += len(learn.awaiting_activation(conn=conn))
-                pool.extend(learn.principle_candidates(conn, wr.kind, wr.path))
-                churn_ids += [f"{wr.kind}/{r[0]}" for r in conn.execute("SELECT id FROM tags WHERE tag = 'churn'")]
-                if wr.kind == "repo":
-                    home_conn_root = wr.path
-                    drift_lines += learn.drift(conn, wr.path)
+                # a wiki with no correction, principle or fire has nothing for the learning loop to say:
+                # nothing is imported or asked
+                if not _learning_off() and (any(f.fires) or conn.execute(
+                        "SELECT 1 FROM tags WHERE tag IN ('correction','principle','churn') LIMIT 1").fetchone()):
+                    if L is None:
+                        from shapa import learn as L
+                    awaiting += L.awaiting_count(conn)
+                    pool.extend(L.principle_candidates(conn, wr.kind, wr.path))
+                    activation += len(L.awaiting_activation(conn=conn))
+                    churn_ids += [f"{wr.kind}/{r[0]}" for r in conn.execute("SELECT id FROM tags WHERE tag = 'churn'")]
+                    if wr.kind == "repo":
+                        drift_lines += L.drift(conn, wr.path)
             except Exception:
                 pass
             if wr.kind == "repo" and any(f.fires):
@@ -335,7 +347,7 @@ def build_focused(wiki_roots: list[WikiRoot], budget: int = DEFAULT_BUDGET) -> s
                     continue  # closed behind our back: `shapa focus` heals it
                 fire_text.append(" ".join([t.title, *(j.title for j in t.jobs)]))
                 if t.feature:
-                    fire_ids.add(f"{metrics.repo_key(wr.path)}/{t.feature}")
+                    fire_feats.append((wr.path, t.feature))
                 head = f"{i}. " + (f"{t.feature} " if t.feature else "") + _clip(t.title, 160)
                 if t.status == "claimed":
                     head += " (claimed)"
@@ -395,10 +407,16 @@ def build_focused(wiki_roots: list[WikiRoot], budget: int = DEFAULT_BUDGET) -> s
     if drift_lines:  # at most one: the first, and a count of the rest
         learn_lines.append(drift_lines[0] + (f" (+{len(drift_lines) - 1} more: shapa metrics)"
                                              if len(drift_lines) > 1 else ""))
-    shown_principles = learn.rank_principles(pool, " ".join(fire_text), fire_ids)
-    prin_lines = [learn.principle_line(p) for p in shown_principles]
-    if prin_lines:  # the heading travels with the first line: one block, never an orphan heading
-        prin_lines[0] = f"{learn.HEAD_NOTE}:\n{prin_lines[0]}"
+    shown_principles: list[dict] = []
+    prin_lines: list[str] = []
+    if pool and L is not None:
+        from shapa import metrics
+
+        fire_ids = {f"{metrics.repo_key(path)}/{feat}" for path, feat in fire_feats}
+        shown_principles = L.rank_principles(pool, " ".join(fire_text), fire_ids)
+        prin_lines = [L.principle_line(p) for p in shown_principles]
+        if prin_lines:  # the heading travels with the first line: one block, never an orphan heading
+            prin_lines[0] = f"{L.HEAD_NOTE}:\n{prin_lines[0]}"
     if not (norths or groups or hints or directive or pointers or learn_lines or prin_lines):
         return ""
     head = (["<shapa-action>", *directive, "</shapa-action>"] if directive else [])
@@ -644,13 +662,23 @@ def main(argv: list[str] | None = None) -> None:
     }), flush=True)
 
     try:  # measurement, after the output: the session start itself, the principles it served
-        home = metrics.home_root(start)
+        if _learning_off():
+            sys.exit(0)
+        from shapa import metrics
+
+        home = metrics.home_of(roots)
         if home is not None:
-            metrics.record(home, "latency", ref="bootstrap", val=round(elapsed_ms, 3))
-            metrics.record(home, "session", session=session)
-            for root, rid in dict.fromkeys(_SERVED):
-                learn.mark_served(root, [rid])
-            metrics.auto_snapshot(home)  # the first session of the day, when it costs under 50 ms
+            due = metrics.session_start_done(home, session, elapsed_ms)
+            if _SERVED:
+                from shapa import learn
+
+                by_root: dict = {}
+                for root, rid in dict.fromkeys(_SERVED):
+                    by_root.setdefault(root, []).append(rid)
+                for root, ids in by_root.items():
+                    learn.mark_served(root, ids)
+            if due:
+                metrics.snapshot_in_background(home, start)  # the first session of the day, detached
     except Exception:
         pass
     sys.exit(0)

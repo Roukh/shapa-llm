@@ -514,6 +514,39 @@ def test_the_first_session_of_the_day_stores_a_snapshot_after_the_output(wikis, 
     assert not [r for r in metrics.snapshot_rows(wikis.wiki) if r[0] == "2026-11-10"]
 
 
+def test_a_real_session_start_launches_its_snapshot_detached_and_computes_nothing_itself(wikis, monkeypatch, capsys):
+    monkeypatch.delenv("SHAPA_INLINE_SNAPSHOT")
+    monkeypatch.chdir(wikis.repo)
+    payload = json.dumps({"cwd": str(wikis.repo), "session_id": "sid12345"})
+    launched = []
+    with mock.patch("subprocess.Popen", lambda argv, **kw: launched.append((argv, kw))):
+        for _ in range(2):
+            with mock.patch.object(sys, "stdin", io.StringIO(payload)):
+                with pytest.raises(SystemExit):
+                    bootstrap.main([])
+    capsys.readouterr()
+    assert len(launched) == 1                                           # the second session start is within the retry window
+    argv, kw = launched[0]
+    assert argv[1:5] == ["-m", "shapa", "metrics", "--auto-snapshot"] and kw["start_new_session"] is True
+    assert metrics.snapshot_rows(wikis.wiki) == []                      # nothing was computed in the hook process
+    assert metrics.run_metrics(["--auto-snapshot", "--cwd", str(wikis.repo)]) == 0   # what the child does
+    assert len(metrics.snapshot_rows(wikis.wiki)) == 1
+
+
+def test_shapa_learning_zero_switches_off_the_lines_and_the_measurement(wikis, monkeypatch, capsys):
+    correct(wikis.repo, PNPM, now=at(0))
+    monkeypatch.chdir(wikis.repo)
+    monkeypatch.setenv("SHAPA_LEARNING", "0")
+    assert "await learning" not in bootstrap.build_context(start=wikis.repo)
+    with mock.patch.object(sys, "stdin", io.StringIO(json.dumps({"cwd": str(wikis.repo), "session_id": "sid12345"}))):
+        with pytest.raises(SystemExit):
+            bootstrap.main([])
+    capsys.readouterr()
+    assert metrics.events(wikis.wiki, "session") == [] and metrics.snapshot_rows(wikis.wiki) == []
+    monkeypatch.delenv("SHAPA_LEARNING")
+    assert "1 correction awaits learning" in bootstrap.build_context(start=wikis.repo)
+
+
 # --- 7. loop guards ----------------------------------------------------------------------------------
 
 def _churn_principle(wikis):
@@ -804,3 +837,65 @@ def test_the_cli_merges_two_principles_and_dismisses_a_correction(wikis, capsys)
     assert learn.run_learn(["dismiss", "I3", *cwd]) == 0
     assert "I3 dismissed" in capsys.readouterr().out
     assert learn.pending(wikis.repo, now=at(3))["count"] == 0
+
+
+# --- churn binds only what it is near -----------------------------------------------------------------
+
+def test_a_churned_principle_does_not_stop_the_wiki_learning_unrelated_things(wikis):
+    _churn_principle(wikis)
+    correct(wikis.repo, "No, wrong, number the database migrations by date, not by count.", now=at(6))
+    out = learn.pending(wikis.repo, now=at(6))
+    mig = next(i for i in out["pending"] if "migrations" in i["text"])
+    assert not mig["blocked"]                                   # not a repeat of the churned principle
+    res = apply(wikis.repo, mig["id"], "Number database migrations by date, never by count.", now=at(6))
+    assert res["action"] == "created"
+    assert "blocked" not in tags(wikis.wiki, mig["id"]) and "learned" in tags(wikis.wiki, mig["id"])
+    # no flag at all works too when nothing is near
+    correct(wikis.repo, "No, wrong, the staging cache is warmed at midnight, not noon.", now=at(7))
+    assert learn.apply(wikis.repo, "I7", "Warm the staging cache at midnight.", now=at(7))["action"] == "created"
+
+
+def test_a_correction_near_a_churned_principle_needs_distinct_from_and_records_the_claim(wikis):
+    _churn_principle(wikis)
+    correct(wikis.repo, "No, install the worktree packages with npm only, never pnpm, again.", now=at(6))
+    near = "Always use npm for worktree installs and never pnpm."
+    with pytest.raises(learn.ChooseError, match="distinct-from") as err:
+        apply(wikis.repo, "I6", near, new=True, now=at(6))
+    assert any(c["id"] == "R1" and c["churn"] for c in err.value.candidates)
+    assert len(rows(wikis.global_wiki, "R")) == 1
+    res = apply(wikis.repo, "I6", near, new=True, distinct_from=["R1"], now=at(6))
+    assert res["action"] == "created"
+    new_rule = [r for r in rows(wikis.global_wiki, "R") if r.id == res["target"]][0]
+    assert "[distinct from R1]" in new_rule.body                # the claim is in the evidence
+
+
+def test_the_cli_takes_distinct_from_and_unchurn_clears_churn_and_the_blocked_corrections(wikis, capsys):
+    _churn_principle(wikis)
+    cwd = ["--cwd", str(wikis.repo)]
+    assert "blocked" in tags(wikis.wiki, "I5")                  # a detected repeat of the churned principle
+    near = "Always use npm for worktree installs and never pnpm."
+    code = learn.run_learn(["apply", "I5", "--principle", near, "--new", "--json", *cwd])
+    assert code == 2 and json.loads(capsys.readouterr().out)["error"] == "choose"
+    assert learn.run_learn(["apply", "I5", "--principle", near, "--new", "--distinct-from", "R1", *cwd]) == 0
+    capsys.readouterr()
+    assert learn.run_learn(["unchurn", "R1", "--wiki", "global", *cwd]) == 0
+    assert "no longer churned" in capsys.readouterr().out
+    t = tags(wikis.global_wiki, "R1")
+    assert "churn" not in t and not [x for x in t if x.startswith("revisions:")]
+    with pytest.raises(db.LedgerError):                         # not churned any more
+        learn.unchurn(wikis.repo, "global/R1")
+    correct(wikis.repo, "Wrong again, pnpm install in the worktree, use npm install.", now=at(8))
+    res = apply(wikis.repo, "I6", "Use npm install in worktrees, never pnpm (after enforcement).", into="R1", now=at(8))
+    assert res["action"] == "merged"
+
+
+def test_two_repos_filing_the_same_correction_in_the_same_second_see_each_other(wikis, tmp_path):
+    b = make_repo(tmp_path, "repo-b")
+    _, first = correct(wikis.repo, PNPM, session="aaaaaaaa", now=at(0))
+    _, second = correct(b, PNPM_AGAIN, session="bbbbbbbb", now=at(0))          # identical timestamp
+    assert not first["repeat"] and second["repeat"] and second["of"] == "x:my-repo/I1"
+    c = make_repo(tmp_path, "repo-c")                                        # and the other way round
+    d = make_repo(tmp_path, "repo-d")
+    _, one = correct(d, HEADER, now=at(1))
+    _, two = correct(c, HEADER, now=at(1))
+    assert not one["repeat"] and two["repeat"] and two["of"] == "x:repo-d/I1"

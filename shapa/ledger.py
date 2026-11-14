@@ -844,6 +844,10 @@ APPROVALS = frozenset(("yes y yep yeah ok okay k continue go proceed merge done 
                        "good nice perfect lgtm approved next").split()) | {
     "go ahead", "do it", "ship it", "thank you", "please continue", "sounds good", "looks good"}
 _DO_N = re.compile(r"^do\s+#?\d+\b")
+#: A message made only of these words (or numbers) is a go-ahead, never a candidate: "yes merge and push".
+APPROVAL_WORDS = frozenset(("yes yep yeah ok okay sure fine good great nice perfect thanks thank you please go "
+                            "ahead continue proceed merge ship push commit do it that this done approved lgtm "
+                            "and now then all both the first second one two three y k thx ty next").split())
 SOFT_MAX_CHARS = 240
 SOFT_PER_SESSION = 10
 
@@ -855,6 +859,9 @@ def is_soft_candidate(text: str) -> bool:
     if not t or len(t) > SOFT_MAX_CHARS or "?" in t or t.startswith("/"):
         return False
     plain = re.sub(r"[^\w\s]", "", t.lower()).strip()
+    words = plain.split()
+    if all(w in APPROVAL_WORDS or w.isdigit() for w in words):
+        return False                      # also an empty message (emoji, punctuation)
     return plain not in APPROVALS and not _DO_N.match(plain)
 
 

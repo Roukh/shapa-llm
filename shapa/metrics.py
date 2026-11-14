@@ -40,6 +40,7 @@ import argparse
 import bisect
 import json
 import math
+import os
 import re
 import sqlite3
 import sys
@@ -818,6 +819,74 @@ def prune(root, now: datetime | None = None) -> dict:
     return out
 
 
+SNAP_RETRY_S = 600           # a snapshot that did not happen is tried again after this long
+
+
+def _meta_set(root, key: str, value: str) -> None:
+    conn = open_local(root)
+    if conn is not None:
+        try:
+            conn.execute("INSERT OR REPLACE INTO m_meta(key, value) VALUES (?, ?)", (key, value))
+            conn.commit()
+        finally:
+            conn.close()
+
+
+def session_start_done(root, session: str, ms: float, now: datetime | None = None) -> bool:
+    """What a session start records after its output, on ONE connection to the derived index: its latency
+    and the session event. Returns whether today's snapshot is due (none stored today, and none tried in
+    the last :data:`SNAP_RETRY_S` seconds). Never raises."""
+    try:
+        if root is None or not db.exists(root):
+            return False
+        now = _utc(now)
+        ts, day = _iso(now), now.strftime("%Y-%m-%d")
+        conn = open_local(root)
+        if conn is None:
+            return False
+        try:
+            conn.execute("INSERT OR IGNORE INTO m_events(ts, kind, session, ref, val, data) VALUES (?,?,?,?,?,'')",
+                         (ts, "latency", "", "bootstrap", round(float(ms), 3)))
+            conn.execute("INSERT OR IGNORE INTO m_events(ts, kind, session, ref, val, data) VALUES (?,?,?,?,NULL,'')",
+                         (ts, "session", str(session or "")[:8], ""))
+            got = {r[0]: r[1] for r in conn.execute("SELECT key, value FROM m_meta WHERE key IN ('snap_day','snap_try')")}
+            due = got.get("snap_day") != day and (got.get("snap_try") or "") < _iso(now - timedelta(seconds=SNAP_RETRY_S))
+            if due:
+                conn.execute("INSERT OR REPLACE INTO m_meta(key, value) VALUES ('snap_try', ?)", (ts,))
+            conn.commit()
+        finally:
+            conn.close()
+        return due
+    except Exception:
+        return False
+
+
+def home_of(roots) -> Path | None:
+    """:func:`home_root` for wiki roots already resolved (the repo wiki with a database, else the global one)."""
+    for kind in ("repo", "global"):
+        for wr in roots:
+            if wr.kind == kind and db.exists(wr.path):
+                return Path(wr.path)
+    return None
+
+
+def snapshot_in_background(root, cwd=None, now: datetime | None = None) -> None:
+    """Store today's snapshot without making the session start wait for it: a detached ``shapa metrics
+    --auto-snapshot`` (the first session of a day pays one process start, not the snapshot). With
+    ``SHAPA_INLINE_SNAPSHOT`` set (the tests) it runs here instead. Never raises."""
+    try:
+        if os.environ.get("SHAPA_INLINE_SNAPSHOT"):
+            auto_snapshot(root, now)
+            return
+        import subprocess
+
+        subprocess.Popen([sys.executable, "-m", "shapa", "metrics", "--auto-snapshot", "--cwd",
+                          str(cwd or Path(root).parent)], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True)
+    except Exception:
+        pass
+
+
 def auto_snapshot(root, now: datetime | None = None) -> bool:
     """Store today's snapshot on the first session of the day, when it costs under
     :data:`SNAPSHOT_BUDGET_MS`; a dearer one is skipped and tried again next session. Never raises."""
@@ -826,6 +895,7 @@ def auto_snapshot(root, now: datetime | None = None) -> bool:
         day = now.strftime("%Y-%m-%d")
         if any(d == day for d, _, _ in snapshot_rows(root, day, (now + timedelta(days=1)).strftime("%Y-%m-%d"),
                                                      repo=repo_key(root))):
+            _meta_set(root, "snap_day", day)
             return False
         t0 = time.perf_counter()
         start = now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -833,6 +903,7 @@ def auto_snapshot(root, now: datetime | None = None) -> bool:
         if (time.perf_counter() - t0) * 1000 > SNAPSHOT_BUDGET_MS:
             return False
         snapshot(root, now, data=data)
+        _meta_set(root, "snap_day", day)
         return True
     except Exception:
         return False
@@ -928,6 +999,8 @@ def run_metrics(argv: list[str]) -> int:
     p.add_argument("--since", default=None, help="window start, YYYY-MM-DD (default: 7 days ago)")
     p.add_argument("--json", action="store_true")
     p.add_argument("--snapshot", action="store_true", help="store today's daily snapshot")
+    p.add_argument("--auto-snapshot", action="store_true",
+                   help="what a session start launches: today's snapshot if none and it is cheap (silent)")
     p.add_argument("--all", action="store_true", help="roll up every repo from the global wiki's snapshots")
     p.add_argument("--repo", default=None, help="one repo's snapshots from the global wiki")
     p.add_argument("--history", type=int, default=None, metavar="DAYS", help="list the stored daily snapshots")
@@ -935,6 +1008,9 @@ def run_metrics(argv: list[str]) -> int:
     now = _utc()
     since = parse_since(a.since) if a.since else now - timedelta(days=7)
     root = home_root(a.cwd)
+    if a.auto_snapshot:
+        auto_snapshot(root) if root is not None else None
+        return 0
     if a.all or a.repo:
         groot = config.global_root()
         if not db.exists(groot):

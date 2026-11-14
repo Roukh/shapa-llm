@@ -194,6 +194,7 @@ class ChooseError(db.LedgerError):
     """``apply`` was given neither ``--into`` nor ``--new`` while candidates exist."""
 
     def __init__(self, candidates: list[dict], message: str = ""):
+        candidates = [{k: c[k] for k in ("id", "wiki", "summary", "churn")} for c in candidates]
         self.candidates = candidates
         super().__init__(message or "choose where this principle goes: `--into R<n>` (or `skill:NAME`) to merge it, "
                          "or `--new` if none of these covers it:\n" + "\n".join(
@@ -648,8 +649,10 @@ def on_correction(root, rid: str, created: bool, *, session: str = "", hook: boo
         if gscope is not None:
             try:
                 gidx = LearnIndex(gscope.root)
+                # the mirror holds only corrections already filed, whatever clock stamped them: no
+                # timestamp test for it, so two repos filing in the same second still see each other
                 hits += gidx.search(text, 6, kinds=("I", "R"), exclude_src={home.key}, embedder=emb, wiki="global",
-                                    skip=lambda h: h.kind == "I" and h.created >= row.created)
+                                    skip=lambda h: h.kind == "I" and not h.src and h.created >= row.created)
             except sqlite3.Error:
                 gidx = None
         hit = next((h for h in sorted(hits, key=lambda h: (-h.score, h.rid)) if h.repeat), None)
@@ -993,9 +996,15 @@ def live_principles(conn) -> list[str]:
                                        "WHERE t.tag = 'principle' AND m.kind = 'R'")]
 
 
+#: How near a stated principle must be to a churned one for the churn to bind it: a real share of its
+#: words (Dice), or a close vector. The listed candidates are the nearest five whatever their score; only
+#: a near churned one blocks `--new`, so an unrelated correction is never held up by someone else's churn.
+CHURN_NEAR = 0.2
+
+
 def _candidates(ss: list[Scope], target: Scope, principle: str, serve: str, embedder, skill_name=None) -> list[dict]:
-    """What a principle might already be: the nearest rules of the target wiki, the nearest skills, every
-    churned principle, and the principles that serve the same goal."""
+    """What a principle might already be: the nearest rules of the target wiki, the nearest skills, and the
+    principles that serve the same goal. A churned one among the nearest is marked ``near`` (internal)."""
     out: dict[str, dict] = {}
     conn = target.conn()
     try:
@@ -1005,14 +1014,15 @@ def _candidates(ss: list[Scope], target: Scope, principle: str, serve: str, embe
                 r = db.get_row(conn, h.rid)
                 if r is not None:
                     out[h.rid] = {"id": h.rid, "wiki": target.label, "summary": flatten(r.summary),
-                                  "churn": "churn" in _tags(conn, h.rid)}
-        for rid in live_principles(conn):
-            tg = _tags(conn, rid)
-            if "churn" in tg or (serve != "none" and f"serves:{serve}" in tg):
-                r = db.get_row(conn, rid)
+                                  "churn": "churn" in _tags(conn, h.rid),
+                                  "near": h.lex >= CHURN_NEAR or (h.cos or 0.0) >= COS_MERGE}
+        if serve != "none":
+            for (rid,) in conn.execute("SELECT id FROM tags WHERE tag = ?", (f"serves:{serve}",)).fetchall():
+                tg = _tags(conn, rid)
+                r = db.get_row(conn, rid) if "principle" in tg else None
                 if r is not None:
                     out.setdefault(rid, {"id": rid, "wiki": target.label, "summary": flatten(r.summary),
-                                         "churn": "churn" in tg})
+                                         "churn": "churn" in tg, "near": False})
     finally:
         conn.close()
     qt = tokens(principle)
@@ -1020,7 +1030,8 @@ def _candidates(ss: list[Scope], target: Scope, principle: str, serve: str, embe
     for name, label, line in _skill_lines(ss):
         if name not in seen and dice(qt, tokens(line)) >= 0.25:
             seen.add(name)
-            out[f"skill:{name}"] = {"id": f"skill:{name}", "wiki": label, "summary": flatten(line), "churn": False}
+            out[f"skill:{name}"] = {"id": f"skill:{name}", "wiki": label, "summary": flatten(line),
+                                    "churn": False, "near": False}
     return sorted(out.values(), key=lambda c: (not c["churn"], c["id"]))
 
 
@@ -1054,7 +1065,7 @@ def _parse_into(into: str | None, ss: list[Scope]) -> tuple[str | None, str | No
 
 def apply(cwd, issue_id: str, principle: str, *, scope: str = "global", into: str | None = None,
           new: bool = False, why: str = "", serves: str | None = None, wiki: str | None = None,
-          session: str = "", now: datetime | None = None, embedder="auto") -> dict:
+          distinct_from=(), session: str = "", now: datetime | None = None, embedder="auto") -> dict:
     now = now or datetime.now(timezone.utc)
     emb = _embedder(embedder)
     ss = scopes(cwd)
@@ -1108,7 +1119,8 @@ def apply(cwd, issue_id: str, principle: str, *, scope: str = "global", into: st
         why = flatten(why, 240) if why else ""
         serve = resolve_serves(hconn, serves, home.key, home.label)
         text = inert(issue_text(row))
-        res = _apply_rule(ss, target, home, row, principle, text, why, serve, rule_id, new, skill_name, now, emb)
+        res = _apply_rule(ss, target, home, row, principle, text, why, serve, rule_id, new, skill_name, now, emb,
+                         list(distinct_from or ()))
         res["warnings"] = warnings
         res["scope"] = f"skill:{skill_name}" if skill_name else target.label
         group = [row.id]
@@ -1144,7 +1156,8 @@ def _forget_mirrors(ss: list[Scope], home: Scope, ids: list[str]) -> None:
 
 
 def _apply_rule(ss, target: Scope, home: Scope, row: db.Row, principle: str, text: str, why: str, serve: str,
-                rule_id: str | None, new: bool, skill_name: str | None, now: datetime, emb) -> dict:
+                rule_id: str | None, new: bool, skill_name: str | None, now: datetime, emb,
+                distinct_from: list[str] | None = None) -> dict:
     """File *principle* in *target*'s wiki: merge into the rule the caller named, or add a new principle
     when the caller says so. Refuses to guess."""
     conn = target.conn()
@@ -1158,7 +1171,6 @@ def _apply_rule(ss, target: Scope, home: Scope, row: db.Row, principle: str, tex
             if chosen is None or chosen.kind != "R":
                 raise db.LedgerError(f"no rule {rule_id!r} in the {target.label} wiki")
             if "churn" in _tags(conn, chosen.id):
-                _block(home, row.id)
                 raise db.LedgerError(f"{chosen.id} needs enforcement, not rewording: it was revised {REVISION_LIMIT} "
                                      "times and is still violated. Ask the operator for a hook or a test; "
                                      "no fourth revision is filed")
@@ -1180,20 +1192,24 @@ def _apply_rule(ss, target: Scope, home: Scope, row: db.Row, principle: str, tex
             if cands:
                 raise ChooseError(cands)
         if chosen is None and (new or skill_name is not None or not cands):
-            churn = [c for c in cands if c["churn"]]
-            if churn and not skill_name:
-                _block(home, row.id)
-                raise ChooseError(cands, f"{churn[0]['wiki']}/{churn[0]['id']} ({churn[0]['summary'][:60]!r}) needs "
-                                         "enforcement, not rewording, and it is a candidate for this principle: "
-                                         "no new principle is filed beside it. Ask the operator for a hook or a "
-                                         "test, or remove it with `shapa row rm`")
+            claimed = {x.strip() for x in (distinct_from or ())}
+            churn = [c for c in cands if c["churn"] and c.get("near")
+                     and c["id"] not in claimed and f"{c['wiki']}/{c['id']}" not in claimed]
+            if churn:
+                c0 = churn[0]
+                raise ChooseError(cands, f"{c0['wiki']}/{c0['id']} ({c0['summary'][:60]!r}) needs enforcement, not "
+                                         "rewording, and this principle is near it: no new principle is filed "
+                                         "beside it. If this is a different subject, say so: `--new "
+                                         f"--distinct-from {c0['id']}`; otherwise ask the operator for a hook or "
+                                         "a test")
             if len(live_principles(conn)) >= MAX_PRINCIPLES:
                 raise db.LedgerError(f"the {target.label} wiki holds {MAX_PRINCIPLES} principles, the most it keeps: "
                                      "merge two first (`shapa learn merge SRC DST`) or file this one with --into")
         stamp = db.now_iso(now)
         wiki_key = inert(home.key).replace(" ", "-")[:40] or "repo"
         key = f"{row.id} {wiki_key} {(row.created or stamp)[:10]}"
-        entry_line = f"- {key}: {text[:140]}"
+        claim = "".join(f"[distinct from {x.strip()[:20]}] " for x in (distinct_from or ())[:3] if x.strip())
+        entry_line = f"- {key}: {claim}{text[:140]}"
         extra = [f"skill:{skill_name}"] if skill_name else []
         if chosen is None:
             conflicts = []
@@ -1256,14 +1272,6 @@ def _post_write(target: Scope, rid: str, now: datetime) -> None:
     _mark_local(target.root, rid, now)
 
 
-def _block(home: Scope, issue_id: str) -> None:
-    c = home.conn()
-    try:
-        db.retag(c, issue_id, add=["blocked"])
-    finally:
-        c.close()
-
-
 def merge(cwd, src: str, dst: str, wiki: str | None = None) -> dict:
     """Fold principle *src* into *dst* (same wiki): evidence and counters combined, *src* removed. A
     churned principle is not merged away (it would shed the mark)."""
@@ -1319,6 +1327,41 @@ def merge(cwd, src: str, dst: str, wiki: str | None = None) -> dict:
         pass
     _post_write(target, dst, datetime.now(timezone.utc))
     return {"merged": src, "into": dst, "wiki": target.label}
+
+
+def unchurn(cwd, ref: str, wiki: str | None = None) -> dict:
+    """The operator's word that enforcement now exists for a churned principle: clears ``churn`` and the
+    revision count, and lifts ``blocked`` from the corrections that were repeats of it."""
+    ss = scopes(cwd)
+    label = wiki
+    if "/" in ref:
+        label, ref = ref.split("/", 1)
+    target = next((s for s in ss if s.label == (label or "global")), None)
+    if target is None:
+        raise CommandError("no such wiki in scope")
+    conn = target.conn()
+    try:
+        tg = _tags(conn, ref)
+        if "principle" not in tg or "churn" not in tg:
+            raise db.LedgerError(f"{ref} is not a churned principle")
+        db.retag(conn, ref, drop=[t for t in tg if t == "churn" or t.startswith("revisions:")])
+    finally:
+        conn.close()
+    lifted = 0
+    for s2 in ss:
+        c2 = s2.conn()
+        try:
+            names = {f"repeat-of:{target.label}:{ref}"}
+            if s2 is target:
+                names.add(f"repeat-of:{ref}")
+            marks = ",".join("?" * len(names))
+            for (cid,) in c2.execute(f"SELECT id FROM tags WHERE tag IN ({marks})", sorted(names)).fetchall():
+                if "blocked" in _tags(c2, cid):
+                    db.retag(c2, cid, drop=["blocked"])
+                    lifted += 1
+        finally:
+            c2.close()
+    return {"unchurned": ref, "wiki": target.label, "unblocked": lifted}
 
 
 def principles(cwd=None) -> list[dict]:
@@ -1501,6 +1544,8 @@ def run_learn(argv: list[str]) -> int:
     ap.add_argument("--why", default="")
     ap.add_argument("--into", default=None, help="merge into this rule (R<n>, global/R<n>, repo/R<n>) or skill:NAME")
     ap.add_argument("--new", action="store_true", help="no listed candidate covers it")
+    ap.add_argument("--distinct-from", action="append", default=[], metavar="R<n>",
+                    help="with --new: a churned principle near this one is about a different subject (recorded)")
     ap.add_argument("--serves", default=None, help="<wiki key>/F<n> or northstar (default: the claimed fire)")
     ap.add_argument("--wiki", choices=["repo", "global"], default=None, help="the wiki holding the issue")
     ap.add_argument("--session", default="")
@@ -1512,6 +1557,9 @@ def run_learn(argv: list[str]) -> int:
     mg.add_argument("src")
     mg.add_argument("dst")
     mg.add_argument("--wiki", choices=["repo", "global"], default=None)
+    uc = add("unchurn", help="enforcement now exists for a churned principle: clear churn and its revisions")
+    uc.add_argument("principle")
+    uc.add_argument("--wiki", choices=["repo", "global"], default=None)
     pr = add("principles", help="the principles, with their evidence, violations and serves")
     pr.add_argument("--json", action="store_true")
     add("reindex", help="catch the derived similarity index up")
@@ -1528,7 +1576,8 @@ def run_learn(argv: list[str]) -> int:
     if args.cmd == "apply":
         try:
             res = apply(args.cwd, args.issue, args.principle, scope=args.scope, why=args.why, into=args.into,
-                        new=args.new, serves=args.serves, wiki=args.wiki, session=args.session)
+                        new=args.new, serves=args.serves, wiki=args.wiki, session=args.session,
+                        distinct_from=args.distinct_from)
         except ChooseError as exc:
             if args.json:
                 print(json.dumps({"error": "choose", "candidates": exc.candidates, "message": str(exc)}, sort_keys=True))
@@ -1545,6 +1594,10 @@ def run_learn(argv: list[str]) -> int:
     if args.cmd == "dismiss":
         res = dismiss(args.cwd, args.issue, args.wiki)
         print(f"{res['issue']} {res['status']}")
+        return 0
+    if args.cmd == "unchurn":
+        res = unchurn(args.cwd, args.principle, args.wiki)
+        print(f"{res['unchurned']} [{res['wiki']}] no longer churned; {res['unblocked']} correction(s) unblocked")
         return 0
     if args.cmd == "merge":
         res = merge(args.cwd, args.src, args.dst, args.wiki)

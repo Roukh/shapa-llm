@@ -111,3 +111,18 @@ def test_the_added_prompt_check_costs_microseconds(wikis):
         ledger.is_soft_candidate("move this header up a little more please")
     per_ms = (time.perf_counter() - t0) * 1000 / 2000
     assert per_ms < 5                          # the budget is 5 ms; the check itself takes microseconds
+
+
+@pytest.mark.parametrize("text", ["yes merge", "ok thanks", "yes go ahead", "do 2", "yes merge and push",
+                                  "Yes, merge it and push.", "okay, go ahead and ship it now", "👍", "both, then the first one",
+                                  "thank you, please continue"])
+def test_a_message_made_only_of_go_ahead_words_is_never_filed(wikis, text):
+    claim(wikis)
+    assert correct(wikis.repo, text, now=at(0))[0] is None and rows(wikis.wiki, "I") == []
+
+
+def test_a_message_that_merely_contains_go_ahead_words_is_still_filed(wikis):
+    claim(wikis)
+    hit, info = correct(wikis.repo, "merge the header into the nav", now=at(0))
+    assert hit is not None and info["soft"] is True
+    assert correct(wikis.repo, "yes, but move the logo left", now=at(1))[0] is not None

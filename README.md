@@ -209,13 +209,16 @@ goes:
   claimed fire (an open feature), `northstar`, else `none`, which `shapa
   metrics` counts.
 - **No loops.** A correction is learned once. A principle revised three times
-  that is still violated is marked `churn`: a fourth revision is refused, no
-  `--new` is accepted beside it, and `learn pending` lists it as needing
-  enforcement (a hook, a test), not rewording. Corrections about the learning
+  that is still violated is marked `churn`: a fourth revision is refused, and
+  so is a `--new` for a correction near it (an unrelated one applies as
+  usual; say `--new --distinct-from R<n>` to claim a different subject, which
+  is recorded). `learn pending` lists it as needing enforcement (a hook, a
+  test), not rewording; once enforcement exists, `shapa learn unchurn R<n>`
+  clears it. Corrections about the learning
   system itself are applied at most 3 a week.
 - **Soft candidates.** While a ledger item is claimed, a short statement
   ("move this header up", "the title is too long") that is not a question, a
-  slash command or a bare approval is filed as an issue tagged `soft` (10 per
+  slash command or a go-ahead ("yes merge and push") is filed as an issue tagged `soft` (10 per
   session at most). It counts in no measure until applied; `shapa learn dismiss
   ID` removes it and teaches nothing.
 - **Reserved tags.** `principle`, `churn`, `violations:`, `revisions:`,

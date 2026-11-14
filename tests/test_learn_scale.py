@@ -158,3 +158,67 @@ def test_a_big_wiki_with_no_index_yet_is_caught_up_a_bounded_part_at_a_time_neve
     learn.reindex(w.repo)
     with learn.LearnIndex(w.wiki) as ix:
         assert int(ix._meta("l_wm")) >= top
+
+
+PROCESS_ADDED_BUDGET_MS = 15
+
+
+def test_the_whole_session_start_process_costs_under_15_ms_more_with_learning_than_without_at_50000_rows(tmp_path):
+    """The hook is a process: imports, connections and the after-output measurement count. The same wiki is
+    started with `SHAPA_LEARNING=0` (no learning lines, no measurement, no import of learn or metrics) and
+    with it, interleaved so machine noise hits both alike. Every learning run is made the first session of a
+    day, so it also pays for launching its detached snapshot."""
+    import json
+    import os
+    import sqlite3
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    from tests.conftest import Wikis
+
+    w = Wikis(tmp_path)
+    build(w.wiki, 50_000)
+    (tmp_path / "home" / ".shapa").mkdir(parents=True)
+    (tmp_path / "home" / ".shapa" / "config.json").write_text(json.dumps({"memory": str(w.global_wiki)}))
+    for wiki in (w.wiki, w.global_wiki):
+        (wiki / ".shapa-format").write_text("4\n")
+    root = str(Path(__file__).resolve().parent.parent)
+    env = {**os.environ, "HOME": str(tmp_path / "home"), "SHAPA_REGISTRY": str(tmp_path / "reg.json"),
+           "SHAPA_REMOTE_DIR": str(tmp_path / "remote"), "PYTHONPATH": root}
+    env.pop("SHAPA_INLINE_SNAPSHOT", None)           # a real session start: the snapshot is a detached process
+    payload = json.dumps({"cwd": str(w.repo), "session_id": "bench0001"})
+
+    def once(learning: bool) -> float:
+        if learning:                                  # make it the first session of a day again
+            c = sqlite3.connect(w.wiki / ".shapa-index.db")
+            try:
+                c.execute("DELETE FROM m_meta WHERE key IN ('snap_day', 'snap_try')")
+                c.commit()
+            except sqlite3.OperationalError:
+                pass
+            c.close()
+            time.sleep(0.25)                          # the previous run's detached snapshot finishes first
+        t = time.perf_counter()
+        r = subprocess.run([sys.executable, "-m", "shapa", "bootstrap"], input=payload, text=True,
+                           capture_output=True, cwd=str(w.repo),
+                           env={**env, "SHAPA_LEARNING": "1" if learning else "0"})
+        ms = (time.perf_counter() - t) * 1000
+        assert r.returncode == 0 and "SessionStart" in r.stdout, r.stderr
+        return ms
+
+    once(True)
+    once(False)                                       # warm: bytecode, the derived index
+    added = []
+    for attempt in range(3):
+        runs = {True: [], False: []}
+        for _ in range(9):
+            for learning in (True, False):
+                runs[learning].append(once(learning))
+        med = {k: sorted(v)[len(v) // 2] for k, v in runs.items()}
+        added.append(med[True] - med[False])
+        print(f"\nsession start process at 50,000 rows: learning off {med[False]:.1f} ms, on {med[True]:.1f} ms, "
+              f"added {added[-1]:.1f} ms (attempt {attempt + 1})")
+        if added[-1] < PROCESS_ADDED_BUDGET_MS:
+            break
+    assert min(added) < PROCESS_ADDED_BUDGET_MS, f"added {added} ms against a {PROCESS_ADDED_BUDGET_MS} ms budget"
