@@ -13,7 +13,7 @@ import { onFeatureClosed } from "./focus.js";
 import { BASELINE_EDIT_REFUSAL, gateStage, kindProblem, tagProblem } from "./gates.js";
 import { backlinkProject, projectLinks } from "./projectapi.js";
 import { documentTags, gateNewDocument, mergedBody, projectHolder, refusal } from "./projects.js";
-import { baselineKeepsRank, baselineMayCreate, baselineMayWrite, baselineWrites, denyBaseline, guardPrinted, isBaseline, ranksChanged, storedNames } from "./reach.js";
+import { baselineKeepsEngineTags, baselineKeepsRank, baselineMayCreate, baselineMayWrite, baselineWrites, denyBaseline, guardPrinted, isBaseline, ranksChanged, storedNames } from "./reach.js";
 import {
   CLOSE_REASONS, Invalid, LEDGER_KINDS, PARENT_KIND, PROJECT_PREFIX, RESERVED_DOC_TAGS, FOCUS_TAG, SKILL_TAG, TYPE_NAMES, buildData, contentKey, isNoteId, nowIso, normTags, projectOf,
   type CreateIn, type CreateType, type Data, type Kind, type Normalized, type PatchIn, type RecordWire,
@@ -130,6 +130,7 @@ export function createRecord(repo: Repo, d: Device, wiki: string, body: CreateIn
   if (wrongKind) fail("invalid", wrongKind);
   baselineMayWrite(d, kind, tags);
   baselineKeepsRank(d, [], tags);
+  baselineKeepsEngineTags(d, [], tags);
   const text = body.title ?? body.summary ?? "";
   if (body.parent !== undefined && !isLedger(kind)) fail("invalid", "only a job or task takes a parent");
   if (body.parent !== undefined && kind === "F") fail("invalid", "a feature has no parent");
@@ -256,6 +257,7 @@ export function patchRecord(repo: Repo, d: Device, wiki: string, ref: string, p:
     nextTags = normTags(p.tags);
     baselineMayWrite(d, k, nextTags);
     baselineKeepsRank(d, rec.tags, nextTags);
+    baselineKeepsEngineTags(d, rec.tags, nextTags);
     if (k === "D") {
       // The focus and skill tags make a record the engine's: no edit adds or removes one (a focus
       // record retagged `skill` would be an active skill version), and the focus record's tags are fixed.

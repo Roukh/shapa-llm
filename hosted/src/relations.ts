@@ -137,6 +137,8 @@ export function quarantineLegacyStage(sql: SqlStorage): void {
     const tags = relabelStage(JSON.parse(r["tags"] as string) as string[], kind === "global");
     const rev = Number(sql.exec(`UPDATE meta SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT) WHERE key = 'rev' RETURNING value`).one()["value"]);
     sql.exec(`UPDATE records SET tags = ?, rev = ? WHERE seq = ?`, JSON.stringify(tags.sort(cmp)), rev, r["seq"] as number);
+    // the full-text index holds the tags too (a live record only): a stale stage:0 there would still match a tag search
+    sql.exec(`UPDATE fts SET tags = ? WHERE rowid = ?`, tags.join(" "), r["seq"] as number);
   }
 }
 

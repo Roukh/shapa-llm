@@ -244,8 +244,9 @@ export function composeInstructions(
     if (!wikiAllowed(d, opts.wiki)) fail("forbidden", `this device may not use wiki ${opts.wiki}`);
     if (!repo.wiki(opts.wiki)) fail("not_found", `no wiki ${opts.wiki}`);
   }
-  // A baseline device reads stage 0 and nothing above it, whatever it asks for.
-  const stage = repo.baseline ? 0 : (opts.stage ?? 0);
+  // A baseline device reads stage 0 and nothing above it, whatever it asks for. So does a device whose wiki list
+  // leaves out `global`: only stage 0 of the global wiki is exempt from the list, the stages above it are not.
+  const stage = repo.baseline || !wikiAllowed(d, "global") ? 0 : (opts.stage ?? 0);
   const baseline = repo.baseline;
   const write = opts.client === "mcp" ? (baseline ? WRITE_MCP_BASELINE : WRITE_MCP) : baseline ? WRITE_REST_BASELINE : WRITE_REST;
   const visible = repo.wikis().filter((w) => wikiAllowed(d, w.key) && (opts.wiki === undefined || w.key === opts.wiki || w.key === "global"));

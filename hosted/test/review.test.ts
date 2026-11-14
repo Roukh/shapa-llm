@@ -354,6 +354,36 @@ describe("the baseline reaches every authenticated device", () => {
     expect((await tool(limitedBase, "session_start", {})).text).toContain(marker);
   });
 
+  it("asks for stage 9 and still gets only stage 0 when its wiki list leaves out the global wiki", async () => {
+    const op = await operator();
+    const w = freshKey();
+    await wiki(op, w);
+    const s0 = `LIM-S0-${freshKey()}`;
+    const rule5 = `LIM-RULE5-${freshKey()}`;
+    const skill4 = `lim-skill4-${freshKey()}`;
+    const body4 = `LIM-SKILL4-BODY-${freshKey()}`;
+    const mem3 = `LIM-MEM3-${freshKey()}`;
+    expect((await sync(op, "global", { ops: [
+      put(row(`R${uniq()}`, s0, { tags: ["stage:0"] })),
+      put(row(`R${uniq()}`, rule5, { tags: ["stage:5"] })),
+      put(row(`M${uniq()}`, mem3, { tags: ["stage:3"] })),
+      put(skillDoc(`D${uniq()}`, skill4, 1, "active", ["stage:4"], body4)),
+    ] })).body.results.map((r: { status: string }) => r.status)).toEqual(["accepted", "accepted", "accepted", "accepted"]);
+    const limited = (await mint(`lim9-${freshKey()}`, ["read"], [w])).token;
+    const withGlobal = (await mint(`glob9-${freshKey()}`, ["read"], ["global", w])).token;
+    for (const client of ["mcp", "rest"]) {
+      const text = (await get(`/v1/instructions?client=${client}&stage=9`, limited)).body.text as string;
+      expect(text, client).toContain(s0);
+      for (const above of [rule5, mem3, skill4, body4]) expect(text, `${client} ${above}`).not.toContain(above);
+      // the threshold still works for a device that may read the global wiki
+      const wide = (await get(`/v1/instructions?client=${client}&stage=9`, withGlobal)).body.text as string;
+      for (const above of [rule5, mem3, skill4, body4]) expect(wide, `${client} wide ${above}`).toContain(above);
+    }
+    const mcp = (await tool(limited, "session_start", { stage: 9 })).text;
+    expect(mcp).toContain(s0);
+    for (const above of [rule5, mem3, skill4, body4]) expect(mcp, `session_start ${above}`).not.toContain(above);
+  });
+
   it("tells a baseline device nothing of tools it may not use, even when no focus is set", async () => {
     const op = await operator();
     const w = freshKey();

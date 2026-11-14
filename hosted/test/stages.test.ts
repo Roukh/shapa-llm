@@ -294,6 +294,29 @@ describe("stages: the index in step, and a backfill that runs twice", () => {
     expect((await get(rec(w, "/R1"), token)).body.tags).toEqual(["restart-tag"]);
   });
 
+  it("relabels a legacy stage:0 in the full-text index too, so a tag search no longer finds the stale tag", async () => {
+    const { token, w } = await setup();
+    await globalWiki(token);
+    const g = await create(token, "global", { type: "rule", summary: `legacy fts global ${w}`, tags: ["topic-fts"] });
+    const r = await create(token, w, { type: "rule", summary: `legacy fts repo ${w}`, tags: ["topic-fts"] });
+    const stub = env.STORE.getByName("main");
+    const tagsOf = (sql: SqlStorage, wk: string, id: string) =>
+      sql.exec(`SELECT fts.tags AS tags FROM fts JOIN records r ON r.seq = fts.rowid WHERE r.wiki = ? AND r.id = ?`, wk, id).one()["tags"];
+    await runInDurableObject(stub, (_i, state) => {
+      const sql = state.storage.sql;
+      for (const [wk, id] of [["global", g.body.id], [w, r.body.id]] as const) {
+        // an old Worker stored the tag in the record and in the index
+        sql.exec(`UPDATE records SET tags = ? WHERE wiki = ? AND id = ?`, JSON.stringify(["stage:0", "topic-fts"]), wk, id);
+        sql.exec(`UPDATE fts SET tags = 'stage:0 topic-fts' WHERE rowid = (SELECT seq FROM records WHERE wiki = ? AND id = ?)`, wk, id);
+        expect(tagsOf(sql, wk, id)).toBe("stage:0 topic-fts");
+      }
+      quarantineLegacyStage(sql);
+      expect(tagsOf(sql, "global", g.body.id)).toBe("stage-proposed:0 topic-fts");
+      expect(tagsOf(sql, w, r.body.id)).toBe("topic-fts");
+      expect(sql.exec(`SELECT COUNT(*) AS n FROM fts WHERE fts MATCH 'tags:"stage:0"' AND rowid IN (SELECT seq FROM records WHERE id IN (?, ?))`, g.body.id, r.body.id).one()["n"]).toBe(0);
+    });
+  });
+
   it("quarantines a stage:0 stored before stages existed and rebuilds the index idempotently", async () => {
     const { token, w } = await setup();
     await globalWiki(token);

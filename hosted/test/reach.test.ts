@@ -379,6 +379,60 @@ describe("reach: what a baseline device writes", () => {
     expect((await get(rec(s.w, `/${ranked.body.id}`), s.op)).body.tags).toContain("rank:1");
   });
 
+  it("never registers a wiki: a baseline device may use the ones that exist and no more", async () => {
+    const s = await seed();
+    for (const c of await callers()) {
+      const key = freshKey();
+      const made = await send("PUT", `/v1/wikis/${key}`, { token: c.token, body: { name: key, kind: "repo", origin: "" } });
+      expect(made.status, `${c.name} new wiki`).toBe(403);
+      expect((await get("/v1/wikis", s.op)).body.wikis.some((w: { key: string }) => w.key === key), `${c.name} stored nothing`).toBe(false);
+      // an existing wiki answers as before (idempotent), and a full device still registers one
+      expect((await send("PUT", `/v1/wikis/${s.w}`, { token: c.token, body: { name: s.w, kind: "repo", origin: "" } })).status, `${c.name} existing wiki`).toBe(200);
+    }
+    const key = freshKey();
+    expect((await send("PUT", `/v1/wikis/${key}`, { token: s.op, body: { name: key, kind: "repo", origin: "" } })).status).toBe(201);
+  });
+
+  it("counts only the projects it can see against the cap, so a full wiki's hidden projects are not revealed", async () => {
+    const s = await seed();
+    const w = freshKey();
+    await wiki(s.op, w);
+    // 1,000 projects that exist only on records a baseline device may not read (a rule below stage 0)
+    await runInDurableObject(env.STORE.getByName("main"), (_i, state) => {
+      for (let i = 0; i < 1000; i++) state.storage.sql.exec(`INSERT INTO tag_counts (wiki, tag, bucket, vis, n) VALUES (?, ?, 'R', 0, 1)`, w, `project:hidden-${i}`);
+    });
+    const key = `cap-${freshKey()}`.toLowerCase();
+    const full = await send("PUT", `/v1/projects/${key}`, { token: s.op, body: { wiki: w } });
+    expect(full.status).toBe(413);
+    for (const c of await callers()) {
+      expect((await send("PUT", `/v1/projects/${key}-${c.name.replace(/\W/g, "")}`, { token: c.token, body: { wiki: w } })).status, c.name).toBe(201);
+    }
+  });
+
+  it("neither sets nor adds an engine tag: only idea, decision, the task owner and one project", async () => {
+    const s = await seed();
+    const operatorsTask = await create(s.op, s.w, { type: "human_task", title: "operator's served task", tags: ["serves:northstar", "rank:1"] });
+    for (const c of await callers()) {
+      for (const tags of [["principle"], ["churn"], ["violations:3"], ["serves:northstar"], ["repeat-of:R1"], ["evidence:x"], ["learned"], ["status:active"], ["v:2"], ["focus"], ["rank:2"]]) {
+        const r = await create(c.token, s.w, { type: "idea", summary: `tagged ${tags[0]} ${c.name} ${freshKey()}`, tags });
+        expect(r.status, `${c.name} create ${tags[0]}`).toBe(403);
+      }
+      const ok = await create(c.token, s.w, { type: "idea", summary: `topic ${c.name} ${freshKey()}`, tags: ["topic-x", "decision", "project:fine-one"] });
+      expect(ok.status, `${c.name} topic tags: ${ok.text}`).toBe(201);
+      // adding one on an edit is refused too, through REST and MCP
+      expect((await send("PATCH", rec(s.w, `/${ok.body.id}`), { token: c.token, body: { tags: [...ok.body.tags, "churn"] } })).status, `${c.name} patch`).toBe(403);
+      expect((await tool(c.token, "update", { wiki: s.w, id: ok.body.id, tags: [...ok.body.tags, "violations:1"] })).isError, `${c.name} mcp update`).toBe(true);
+      expect((await tool(c.token, "save", { wiki: s.w, type: "idea", summary: `mcp ${c.name} ${freshKey()}`, tags: ["principle"] })).isError, `${c.name} mcp save`).toBe(true);
+      // an engine tag the operator put on a task stays when the device edits around it
+      const kept = await send("PATCH", rec(s.w, `/${operatorsTask.body.id}`), { token: c.token, body: { tags: ["human_task", "serves:northstar", "rank:1", "extra"] } });
+      expect(kept.status, `${c.name} keeps: ${kept.text}`).toBe(200);
+      expect((await send("PATCH", rec(s.w, `/${operatorsTask.body.id}`), { token: c.token, body: { title: `renamed ${c.name}` } })).status).toBe(200);
+    }
+    // a full device writes them as before
+    expect((await create(s.op, s.w, { type: "idea", summary: `full ${freshKey()}`, tags: ["principle", "churn", "violations:3", "serves:northstar"] })).status).toBe(201);
+    expect((await sync(s.op, s.w, { ops: [put(row(`R${900000 + ++seeds}`, `full sync ${freshKey()}`, { tags: ["principle", "violations:2", "serves:northstar"] }))] })).body.results[0].status).toBe("accepted");
+  });
+
   it("drops an alias that a live record holds, for a baseline device, so nothing tells it the alias exists", async () => {
     const s = await seed();
     const taken = `secret-${freshKey()}`;

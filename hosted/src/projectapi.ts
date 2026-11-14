@@ -121,8 +121,9 @@ export function newProject(repo: Repo, d: Device, key: string, wiki: string, tit
   validKey(key);
   const held = documentOf(repo, wiki, key);
   if (held) return { project: cardOf(wiki, key, held), created: false };
-  // Every session start lists a wiki's projects: a store of thousands of them is spam, not a plan.
-  if (projectKeys(repo.sql, false, wiki).length >= PROJECTS_PER_WIKI) fail("too_large", `a wiki holds at most ${PROJECTS_PER_WIKI} projects`);
+  // Every session start lists a wiki's projects: a store of thousands of them is spam, not a plan. A baseline device
+  // counts only the projects it can see, so the cap never tells it about a hidden one.
+  if (projectKeys(repo.sql, repo.baseline, wiki).length >= PROJECTS_PER_WIKI) fail("too_large", `a wiki holds at most ${PROJECTS_PER_WIKI} projects`);
   const id = repo.allocId(wiki, "D");
   let built;
   try {

@@ -9,9 +9,9 @@
 
 import type { Device } from "./devices.js";
 import { ApiError } from "./errors.js";
-import type { Kind } from "./records.js";
+import { PROJECT_PREFIX, type Kind } from "./records.js";
 import type { Stored } from "./repo.js";
-import { DECISION_TAG, IDEA_TAG, isStagedKind } from "./tags.js";
+import { DECISION_TAG, IDEA_TAG, isStagedKind, isSystemTag } from "./tags.js";
 
 export const BASELINE_REFUSAL = "this device writes notes, tasks, ideas, decisions and files";
 
@@ -69,6 +69,19 @@ export const ranksChanged = (before: readonly string[], after: readonly string[]
 
 export function baselineKeepsRank(d: Device, before: readonly string[], after: readonly string[]): void {
   if (isBaseline(d) && ranksChanged(before, after)) throw new ApiError("forbidden", "this device does not rank the operator's tasks");
+}
+
+/** The engine tags a baseline device may put on what it writes: the ones its own type names need (idea, decision, the
+ *  task owner) and one `project:KEY`. Every other system tag and family (the learning loop's, `serves:`, `v:`,
+ *  `status:` ...) is the engine's: an agent that could set them would steer the operator's learning and ranking. */
+const BASELINE_ENGINE_TAGS: ReadonlySet<string> = new Set([IDEA_TAG, DECISION_TAG, "human_task", "agent_task"]);
+
+/** Refuse a baseline device any engine tag it adds. A tag the record already held stays (an edit around the
+ *  operator's `serves:` tag on a task is not an add); `held` is the record's tags before the write, [] for a create. */
+export function baselineKeepsEngineTags(d: Device, held: readonly string[], next: readonly string[]): void {
+  if (!isBaseline(d)) return;
+  const bad = next.find((t) => !held.includes(t) && isSystemTag(t) && !BASELINE_ENGINE_TAGS.has(t) && !t.startsWith(PROJECT_PREFIX));
+  if (bad !== undefined) throw new ApiError("forbidden", `this device does not set engine tags (${JSON.stringify(bad.slice(0, 40))}): only idea, decision, the task owner and one project`);
 }
 
 /** A record that is, or is named as, a printed note is written only by a device token with the delete scope. */
