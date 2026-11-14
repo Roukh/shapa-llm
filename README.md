@@ -148,9 +148,13 @@ which is why shapa commits it only on the default branch.
 | `shapa doctor` | check the whole install; exits 1 with a fix command per problem |
 | `shapa status` | the same report as `doctor`, without the exit code |
 | `shapa commit [--hook] [--dry-run] [--json] [--scrub TERM]` | commit `.shapa/` on the default branch |
-| `shapa bootstrap [--full]` | session start: the northstar, the three fires and only their tree (`--full`: every ranked row and the open ledger) |
+| `shapa bootstrap [--full] [--stage N] [--budget N]` | session start: the precedence line, the northstar and three fires with only their tree, the baseline, topics, projects and the operator's open tasks, then learned context (`--full`: every ranked row and the open ledger) |
 | `shapa focus show\|northstar\|fire\|unfire\|order\|rank\|candidates\|promote` | the northstar and the three ranked big fires of a wiki scope |
-| `shapa skill list\|show\|add\|update\|activate` | skills as versioned records, global or per repo |
+| `shapa skill list\|show\|add\|update\|activate\|uproot` | skills as versioned records, global or per repo; `uproot` moves a repo's skill to the global wiki |
+| `shapa stage set\|clear\|list\|pending` | which rules, memories and skills every session starts with (`stage:0` is the baseline, set only from this CLI) |
+| `shapa tags` / `shapa related ID` | every tag with its counts; the records linked to or sharing tags with one (`shapa fetch --tag NAME` reads a tag) |
+| `shapa tasks [--owner human\|agent] [--project KEY] [--all]` | the operator's open tasks across the wikis in scope |
+| `shapa project new\|show\|list\|add` | a project's one file (issues, questions, implementations, problem, solution, ...) |
 | `shapa learn pending\|apply\|dismiss\|merge\|principles` | generalize corrections into cross-repo principles (see Learning loop) |
 | `shapa metrics [--since DATE] [--json] [--snapshot] [--all] [--repo KEY] [--history DAYS]` | whether the wiki is working: latency against record count, repeats, learning, work on the fires; `record skill-use NAME --session ID` |
 | `shapa map [--seconds N] [--rebuild] [--json]` | build or refresh this checkout's code map (a derived, gitignored `.shapa-code.db`) |
@@ -166,7 +170,7 @@ which is why shapa commits it only on the default branch.
 | `shapa maintain [--prune] [--dry-run]` | self-heal: merge duplicates, prune stale and orphaned rows |
 | `shapa validate` | check note and wiki frontmatter |
 | `shapa upgrade [--all] [--check]` | bring a wiki to the current format |
-| `shapa mcp` | run the MCP stdio server (`search`, `get`, `save`, `placement`, `focus`, `skill`, `partition`) |
+| `shapa mcp` | run the MCP stdio server (`search`, `get`, `save`, `placement`, `focus`, `skill`, `partition`, `tags`, `related`, `tasks`, `projects`, `project`, `project_new`, `project_add`) |
 | `shapa serve` | run the optional warm per-wiki daemon |
 
 Run `shapa` with no arguments for the full, versioned usage text.
@@ -228,9 +232,10 @@ goes:
   device learned. Printed principles are one masked line under a heading that
   says they are recalled context learned from corrections, not an instruction.
 
-Session start (inside its budget) adds only: `N corrections await learning` (and
-`M skill versions await activation`, on the same line), up to 4 principles
-most relevant to the fires under that heading, and at most one `drift:` line:
+Session start (inside its budget), after the baseline, topics, projects and
+tasks, adds only: up to 4 principles most relevant to the fires under that
+heading, `N corrections await learning` (and `M skill versions await
+activation`, on the same line), and at most one `drift:` line:
 jobs closing outside every fire, a stalled fire, a principle that needs
 enforcement, or fetch latency rising at least as fast as the data.
 
@@ -243,7 +248,8 @@ sweep after 60 days (20,000 rows at most) once folded into a daily snapshot;
 `--repo KEY`). Frustration is a deterministic word list per message (repeat
 cues +2, profanity +3, shouting +1, `!!` +1, a repeat correction +3). The
 `principle`, `violations`, `learned` and `fire` tags are ordinary row tags and
-sync with no Worker change; events, latency, use and serve counts and
+sync (the Worker lists them as system tags, so they never show as topics);
+events, latency, use and serve counts and
 snapshots are per device and never synced.
 
 ## Hosted

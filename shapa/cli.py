@@ -120,8 +120,9 @@ commands:
                  candidates, promote. Session start prints these first and
                  only the fires' own tree after them
   skill ...      skills as versioned records, global or per repo: list,
-                 show, add, update (a new pending version), activate
-  learn ...      close the loop on corrections: pending [--json] lists the
+                 show, add, update (a new pending version), activate,
+                 uproot (move a repo's skill to the global wiki)
+  learn ...    close the loop on corrections: pending [--json] lists the
                  corrections not yet generalized with their nearest rules,
                  skills and issues and whether each is a repeat (and the
                  skill versions awaiting `shapa skill activate`); apply ISSUE
@@ -139,6 +140,23 @@ commands:
                  lead time, work on the fires vs off them, frustration, with
                  a 7-day trend; --snapshot stores today's row, --all rolls
                  up every repo; `metrics record skill-use NAME --session ID`
+  stage ...    which rules, memories and skills every session starts with:
+                 set ID N (0 = baseline, served in full, capped at 6,000
+                 characters; only this CLI sets it), clear, list, pending
+                 (records agents proposed for stage 0)
+  tags [--wiki KEY] [--json]
+                 every tag with its record counts; tags relate rules,
+                 memories, skills, tasks and projects. `fetch --tag T`
+                 reads the records carrying a tag
+  related ID [--limit N] [--json]
+                 records linked to ID, then those sharing tags, then newest
+  tasks [--owner human|agent] [--project KEY] [--status open|closed|all] [--all] [--json]
+                 the operator's open tasks (human_task) across every wiki in
+                 scope: "what do I need to do". Add one: `shapa save --type
+                 human_task` or `shapa ledger add human_task TITLE --scope global`
+  project ...    new KEY | add KEY SECTION TEXT | show KEY | list: a project's
+                 one document (issues, questions, implementations, problem,
+                 solution, diff, ...) and what is tied to it (project:KEY)
   map [--seconds N] [--rebuild] [--json]
                  build or refresh the code map of this checkout: files,
                  functions, imports and calls (Python by ast, JS/TS by
@@ -461,6 +479,12 @@ def main(argv: list[str] | None = None) -> None:
     if cmd in ("learn", "metrics"):
         mod = importlib.import_module(f"shapa.{cmd}")
         mod.main(rest)
+        return
+    if cmd in ("stage", "tags", "related", "project", "tasks"):
+        from shapa import projectfile, relate, stages, tasks
+
+        {"stage": stages.main, "tags": relate.main_tags, "related": relate.main_related,
+         "project": projectfile.main, "tasks": tasks.main}[cmd](rest)
         return
     if cmd in ("map", "partition"):
         from shapa import partition

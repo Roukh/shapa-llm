@@ -268,7 +268,12 @@ def _set_tags(conn, rid: str, mapping: dict, extra=()) -> None:
     """Replace every tag starting with a mapping key by ``key + value``, and add *extra*."""
     tg = _tags(conn, rid)
     drop = [t for t in tg if any(t.startswith(k) for k in mapping)]
-    db.retag(conn, rid, add=[f"{k}{v}" for k, v in mapping.items()] + list(extra), drop=drop)
+    try:
+        db.retag(conn, rid, add=[f"{k}{v}" for k, v in mapping.items()] + list(extra), drop=drop)
+    except db.LedgerError:
+        if f"{db.STAGE_PREFIX}0" in tg:
+            return  # the operator's baseline: its tags change only from the local CLI, counters included
+        raise
 
 
 def _bump(conn, rid: str, prefix: str) -> int:
@@ -1226,6 +1231,9 @@ def _apply_rule(ss, target: Scope, home: Scope, row: db.Row, principle: str, tex
                 _post_write(target, rid, now)
                 return {"action": "created", "target": rid, "wiki": target.label, "conflicts": conflicts[:3]}
             chosen = db.get_row(conn, rid)          # the identical principle is already stored
+        if f"{db.STAGE_PREFIX}0" in _tags(conn, chosen.id):
+            raise db.LedgerError(f"{chosen.id} is baseline (stage 0): its text and tags change only from the local "
+                                 "CLI. File the principle with --new, or --into another rule")
         head, ev = _split_body(chosen.body)
         statements = [chosen.summary] + [re.sub(r"^Also:\s*", "", l) for l in head if l.startswith("Also:")]
         if not any(dice(pt, tokens(x)) >= 0.85 for x in statements):
@@ -1241,11 +1249,17 @@ def _apply_rule(ss, target: Scope, home: Scope, row: db.Row, principle: str, tex
         tg = _tags(conn, chosen.id)
         n_evidence = _count(tg, "evidence:") + (0 if seen else 1)
         ev = ev[-EVIDENCE_KEEP:]
-        db.update_row(conn, chosen.id, body=_join_body(head, ev))
         outstanding = _count(tg, "violations:") > _count(tg, "revisions:")
         mapping = {"evidence:": max(n_evidence, len(ev)), "last-seen:": stamp}
         if outstanding:
             mapping["revisions:"] = _count(tg, "revisions:") + 1
+        # the 100-tag cap of a record is checked before anything is written: a refused merge changes nothing
+        after = {t for t in tg if not any(t.startswith(k) for k in mapping)} | {"principle", f"serves:{serve}"}
+        after |= {f"{k}{v}" for k, v in mapping.items()} | ({f"skill:{skill_name}"} if skill_name else set())
+        if len(after) > db.MAX_TAGS:
+            raise db.LedgerError(f"{chosen.id} carries {len(tg)} tags and a record holds at most {db.MAX_TAGS}: "
+                                 "file the principle with --new")
+        db.update_row(conn, chosen.id, body=_join_body(head, ev))
         _set_tags(conn, chosen.id, mapping, extra=["principle", f"serves:{serve}"])
         if skill_name and f"skill:{skill_name}" not in tg:
             db.tag(conn, chosen.id, [f"skill:{skill_name}"])   # files the pending version, once
@@ -1296,6 +1310,9 @@ def merge(cwd, src: str, dst: str, wiki: str | None = None) -> dict:
                 raise db.LedgerError(f"{r.id} is not a principle")
             if "churn" in tg:
                 raise db.LedgerError(f"{r.id} needs enforcement, not rewording: it cannot be merged to shed that")
+            if f"{db.STAGE_PREFIX}0" in tg:
+                raise db.LedgerError(f"{r.id} is baseline (stage 0): it changes only from the local CLI "
+                                     "(`shapa stage clear` first)")
         bh, bev = _split_body(b.body)
         ah, aev = _split_body(a.body)
         if dice(tokens(a.summary), tokens(b.summary)) < 0.85:

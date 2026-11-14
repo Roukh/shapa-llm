@@ -152,7 +152,7 @@ def run_doc(argv: list[str]) -> int:
             print(db.merge_docs(conn, args.src, args.dst))
         elif cmd == "edit":
             d = db.update_doc(conn, args.id, title=args.title, body=_body_from(args, allow_stdin=False),
-                              alias=args.alias, mime=args.mime)
+                              alias=args.alias, mime=args.mime, privileged=True)
             print(f"{d.id} {d.title}")
         else:
             print(f"removed {db.delete(conn, [i for i in args.ids if db.get_doc(conn, i)])}")

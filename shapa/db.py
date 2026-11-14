@@ -36,6 +36,7 @@ import hashlib
 import re
 import secrets
 import sqlite3
+import unicodedata
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -74,6 +75,42 @@ SKILL_TAG = "skill"
 RESERVED_DOC_TAGS = (FOCUS_TAG, SKILL_TAG)
 PROJECT_PREFIX = "project:"
 _PROJECT_RE = re.compile(r"^[a-z0-9][a-z0-9._/-]{0,79}$")
+
+#: Stages (the central brain contract, section 1): ``stage:N`` (one digit) on a rule, a memory
+#: or a skill version. ``stage:0`` is the baseline every session start serves in full; only the
+#: local CLI sets it. Anything else that asks for it is stored as ``stage-proposed:0``.
+STAGE_PREFIX = "stage:"
+PROPOSED_PREFIX = "stage-proposed:"
+STAGE_PROPOSED = PROPOSED_PREFIX + "0"
+STAGE_MAX = 9
+MAX_TAGS = 100  # tags on one record, as the wire format (syncrec) allows
+BASELINE_BUDGET = 6000  # characters of the global wiki's stage-0 set; the Worker holds the same constant
+_STAGE_RE = re.compile(r"^stage:[0-9]$")
+#: Tags that belong to the engine, never shown as topics. One list for every surface.
+OWNER_TAGS = {"human_task": "human", "agent_task": "agent"}
+IDEA_TAG = "idea"
+DECISION_TAG = "decision"
+#: Memories carrying one of these are kept by the sweep (they are written to be kept).
+KEPT_MEMORY_TAGS = (IDEA_TAG, DECISION_TAG)
+#: The learning loop's own tags (``shapa learn`` writes them; see ``learn.py``): the principle marker,
+#: its counters, the repeat and learned states. They are system tags like the rest (never a topic,
+#: look-alikes refused), and in addition ``check_row_tags`` keeps every agent entry point away from
+#: them (``shapa row add|tag``, ``save``, the local MCP). A pulled record may carry them: a principle
+#: written on one machine syncs to another.
+LEARNING_TAGS = ("principle", "churn", "violation", "repeat", "repeat-checked", "blocked", "learned",
+                 "meta-learning", "dismissed", "soft", "fire")
+LEARNING_TAG_PREFIXES = ("violations:", "revisions:", "repeats:", "serves:", "repeat-of:", "last-seen:",
+                         "evidence:", "learned-at:", "generalized-into:")
+SYSTEM_TAGS = (SKILL_TAG, FOCUS_TAG, *OWNER_TAGS, IDEA_TAG, DECISION_TAG, *LEARNING_TAGS)
+SYSTEM_TAG_PREFIXES = (STAGE_PREFIX, PROPOSED_PREFIX, "skill:", "v:", "status:", "rank:", PROJECT_PREFIX,
+                       *LEARNING_TAG_PREFIXES)
+#: Kept under its old names for the callers that import them.
+RESERVED_ROW_TAGS = LEARNING_TAGS
+RESERVED_ROW_TAG_PREFIXES = LEARNING_TAG_PREFIXES
+#: Every system tag and tag family has look-alikes (full-width, zero-width, bidi marks, upper case)
+#: that read as the real thing to a person; they are refused rather than stored as another tag.
+_SPELLED = (*SYSTEM_TAGS, *SYSTEM_TAG_PREFIXES)
+_INVISIBLE = ("Cf", "Cc", "Zl", "Zp")  # zero-width, bidi and other format, control, line separators
 _MIME_RE = re.compile(r"^[a-z0-9][a-z0-9.+-]{0,60}/[a-z0-9][a-z0-9.+-]{0,60}$")
 
 _SCHEMA = """
@@ -155,10 +192,37 @@ CREATE TABLE IF NOT EXISTS metrics_daily (
     data TEXT NOT NULL,
     PRIMARY KEY (day, repo)
 ) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS mri_kind ON mri(kind);
+CREATE INDEX IF NOT EXISTS items_kind_status_created ON items(kind, status, created);
+CREATE INDEX IF NOT EXISTS items_alias ON items(alias);
+CREATE INDEX IF NOT EXISTS items_title ON items(title);
+CREATE TABLE IF NOT EXISTS tag_counts (
+    tag TEXT NOT NULL, k TEXT NOT NULL, n INTEGER NOT NULL, PRIMARY KEY (tag, k)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS tag_counts_n ON tag_counts(n);
 """
 #: ``metrics_daily`` (``shapa metrics --snapshot``): one small JSON row per day and repo, kept
 #: when the raw events behind it are dropped; the global wiki's also holds the ``*`` roll-up.
 #: Local to the committed file: the hosted sync never reads or writes it.
+#:
+#: ``tag_counts`` (additive, kept by the triggers below on every write to ``tags``, so no write
+#: path can forget it) is the tag index: tag -> records per kind letter. It makes the topics list
+#: of a session start and ``shapa tags`` cost the number of distinct tags, not of records. The
+#: other indexes are covering ones for counts and for lookups by alias and title. A schema-1
+#: reader ignores all of it; a row-less file stays valid.
+_TRIGGERS = (
+    "CREATE TRIGGER IF NOT EXISTS tag_counts_ai AFTER INSERT ON tags BEGIN "
+    "INSERT INTO tag_counts(tag, k, n) VALUES (NEW.tag, substr(NEW.id, 1, 1), 1) "
+    "ON CONFLICT(tag, k) DO UPDATE SET n = n + 1; END",
+    "CREATE TRIGGER IF NOT EXISTS tag_counts_ad AFTER DELETE ON tags BEGIN "
+    "UPDATE tag_counts SET n = n - 1 WHERE tag = OLD.tag AND k = substr(OLD.id, 1, 1); "
+    "DELETE FROM tag_counts WHERE tag = OLD.tag AND k = substr(OLD.id, 1, 1) AND n <= 0; END",
+    "CREATE TRIGGER IF NOT EXISTS tag_counts_au AFTER UPDATE ON tags BEGIN "
+    "UPDATE tag_counts SET n = n - 1 WHERE tag = OLD.tag AND k = substr(OLD.id, 1, 1); "
+    "DELETE FROM tag_counts WHERE tag = OLD.tag AND k = substr(OLD.id, 1, 1) AND n <= 0; "
+    "INSERT INTO tag_counts(tag, k, n) VALUES (NEW.tag, substr(NEW.id, 1, 1), 1) "
+    "ON CONFLICT(tag, k) DO UPDATE SET n = n + 1; END",
+)
 #: A record's identity is its uid, kept in the ``uids`` side table (id -> uid)
 #: and not as a column of ``items``/``mri``: an older shapa builds its
 #: dataclasses from ``SELECT *`` and would fail on an extra column.
@@ -255,17 +319,18 @@ def exists(root) -> bool:
 def connect(root, *, create: bool = False, busy_ms: int | None = None) -> sqlite3.Connection | None:
     """Open *root*'s database (``None`` when it has none and *create* is
     false). Foreign keys on, rollback journal, a generous busy timeout so
-    hooks from parallel sessions queue instead of failing. *busy_ms* shortens
-    that wait for a caller that must never stall (the prompt hook)."""
-    busy = BUSY_TIMEOUT_MS if busy_ms is None else int(busy_ms)
+    hooks from parallel sessions queue instead of failing; *busy_ms* shortens
+    it for a caller that would rather skip than wait (a session start, the
+    prompt hook)."""
     path = db_path(root)
     if not path.is_file():
         if not create:
             return None
         path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(path), timeout=busy / 1000, isolation_level=None)
+    wait = BUSY_TIMEOUT_MS if busy_ms is None else max(0, int(busy_ms))
+    conn = sqlite3.connect(str(path), timeout=wait / 1000, isolation_level=None)
     conn.row_factory = sqlite3.Row
-    conn.execute(f"PRAGMA busy_timeout = {busy}")
+    conn.execute(f"PRAGMA busy_timeout = {wait}")
     conn.execute("PRAGMA foreign_keys = ON")
     # The file is committed to git whole: zero deleted and overwritten content
     # so a pruned or scrubbed row's old text never lingers in a free page.
@@ -288,6 +353,9 @@ def connect(root, *, create: bool = False, busy_ms: int | None = None) -> sqlite
 def _is_current(conn: sqlite3.Connection) -> bool:
     return (_has_table(conn, "docs") and _has_table(conn, "tombstones") and _has_table(conn, "uids")
             and _has_table(conn, "metrics_daily")
+            and _has_table(conn, "tag_counts")
+            and conn.execute("SELECT count(*) FROM sqlite_master WHERE name IN "
+                             "('items_title', 'items_kind_status_created', 'tag_counts_n')").fetchone()[0] == 3
             and any(r[1] == "uid" for r in conn.execute("PRAGMA table_info(tombstones)")))
 
 
@@ -298,6 +366,11 @@ def _apply_schema(conn: sqlite3.Connection) -> None:
     for stmt in (_SCHEMA + _SCHEMA_V2).split(";"):
         if stmt.strip():
             conn.execute(stmt)
+    for stmt in _TRIGGERS:
+        conn.execute(stmt)
+    if (not conn.execute("SELECT 1 FROM tag_counts LIMIT 1").fetchone()
+            and conn.execute("SELECT 1 FROM tags LIMIT 1").fetchone()):
+        rebuild_tag_counts(conn)  # a file written before the tag index existed
     if not any(r[1] == "uid" for r in conn.execute("PRAGMA table_info(tombstones)")):
         conn.execute("ALTER TABLE tombstones ADD COLUMN uid TEXT NOT NULL DEFAULT ''")
     conn.execute("INSERT OR IGNORE INTO meta(key, value) VALUES ('schema', ?)",
@@ -455,7 +528,7 @@ def _require_item(conn, item_id: str) -> Item:
 
 def add_item(conn: sqlite3.Connection, kind: str, title: str, *, parent: str | None = None,
              body: str = "", verify: str | None = None, alias: str | None = None,
-             git_ref: str | None = None, now: datetime | None = None) -> str:
+             git_ref: str | None = None, now: datetime | None = None, tags=()) -> str:
     kind = kind.upper()
     if kind not in ITEM_KINDS:
         raise LedgerError(f"item kind must be one of {ITEM_KINDS}, got {kind!r}")
@@ -481,6 +554,10 @@ def add_item(conn: sqlite3.Connection, kind: str, title: str, *, parent: str | N
             "updated) VALUES (?,?,?,?,?,?,?,?,?,?)",
             (new_id, kind, parent, title, body, verify, alias, git_ref, ts, ts))
         conn.execute("INSERT OR REPLACE INTO uids(id, uid) VALUES (?, ?)", (new_id, new_uid()))
+        if tags:
+            insert, drop = _guard_tags(conn, new_id, tags, letter=kind, privileged=False)
+            _write_tags(conn, new_id, insert, drop)
+            sync_project_link(conn, new_id)
     return new_id
 
 
@@ -568,6 +645,8 @@ def close(conn: sqlite3.Connection, item_id: str, reason: str, *, git_ref: str |
                      (reason, ts, ts, git_ref, item.id))
         closed = [item.id]
         for child in _descendants(conn, item.id):
+            if reason == "expired" and any(t in OWNER_TAGS for t in _tags_of(conn, child)):
+                continue  # an expiring parent never takes the operator's task list with it
             cur = conn.execute("UPDATE items SET status='closed', closed_reason='parent', "
                                "closed=?, updated=? WHERE id=? AND status != 'closed'",
                                (ts, ts, child))
@@ -681,12 +760,255 @@ def _clean_tag(tag: str) -> str:
     return " ".join(str(tag).split())[:80]
 
 
+# --- tag rules: the one place every tag write passes ---------------------------------------------
+
+def _plain(tag: str) -> str:
+    """*tag* as a person reads it: compatibility-folded, lower case, no invisible characters."""
+    folded = unicodedata.normalize("NFKC", str(tag)).casefold()
+    return "".join(c for c in folded if unicodedata.category(c) not in _INVISIBLE)
+
+
+def check_tag_spelling(tags) -> None:
+    """Refuse a look-alike of a stage or owner tag (``Stage:0``, full-width ``stage:0``, a
+    zero-width space inside ``human_task``): it would read as the real tag and be none."""
+    for t in tags:
+        p = _plain(t)
+        if p != t and any(_imitates(t, p, s) for s in _SPELLED):
+            raise LedgerError(f"invalid tag {t!r}: it imitates a system tag; spell it exactly")
+
+
+def _imitates(tag: str, plain: str, spelled: str) -> bool:
+    if not spelled.endswith(":"):
+        return plain == spelled
+    if spelled in LEARNING_TAG_PREFIXES:
+        # the learning loop's families carry mixed-case values (``last-seen:2026-11-13T10:00:00Z``,
+        # ``repeat-of:R12``): only the family name is checked
+        return plain.startswith(spelled) and not tag.startswith(spelled)
+    return plain.startswith(spelled)
+
+
+def is_global(conn: sqlite3.Connection) -> bool:
+    """Is *conn* the global wiki's database? (The baseline, ``stage:0``, belongs to it alone.)"""
+    try:
+        from shapa import config
+
+        found = conn.execute("PRAGMA database_list").fetchone()
+        path = found[2] if found else ""
+        return bool(path) and Path(path).resolve() == db_path(config.global_root()).resolve()
+    except (OSError, sqlite3.Error):
+        return False
+
+
+def legacy_tags(tags) -> list[str]:
+    """*tags* from an older note or log, minus any that now mean something to the engine (a stage,
+    a look-alike, a second or malformed project): a migration never fails on, or gains, such a tag.
+    One well-formed ``project:KEY`` tag is kept."""
+    out = []
+    project = ""
+    for t in tags:
+        t = " ".join(str(t).split())
+        if not t or t.startswith((STAGE_PREFIX, PROPOSED_PREFIX)):
+            continue
+        if t.startswith(PROJECT_PREFIX):
+            try:
+                check_project_tags([t])
+            except LedgerError:
+                continue
+            if project and project != t:
+                continue
+            project = t
+        try:
+            check_tag_spelling([t])
+        except LedgerError:
+            continue
+        if t not in out:
+            out.append(t)
+    return out
+
+
+def stage_of(tags) -> int | None:
+    """The stage a tag list carries (``stage:N``, canonical spelling only), else ``None``."""
+    for t in sorted(tags):
+        if _STAGE_RE.fullmatch(t):
+            return int(t[len(STAGE_PREFIX):])
+    return None
+
+
+def takes_stage(letter: str, tags=()) -> bool:
+    """Stages apply to rules, memories and skill versions."""
+    return letter in ("M", "R") or (letter == DOC_KIND and SKILL_TAG in tags)
+
+
+def check_stage_tags(tags, letter: str) -> None:
+    """The stage tags of one record are well formed: at most one ``stage:N`` (N one ASCII digit),
+    ``stage-proposed:0`` only as that spelling and never beside a stage, and only on a record that
+    takes a stage. Raises :class:`LedgerError`."""
+    tags = list(tags)
+    staged = [t for t in tags if t.startswith(STAGE_PREFIX)]
+    proposed = [t for t in tags if t.startswith(PROPOSED_PREFIX)]
+    bad = [t for t in staged if not _STAGE_RE.fullmatch(t)] + [t for t in proposed if t != STAGE_PROPOSED]
+    if bad:
+        raise LedgerError(f"invalid stage tag {bad[0]!r}: stage:N with N a digit 0-9")
+    if len(set(staged)) > 1:
+        raise LedgerError("a record has at most one stage (`shapa stage set ID N` changes it)")
+    if staged and proposed:
+        raise LedgerError("a record cannot carry both a stage and a proposed stage")
+    if (staged or proposed) and not takes_stage(letter, tags):
+        raise LedgerError("a stage applies to rules, memories and skill versions only")
+
+
+def _stage_budget_check(conn: sqlite3.Connection, record_id: str | None, size: int | None) -> None:
+    from shapa import stages
+
+    stages.check_budget(conn, record_id, size)
+
+
+def _guard_tags(conn: sqlite3.Connection, target: str | None, new, *, letter: str, privileged: bool,
+                size: int | None = None, have=None) -> tuple[list[str], list[str]]:
+    """Validate *new* tags for record *target* (``None`` when it is not stored yet) and return
+    ``(tags to insert, tags to delete)``. Raises :class:`LedgerError`; call inside a write.
+
+    The stage rules (contract section 1): ``stage:0`` is the operator's, so from a writer that
+    is not *privileged* (the local CLI is; an agent tool, a hook, a sync is not) it is stored as
+    ``stage-proposed:0`` instead, and no tag changes at all on a record that already holds it."""
+    raw = [" ".join(str(x).split()) for x in new if str(x).strip()]
+    check_project_tags(raw)                                   # on the tag as sent, before the cut
+    check_tag_spelling(raw)
+    clean = list(dict.fromkeys(t for t in (_clean_tag(x) for x in raw) if t))
+    if len({t for t in clean if t.startswith(PROJECT_PREFIX)}) > 1:
+        raise LedgerError("a record belongs to one project")
+    have = set(have) if have is not None else (set(_tags_of(conn, target)) if target else set())
+    drop = []
+    mine = [t for t in clean if t.startswith(PROJECT_PREFIX)]
+    if mine:
+        drop = [t for t in have if t.startswith(PROJECT_PREFIX) and t != mine[0]]
+    if any(t.startswith((STAGE_PREFIX, PROPOSED_PREFIX)) for t in clean):
+        check_stage_tags(have | set(clean), letter)
+    insert = [t for t in clean if t not in have]
+    if len((have - set(drop)) | set(insert)) > MAX_TAGS:
+        raise LedgerError(f"a record carries at most {MAX_TAGS} tags")
+    if any(t in (f"{STAGE_PREFIX}0", STAGE_PROPOSED) for t in insert) and not is_global(conn):
+        raise LedgerError("stage 0 is the baseline of the global wiki: a repo wiki takes stages 1-9 "
+                          "(put the record in the global wiki, or give it another stage)")
+    if not privileged:
+        if f"{STAGE_PREFIX}0" in have and (insert or drop):
+            raise LedgerError(f"{target} is baseline (stage 0): its text and tags change only from "
+                              "the local CLI")
+        if f"{STAGE_PREFIX}0" in insert:
+            insert = [STAGE_PROPOSED if t == f"{STAGE_PREFIX}0" else t for t in insert]
+            if STAGE_PROPOSED in have:
+                insert.remove(STAGE_PROPOSED)
+    elif f"{STAGE_PREFIX}0" in insert:
+        _stage_budget_check(conn, target, size)
+    return insert, drop
+
+
+def _write_tags(conn: sqlite3.Connection, target: str, insert, drop) -> None:
+    for t in drop:
+        conn.execute("DELETE FROM tags WHERE id = ? AND tag = ?", (target, t))
+    for t in insert:
+        conn.execute("INSERT OR IGNORE INTO tags(id, tag) VALUES (?, ?)", (target, t))
+
+
+def project_doc_id(conn: sqlite3.Connection, key: str) -> str | None:
+    """The id of the live project document of *key* (a non-empty key), found by its tag."""
+    for (i,) in conn.execute("SELECT id FROM tags WHERE tag = ? AND id >= 'D' AND id < 'E' "
+                             "ORDER BY id", (PROJECT_PREFIX + key,)).fetchall():
+        if project_of(_tags_of(conn, i)) is not None:
+            return i
+    return None
+
+
+def _project_key(tags) -> str:
+    return next((t[len(PROJECT_PREFIX):] for t in sorted(tags) if t.startswith(PROJECT_PREFIX)), "")
+
+
+def sync_project_link(conn: sqlite3.Connection, record_id: str) -> None:
+    """Keep the ``about`` link of a record with a ``project:KEY`` tag on that project's document
+    (when the wiki has one); a link to the document of a project it left is removed. Tag and link
+    are both the relation. Inside the caller's write."""
+    if not _is_project_member(conn, record_id):
+        return  # the project's own document is the target; a feature or a job never links
+    tags = _tags_of(conn, record_id)
+    key = _project_key(tags)
+    if not key:
+        return
+    for (dst,) in conn.execute("SELECT dst FROM links WHERE src = ? AND rel = 'about' "
+                               "AND substr(dst, 1, 1) = 'D'", (record_id,)).fetchall():
+        dtags = _tags_of(conn, dst)
+        if project_of(dtags) is not None and _project_key(dtags) not in ("", key):
+            conn.execute("DELETE FROM links WHERE src = ? AND dst = ? AND rel = 'about'", (record_id, dst))
+    doc = project_doc_id(conn, key)
+    if doc and doc != record_id:
+        conn.execute("INSERT OR IGNORE INTO links(src, dst, rel) VALUES (?, ?, 'about')", (record_id, doc))
+
+
+def _unlink_left_projects(conn: sqlite3.Connection, record_id: str, dropped) -> None:
+    """A ``project:KEY`` tag left the record: its ``about`` link to that project's document goes."""
+    for t in dropped:
+        if t.startswith(PROJECT_PREFIX):
+            doc = project_doc_id(conn, t[len(PROJECT_PREFIX):])
+            if doc:
+                conn.execute("DELETE FROM links WHERE src = ? AND dst = ? AND rel = 'about'",
+                             (record_id, doc))
+
+
+#: What an ``about`` link to a project's document is kept for (contract 6d): tasks, memories,
+#: rules, issues and skill versions. Never the document itself, a feature or a job.
+_PROJECT_MEMBER_KINDS = ("T", "M", "R", "I")
+
+
+def _is_project_member(conn: sqlite3.Connection, record_id: str) -> bool:
+    letter = record_id[:1]
+    if letter in _PROJECT_MEMBER_KINDS:
+        return True
+    return letter == DOC_KIND and SKILL_TAG in _tags_of(conn, record_id)
+
+
+def _link_project_members(conn: sqlite3.Connection, doc_id: str, key: str) -> None:
+    """A project document was just created: every record already tagged ``project:KEY`` gets its
+    ``about`` link to it."""
+    for (rid,) in conn.execute("SELECT id FROM tags WHERE tag = ?", (PROJECT_PREFIX + key,)).fetchall():
+        if rid != doc_id and _is_project_member(conn, rid):
+            conn.execute("INSERT OR IGNORE INTO links(src, dst, rel) VALUES (?, ?, 'about')",
+                         (rid, doc_id))
+
+
+def rebuild_tag_counts(conn: sqlite3.Connection) -> None:
+    """Recompute ``tag_counts`` from ``tags`` (a file written before the index existed). Inside a write."""
+    conn.execute("DELETE FROM tag_counts")
+    conn.execute("INSERT INTO tag_counts(tag, k, n) SELECT tag, substr(id, 1, 1), count(*) "
+                 "FROM tags GROUP BY tag, substr(id, 1, 1)")
+
+
+def _identical_text_tags(conn: sqlite3.Connection, record_id: str, tags, privileged: bool) -> list:
+    """The tags a write of text the record *record_id* already holds may add (contract 6d): from
+    anything but the local CLI it never restages the record or moves it to another project, and
+    leaves a baseline record exactly as it is."""
+    tags = list(tags)
+    if privileged:
+        return tags
+    have = _tags_of(conn, record_id)
+    if f"{STAGE_PREFIX}0" in have:
+        return []
+    keep_project = any(t.startswith(PROJECT_PREFIX) for t in have)
+    out = []
+    for t in tags:
+        s = " ".join(str(t).split())
+        if s.startswith((STAGE_PREFIX, PROPOSED_PREFIX)) or (keep_project and s.startswith(PROJECT_PREFIX)):
+            continue
+        out.append(t)
+    return out
+
+
 def add_row(conn: sqlite3.Connection, kind: str, summary: str, body: str = "", *,
             tags=(), about=(), alias: str | None = None, source: str = "",
-            session: str = "", now: datetime | None = None) -> tuple[str, bool]:
+            session: str = "", now: datetime | None = None,
+            privileged: bool = False) -> tuple[str, bool]:
     """Write one M/R/I row. Returns ``(id, created)``: identical text already
     stored returns that row's id with ``created`` false (its tags and
-    *about* links are still added)."""
+    *about* links are still added). *privileged* is the local CLI: only it may
+    store ``stage:0`` (anything else gets ``stage-proposed:0``)."""
     kind = kind.upper()
     if kind not in MRI_KINDS:
         raise LedgerError(f"row kind must be one of {MRI_KINDS}, got {kind!r}")
@@ -703,19 +1025,23 @@ def add_row(conn: sqlite3.Connection, kind: str, summary: str, body: str = "", *
                                 (digest, kind)).fetchone()
         if existing:
             row_id, created = existing[0], False
+            insert, drop = _guard_tags(conn, row_id, _identical_text_tags(conn, row_id, tags, privileged),
+                                       letter=kind, privileged=privileged, size=len(summary) + len(body))
         else:
             if alias and conn.execute("SELECT 1 FROM mri WHERE alias = ?", (alias,)).fetchone():
                 raise LedgerError(f"alias {alias!r} already names a row")
+            insert, drop = _guard_tags(conn, None, tags, letter=kind, privileged=privileged,
+                                       size=len(summary) + len(body))
             row_id, created = _next_id(conn, kind), True
             conn.execute("INSERT INTO mri(id, kind, alias, summary, body, source, session, hash, "
                          "created, updated) VALUES (?,?,?,?,?,?,?,?,?,?)",
                          (row_id, kind, alias, summary, body, source, session, digest, ts, ts))
             conn.execute("INSERT OR REPLACE INTO uids(id, uid) VALUES (?, ?)", (row_id, new_uid()))
-        for tag in tags:
-            tag = _clean_tag(tag)
-            if tag:
-                conn.execute("INSERT OR IGNORE INTO tags(id, tag) VALUES (?, ?)", (row_id, tag))
-        for target in about:
+        _write_tags(conn, row_id, insert, drop)
+        if insert or drop:
+            sync_project_link(conn, row_id)
+        frozen = not created and not privileged and f"{STAGE_PREFIX}0" in _tags_of(conn, row_id)
+        for target in (() if frozen else about):
             if target and target != row_id:
                 conn.execute("INSERT OR IGNORE INTO links(src, dst, rel) VALUES (?, ?, 'about')",
                              (row_id, target))
@@ -736,7 +1062,7 @@ def _after_row_named_skill(conn: sqlite3.Connection, row_id: str) -> None:
 
 
 def update_row(conn: sqlite3.Connection, row_id: str, *, summary: str | None = None,
-               body: str | None = None, alias: str | None = None) -> Row:
+               body: str | None = None, alias: str | None = None, privileged: bool = False) -> Row:
     with write(conn):
         row = conn.execute("SELECT * FROM mri WHERE id = ? OR alias = ?",
                            (row_id, row_id)).fetchone()
@@ -744,6 +1070,12 @@ def update_row(conn: sqlite3.Connection, row_id: str, *, summary: str | None = N
             raise LedgerError(f"no row {row_id!r}")
         s = one_line(redact(summary)) if summary is not None else row["summary"]
         b = redact(str(body).strip()) if body is not None else row["body"]
+        if f"{STAGE_PREFIX}0" in _tags_of(conn, row["id"]) and (
+                s != row["summary"] or b != row["body"] or alias):
+            if not privileged:
+                raise LedgerError(f"{row['id']} is baseline (stage 0): its text changes only from the "
+                                  "local CLI")
+            _stage_budget_check(conn, row["id"], len(s) + len(b))
         conn.execute("UPDATE mri SET summary=?, body=?, hash=?, alias=COALESCE(?, alias), "
                      "updated=? WHERE id=?",
                      (s, b, content_hash(s, b), alias, now_iso(), row["id"]))
@@ -820,6 +1152,12 @@ def clean_project(project: str | None) -> str:
 
 def project_doc(conn: sqlite3.Connection, key: str, *, exclude: str = "") -> Doc | None:
     """The live project document of *key* (``""`` = the wiki's own), if any."""
+    if key:  # found by its tag: the cost does not grow with the number of documents
+        for (i,) in conn.execute("SELECT id FROM tags WHERE tag = ? AND id >= 'D' AND id < 'E' "
+                                 "ORDER BY id", (PROJECT_PREFIX + key,)).fetchall():
+            if i != exclude and project_of(_tags_of(conn, i)) == key:
+                return get_doc(conn, i)
+        return None
     for d in documents(conn):
         if d.id != exclude and project_of(d.tags) == key:
             return d
@@ -858,7 +1196,7 @@ def _clean_mime(mime: str | None) -> str:
 def add_doc(conn: sqlite3.Connection, title: str, body: str = "", *, tags=(), alias: str | None = None,
             mime: str | None = None, source: str = "", now: datetime | None = None,
             project: str | None = None, merge: bool = False, system: bool = False,
-            uid: str | None = None) -> str:
+            uid: str | None = None, privileged: bool = False) -> str:
     """Write one document (kind ``D``); returns its id.
 
     The lean gate: a project (``project`` or a ``project:KEY`` tag; none means
@@ -905,10 +1243,12 @@ def add_doc(conn: sqlite3.Connection, title: str, body: str = "", *, tags=(), al
                      (doc_id, alias or None, title, body, mime, source,
                       content_hash(title, body), ts, ts))
         conn.execute("INSERT OR REPLACE INTO uids(id, uid) VALUES (?, ?)", (doc_id, uid or new_uid()))
-        for t in tags:
-            t = _clean_tag(t)
-            if t:
-                conn.execute("INSERT OR IGNORE INTO tags(id, tag) VALUES (?, ?)", (doc_id, t))
+        insert, drop = _guard_tags(conn, doc_id, tags, letter=DOC_KIND, privileged=privileged)
+        _write_tags(conn, doc_id, insert, drop)
+        if gate:
+            _link_project_members(conn, doc_id, gate)
+        elif project_of(tags) is None:
+            sync_project_link(conn, doc_id)  # a skill version tagged project:KEY
     return doc_id
 
 
@@ -932,16 +1272,25 @@ def merge_docs(conn: sqlite3.Connection, src_id: str, dst_id: str) -> str:
 
 
 def update_doc(conn: sqlite3.Connection, doc_id: str, *, title: str | None = None,
-               body: str | None = None, alias: str | None = None, mime: str | None = None) -> Doc:
+               body: str | None = None, alias: str | None = None, mime: str | None = None,
+               privileged: bool = False) -> Doc:
     with write(conn):
         r = conn.execute("SELECT * FROM docs WHERE id = ? OR alias = ?", (doc_id, doc_id)).fetchone()
         if r is None:
             raise LedgerError(f"no document {doc_id!r}")
+        have = _tags_of(conn, r["id"])
+        if f"{STAGE_PREFIX}0" in have and not privileged:
+            raise LedgerError(f"{r['id']} is baseline (stage 0): its text changes only from the local CLI")
         t = one_line(redact(title), TITLE_MAX) if title is not None else r["title"]
         if not t:
             raise LedgerError("title is required")
         b = redact(str(body).strip()) if body is not None else r["body"]
         m = _clean_mime(mime) if mime is not None else r["mime"]
+        if f"{STAGE_PREFIX}0" in have and SKILL_TAG in have and body is not None:
+            from shapa import stages
+
+            # an active baseline skill counts its description: an edit may not take it past the cap
+            stages.check_budget(conn, r["id"], stages.description_size(b))
         conn.execute("UPDATE docs SET title=?, body=?, mime=?, hash=?, alias=COALESCE(?, alias), "
                      "updated=? WHERE id=?", (t, b, m, content_hash(t, b), alias, now_iso(), r["id"]))
     return get_doc(conn, r["id"])
@@ -992,31 +1341,21 @@ def remove(conn: sqlite3.Connection, ids, *, tombstone: bool = True,
     return n
 
 
-#: Tags only ``shapa learn`` (and the hook that feeds it) writes: the principle marker, its counters, the
-#: repeat and learned states. Entry points an agent or a sync reaches (``shapa row add|tag``, ``save``, the
-#: local MCP) refuse them; nothing downstream trusts them more than the text they sit on.
-RESERVED_ROW_TAGS = ("principle", "churn", "violation", "repeat", "repeat-checked", "blocked", "learned",
-                     "meta-learning", "dismissed", "soft", "fire")
-RESERVED_ROW_TAG_PREFIXES = ("violations:", "revisions:", "repeats:", "serves:", "repeat-of:", "last-seen:",
-                             "evidence:", "learned-at:", "generalized-into:")
-_INVISIBLE = re.compile("[\u200b-\u200f\u202a-\u202e\u2060-\u2064\ufeff\x00-\x1f\x7f-\x9f]")
-
-
 def normalize_label(text) -> str:
     """Case, width and invisible characters folded away, so a lookalike cannot dodge a reserved name."""
-    import unicodedata
-
-    return " ".join(_INVISIBLE.sub("", unicodedata.normalize("NFKC", str(text or ""))).lower().split())
+    return " ".join(_plain(text or "").split())
 
 
 def check_row_tags(tags) -> None:
+    """Refuse the learning loop's own tags from an entry point an agent reaches: nothing downstream
+    trusts them more than the text they sit on."""
     for t in tags or ():
         n = normalize_label(t)
-        if n in RESERVED_ROW_TAGS or n.startswith(RESERVED_ROW_TAG_PREFIXES):
+        if n in LEARNING_TAGS or n.startswith(LEARNING_TAG_PREFIXES):
             raise LedgerError(f"the tag {str(t)[:40]!r} is the learning loop's own (`shapa learn` writes it)")
 
 
-def tag(conn: sqlite3.Connection, target: str, tags) -> None:
+def tag(conn: sqlite3.Connection, target: str, tags, *, privileged: bool = False) -> None:
     if kind_of(target) == DOC_KIND:
         clean = [t for t in (_clean_tag(x) for x in tags) if t]
         if any(t in RESERVED_DOC_TAGS for t in clean):
@@ -1038,39 +1377,51 @@ def tag(conn: sqlite3.Connection, target: str, tags) -> None:
                 if held is not None:
                     raise DocExists(held.id, held.title, new)
     with write(conn):
-        if kind_of(target) == DOC_KIND and any(
-                _clean_tag(x).startswith(PROJECT_PREFIX) for x in tags):
-            conn.execute("DELETE FROM tags WHERE id = ? AND tag LIKE 'project:%'", (target,))
-        for t in tags:
-            t = _clean_tag(t)
-            if t:
-                conn.execute("INSERT OR IGNORE INTO tags(id, tag) VALUES (?, ?)", (target, t))
+        if not _stored(conn, target):
+            raise LedgerError(f"no record {target!r} to tag")
+        insert, drop = _guard_tags(conn, target, tags, letter=kind_of(target) or "", privileged=privileged)
+        _write_tags(conn, target, insert, drop)
+        _unlink_left_projects(conn, target, drop)
+        if insert or drop:
+            sync_project_link(conn, target)
     if kind_of(target) in MRI_KINDS:
         _after_row_named_skill(conn, target)
 
 
+def _stored(conn: sqlite3.Connection, record_id: str) -> bool:
+    table = {"F": "items", "J": "items", "T": "items", "D": "docs"}.get(record_id[:1], "mri")
+    return conn.execute(f"SELECT 1 FROM {table} WHERE id = ?", (record_id,)).fetchone() is not None
+
+
 def retag(conn: sqlite3.Connection, target: str, *, add=(), drop_prefix: str | None = None,
-          drop=()) -> None:
+          drop=(), privileged: bool = False) -> None:
     """Replace some of a record's tags (every tag starting with *drop_prefix*,
     and each of *drop*), add *add*, and stamp the record updated so a sync
     sees the change. Used for state kept in tags (a skill's status, a
-    feature's rank)."""
+    feature's rank, a record's stage). Dropping ``stage:0`` takes *privileged*."""
     with write(conn):
-        for (t,) in conn.execute("SELECT tag FROM tags WHERE id = ?", (target,)).fetchall():
-            if t in drop or (drop_prefix and t.startswith(drop_prefix)):
-                conn.execute("DELETE FROM tags WHERE id = ? AND tag = ?", (target, t))
-        for t in add:
-            t = _clean_tag(t)
-            if t:
-                conn.execute("INSERT OR IGNORE INTO tags(id, tag) VALUES (?, ?)", (target, t))
+        have = set(_tags_of(conn, target))
+        gone = {t for t in have if t in drop or (drop_prefix and t.startswith(drop_prefix))}
+        if f"{STAGE_PREFIX}0" in gone and not privileged:
+            raise LedgerError(f"{target} is baseline (stage 0): it leaves the baseline only from the "
+                              "local CLI")
+        insert, moved = _guard_tags(conn, target, add, letter=kind_of(target) or "",
+                                    privileged=privileged, have=have - gone)
+        _write_tags(conn, target, insert, gone | set(moved))
+        _unlink_left_projects(conn, target, gone | set(moved))
+        if insert or gone or moved:
+            sync_project_link(conn, target)
         table = {"F": "items", "J": "items", "T": "items", "D": "docs"}.get(target[:1], "mri")
         conn.execute(f"UPDATE {table} SET updated = ? WHERE id = ?", (now_iso(), target))
 
 
-def link(conn: sqlite3.Connection, src: str, dst: str, rel: str) -> None:
+def link(conn: sqlite3.Connection, src: str, dst: str, rel: str, *, privileged: bool = False) -> None:
     if rel not in LINK_RELS:
         raise LedgerError(f"rel must be one of {LINK_RELS}")
     with write(conn):
+        if (rel == "supersedes" and not privileged
+                and f"{STAGE_PREFIX}0" in _tags_of(conn, dst)):
+            raise LedgerError(f"{dst} is baseline (stage 0): only the local CLI may supersede it")
         conn.execute("INSERT OR IGNORE INTO links(src, dst, rel) VALUES (?, ?, ?)", (src, dst, rel))
     if rel == "about" and kind_of(src) in MRI_KINDS:
         _after_row_named_skill(conn, src)
@@ -1206,8 +1557,12 @@ def sweep(conn: sqlite3.Connection, *, vectors: dict[str, list[float]] | None = 
             iid = parents.get(iid)
     live = conn.execute("SELECT id FROM items WHERE status != 'closed' AND created < ? "
                         "ORDER BY kind, CAST(SUBSTR(id, 2) AS INTEGER)", (cutoff,)).fetchall()
+    # the operator's task list: an open human_task or agent_task never expires, in any wiki
+    kept_tasks = {r[0] for r in conn.execute(
+        "SELECT t.id FROM tags t JOIN items i ON i.id = t.id WHERE t.tag IN (?, ?) AND i.kind = 'T' "
+        "AND i.status != 'closed'", tuple(OWNER_TAGS))}
     for (iid,) in live:
-        if iid in active or iid in report.expired:
+        if iid in active or iid in report.expired or iid in kept_tasks:
             continue
         report.expired.extend(c for c in close(conn, iid, "expired", now=now_dt)
                               if c not in report.expired)
@@ -1250,9 +1605,21 @@ def sweep(conn: sqlite3.Connection, *, vectors: dict[str, list[float]] | None = 
                                                          newer.summary + " " + newer.body)
                     sim = 1.0 if sim >= 0.9 else 0.0
                 if sim >= DUP_COSINE:
-                    _merge_into(conn, newer.id, older.id)
-                    gone.add(newer.id)
-                    report.duplicates.append((newer.id, older.id))
+                    # the baseline is never handed to another row's text: of a pair where exactly
+                    # one is stage 0, that one stays (its text untouched) and the other goes
+                    keep, drop = older, newer
+                    if f"{STAGE_PREFIX}0" in newer.tags and f"{STAGE_PREFIX}0" not in older.tags:
+                        keep, drop = newer, older
+                    elif ("principle" in newer.tags and "principle" not in older.tags
+                          and f"{STAGE_PREFIX}0" not in older.tags):
+                        keep, drop = newer, older   # the evidence rides on the principle
+                    if "principle" in drop.tags and older.hash != newer.hash:
+                        continue  # a principle's evidence is never dropped with a near-duplicate
+                    _merge_into(conn, drop.id, keep.id)
+                    gone.add(drop.id)
+                    report.duplicates.append((drop.id, keep.id))
+                    if drop is older:
+                        break
                 elif kind == "R" and vectors and sim >= CONFLICT_COSINE:
                     link(conn, older.id, newer.id, "conflicts")
                     report.conflicts.append((older.id, newer.id))
@@ -1266,6 +1633,8 @@ def sweep(conn: sqlite3.Connection, *, vectors: dict[str, list[float]] | None = 
             created = _parse_iso(r.created)
             count, last = uses.get(r.id, (0, None))
             last_dt = _parse_iso(last)
+            if any(t in KEPT_MEMORY_TAGS or t.startswith(STAGE_PREFIX) for t in r.tags):
+                continue  # ideas and decisions are written to be kept; a staged memory is served
             if created and created < stale_cut and (last_dt is None or last_dt < stale_cut) and not count:
                 report.stale_memories.append(r.id)
         delete(conn, report.stale_memories)
@@ -1288,6 +1657,11 @@ def _merge_into(conn, src: str, dst: str) -> None:
     the result (counts add, revisions and last-seen keep the larger), and no ``repeat-of`` points at
     the row itself: others that pointed at *src* now point at *dst*."""
     with write(conn):
+        if f"{STAGE_PREFIX}0" in _tags_of(conn, dst):
+            return  # nothing moves onto the baseline: no tag, no link (a `supersedes` could delete it)
+        # A merge never copies a stage marker onto another row (the kept row's own stands), and a
+        # record belongs to one project: the kept row's own wins there too.
+        keeps_project = any(t.startswith(PROJECT_PREFIX) for t in _tags_of(conn, dst))
         have = {r[0] for r in conn.execute("SELECT tag FROM tags WHERE id = ?", (dst,))}
         other = {r[0] for r in conn.execute("SELECT tag FROM tags WHERE id = ?", (src,))}
         for prefix in _SUM_TAGS + _MAX_TAGS:
@@ -1302,7 +1676,9 @@ def _merge_into(conn, src: str, dst: str) -> None:
             conn.execute("INSERT OR IGNORE INTO tags(id, tag) VALUES (?, ?)", (dst, prefix + new))
         conn.execute("INSERT OR IGNORE INTO tags(id, tag) SELECT ?, tag FROM tags WHERE id = ? "
                      "AND tag NOT LIKE 'violations:%' AND tag NOT LIKE 'repeats:%' AND tag NOT LIKE 'evidence:%' "
-                     "AND tag NOT LIKE 'revisions:%' AND tag NOT LIKE 'last-seen:%'", (dst, src))
+                     "AND tag NOT LIKE 'revisions:%' AND tag NOT LIKE 'last-seen:%' "
+                     "AND substr(tag, 1, 6) != 'stage:' AND substr(tag, 1, 15) != 'stage-proposed:' "
+                     "AND (? = 0 OR substr(tag, 1, 8) != 'project:')", (dst, src, int(keeps_project)))
         conn.execute("DELETE FROM tags WHERE id = ? AND tag IN (?, ?)", (dst, f"repeat-of:{dst}", f"repeat-of:{src}"))
         conn.execute("UPDATE OR IGNORE tags SET tag = ? WHERE tag = ?", (f"repeat-of:{dst}", f"repeat-of:{src}"))
         conn.execute("INSERT OR IGNORE INTO links(src, dst, rel) SELECT ?, dst, rel FROM links "

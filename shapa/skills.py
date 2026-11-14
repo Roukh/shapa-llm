@@ -31,11 +31,13 @@ CLI::
     shapa skill add NAME --scope ... --description TEXT [--body TEXT | --file PATH | stdin]
     shapa skill update NAME --scope ... [--description TEXT] [--body ...] [--activate]
     shapa skill activate NAME [--version N] --scope ...
+    shapa skill uproot NAME [--json]       # from a repo: move its skill to the global wiki
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import sqlite3
 import sys
@@ -158,14 +160,28 @@ def as_dict(v: SkillVersion, body: bool = False) -> dict:
 
 def _set_status(conn, v: SkillVersion, status: str) -> None:
     if v.status != status:
-        db.retag(conn, v.doc_id, add=[STATUS_TAG + status], drop_prefix=STATUS_TAG)
+        # activation is the operator's (CLI only), so it may touch a baseline version's tags
+        db.retag(conn, v.doc_id, add=[STATUS_TAG + status], drop_prefix=STATUS_TAG, privileged=True)
+
+
+def _inherited_stage(conn, prev: SkillVersion | None, privileged: bool) -> list[str]:
+    """The stage a new version takes from the one before it, so the baseline survives an
+    update. ``stage:0`` is carried only by the operator's own CLI; a lesson or an agent's
+    version of a baseline skill is *proposed* for it."""
+    if prev is None:
+        return []
+    n = db.stage_of(db._tags_of(conn, prev.doc_id))
+    if n is None:
+        return []
+    return [f"{db.STAGE_PREFIX}{n}"] if n or privileged else [db.STAGE_PROPOSED]
 
 
 def add_version(conn, name: str, description: str, body: str, *, new: bool = False,
-                active: bool = False, source: str = "skill") -> SkillVersion:
+                active: bool = False, source: str = "skill", privileged: bool = False) -> SkillVersion:
     """Write the next version of a skill. ``new`` starts a skill (refused when it
     exists), otherwise the skill must exist. ``active`` makes it the active
-    version (the one before becomes ``previous``); otherwise it is ``pending``."""
+    version (the one before becomes ``previous``); otherwise it is ``pending``.
+    *privileged* (the local CLI) lets a new version of a baseline skill stay on stage 0."""
     name = _name(name)
     existing = versions(conn, name)
     if new and existing:
@@ -186,8 +202,10 @@ def add_version(conn, name: str, description: str, body: str, *, new: bool = Fal
         raise db.LedgerError(f"a skill is at most {db.DOC_BODY_MAX} bytes")
     doc_id = db.add_doc(conn, f"{name} v{number}", full, source=source, system=True,
                         alias=f"{NAME_TAG}{name}.v{number}",
+                        privileged=privileged,
                         tags=[db.SKILL_TAG, f"{NAME_TAG}{name}", f"{VERSION_TAG}{number}",
-                              f"{STATUS_TAG}{'pending'}"])
+                              f"{STATUS_TAG}{'pending'}",
+                              *_inherited_stage(conn, existing[-1] if existing else None, privileged)])
     version = get(conn, name, number)
     if active:
         version = activate(conn, name, number)
@@ -210,11 +228,93 @@ def activate(conn, name: str, version: int | None = None) -> SkillVersion:
         target = next((v for v in vs if v.version == int(version)), None)
         if target is None:
             raise db.LedgerError(f"no version {version} of {name!r}")
-    for v in vs:
-        if v.status == "active" and v.doc_id != target.doc_id:
-            _set_status(conn, v, "previous")
+    from shapa import stages
+
+    olds = [v for v in vs if v.status == "active" and v.doc_id != target.doc_id]
+    stage = db.stage_of(db._tags_of(conn, target.doc_id))
+    if stage is None and olds:  # the baseline survives an activation
+        stage = db.stage_of(db._tags_of(conn, olds[-1].doc_id))
+    if stage == 0:  # refuse before changing anything
+        left = sum(stages.record_size(conn, i) for i in stages.baseline_ids(conn)
+                   if i not in {o.doc_id for o in olds} | {target.doc_id})
+        if left + len(target.description) > db.BASELINE_BUDGET:
+            raise db.LedgerError(f"activating {name} v{target.version} would take the baseline past "
+                                 f"{db.BASELINE_BUDGET} characters (`shapa stage list`)")
+    for v in olds:
+        _set_status(conn, v, "previous")
+    if stage is not None and db.stage_of(db._tags_of(conn, target.doc_id)) is None:
+        # activating is the operator reviewing the version: the baseline it replaces passes to it
+        db.retag(conn, target.doc_id, add=[f"{db.STAGE_PREFIX}{stage}"], drop=[db.STAGE_PROPOSED],
+                 privileged=True)
     _set_status(conn, target, "active")
     return get(conn, name, target.version)
+
+
+# --- uprooting a repo's skill to the global wiki ---------------------------------------------------
+
+def _db_file(conn) -> str:
+    row = conn.execute("PRAGMA database_list").fetchone()
+    return row[2] if row else ""
+
+
+def _same_file(a, b) -> bool:
+    fa, fb = _db_file(a), _db_file(b)
+    return bool(fa) and bool(fb) and Path(fa).resolve() == Path(fb).resolve()
+
+
+def _carried_tags(tags) -> list[str]:
+    """The tags a skill version takes along besides its four own: its stage (``stage:0`` never
+    travels, it is *proposed* on the other side) and whatever else it carries."""
+    out = []
+    for t in tags:
+        if t == db.SKILL_TAG or t.startswith((NAME_TAG, VERSION_TAG, STATUS_TAG)) or t == db.STAGE_PROPOSED:
+            continue
+        out.append(db.STAGE_PROPOSED if t == f"{db.STAGE_PREFIX}0" else t)
+    return out
+
+
+def uproot(repo, glob, name: str) -> dict:
+    """Move the repo wiki's skill *name* to the global wiki, so every repo has it and it exists once.
+
+    No global skill of that name: every version is recreated there with its number, status, body
+    and tags. One already there: the repo's active version (else its latest) is filed as the next
+    version, ``pending`` (nothing active changes; a body the global skill already holds files
+    nothing). The repo's versions are deleted only after the global side reads back as expected, so
+    a failed write loses nothing. ``stage:0`` becomes ``stage-proposed:0`` on the way. Local CLI only:
+    it reaches the hosted store as ordinary puts and tombstones."""
+    name = _name(name)
+    if _same_file(repo, glob):
+        raise db.LedgerError("this is the global wiki already: run uproot from a repo")
+    mine = versions(repo, name)
+    if not mine:
+        return {"name": name, "moved": 0, "filed": [], "note": f"no skill {name!r} in this repo's wiki"}
+    theirs = versions(glob, name)
+    filed: list[int] = []
+    if not theirs:
+        for v in mine:
+            doc = db.get_doc(repo, v.doc_id)
+            db.add_doc(glob, doc.title, doc.body, source="uproot", system=True,
+                       alias=f"{NAME_TAG}{name}.v{v.version}", privileged=True,
+                       tags=[db.SKILL_TAG, f"{NAME_TAG}{name}", f"{VERSION_TAG}{v.version}",
+                             f"{STATUS_TAG}{v.status}", *_carried_tags(doc.tags)])
+            filed.append(v.version)
+        got = [(v.version, v.status, v.body) for v in versions(glob, name)]
+        ok = got == [(v.version, v.status, v.body) for v in mine]
+    else:
+        cand = next((v for v in reversed(mine) if v.status == "active"), mine[-1])
+        if not any(t.body == cand.body for t in theirs):
+            filed.append(add_version(glob, name, cand.description, cand.body, source="uproot",
+                                     privileged=True).version)
+        ok = any(t.body == cand.body for t in versions(glob, name))
+    if not ok:
+        raise db.LedgerError(f"the global wiki did not read back as written: the repo's {name!r} is kept")
+    db.delete(repo, [v.doc_id for v in mine])
+    return {"name": name, "moved": len(mine), "filed": filed, "into_existing": bool(theirs)}
+
+
+def shadowing(repo, glob) -> list[str]:
+    """Names a repo wiki's skill shares with a global one (the repo's copy hides the global's)."""
+    return sorted(set(_all(repo)) & set(_all(glob)))
 
 
 # --- lessons from rows --------------------------------------------------------------------------
@@ -299,8 +399,30 @@ def run_skill(argv: list[str]) -> int:
     ac.add_argument("name")
     ac.add_argument("--version", type=int)
     ac.add_argument("--scope", required=True, **scope_kw)
+    ur = add("uproot", help="move this repo's skill to the global wiki, so every repo has it")
+    ur.add_argument("name")
+    ur.add_argument("--json", action="store_true")
     args = p.parse_args(argv)
     cmd = args.cmd or "list"
+
+    if cmd == "uproot":
+        repo, glob = _connect(scoped_root("repo", args.cwd)), _connect(scoped_root("global", args.cwd))
+        try:
+            res = uproot(repo, glob, args.name)
+        finally:
+            repo.close()
+            glob.close()
+        if args.json:
+            print(json.dumps(res, indent=2))
+        elif not res["moved"]:
+            print(res["note"])
+        elif res["into_existing"]:
+            print(f"{res['name']}: " + (f"filed v{res['filed'][0]} as pending on the global skill"
+                                        if res["filed"] else "the global skill already holds this text")
+                  + "; the repo copy is gone")
+        else:
+            print(f"{res['name']}: {res['moved']} version(s) moved to the global wiki; the repo copy is gone")
+        return 0
 
     if cmd in ("list", "show"):
         scope = getattr(args, "scope", None)
@@ -308,6 +430,15 @@ def run_skill(argv: list[str]) -> int:
             (wr.kind, Path(wr.path)) for wr in _roots(args.cwd)
             if wr.kind in ("global", "repo") and db.exists(wr.path)]
         found = False
+        in_global: set[str] = set()
+        if cmd == "list" and any(label == "repo" for label, _ in targets):
+            for label, root in targets:
+                if label == "global":
+                    gconn = _connect(root)
+                    try:
+                        in_global = set(_all(gconn))
+                    finally:
+                        gconn.close()
         for label, root in targets:
             conn = _connect(root)
             try:
@@ -316,6 +447,9 @@ def run_skill(argv: list[str]) -> int:
                         pend = f", pending v{', v'.join(map(str, s['pending']))}" if s["pending"] else ""
                         act = f"active v{s['active']}" if s["active"] else "none active"
                         print(f"{s['name']} [{label}] {act}{pend} - {s['description']}")
+                        if label == "repo" and s["name"] in in_global:
+                            print(f"  note: this repo's {s['name']} shadows the global skill of the same name; "
+                                  f"`shapa skill uproot {s['name']}` moves it to global")
                     continue
                 v = get(conn, args.name, args.version)
                 if v is not None:
@@ -337,7 +471,7 @@ def run_skill(argv: list[str]) -> int:
         if body is None:
             raise CommandError("a body is required: --body, --file, or piped stdin")
         v = add_version(conn, args.name, args.description, body, new=cmd == "add",
-                        active=cmd == "add" or args.activate, source="cli")
+                        active=cmd == "add" or args.activate, source="cli", privileged=True)
         print(_line(v))
     finally:
         conn.close()

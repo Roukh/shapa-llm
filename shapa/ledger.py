@@ -537,6 +537,28 @@ def _subcommand_adder(sub):
     return add
 
 
+def _add_task_cmd(args) -> int:
+    """``shapa ledger add human_task|agent_task TITLE [--scope global|repo]``: a task alias, or
+    any task into the global wiki (which holds tasks only, each standalone and owned)."""
+    from shapa import tasks
+
+    scope = args.scope or "repo"
+    owner = db.OWNER_TAGS.get(args.kind, "")
+    if scope == "global" and args.kind.upper() in ("F", "J"):
+        raise CommandError("the global wiki holds tasks only: features and jobs are bound to a "
+                           "branch and a commit, so they live in a repo wiki")
+    if args.verify:
+        raise CommandError("a task alias takes no --verify")
+    conn = _connect(scoped_root(scope, args.cwd), create=scope == "global")
+    try:
+        tid, created = tasks.add_task(conn, args.title, owner, args.body or "", project=args.project,
+                                      standalone_only=scope == "global", parent=args.parent)
+    finally:
+        conn.close()
+    print(tid if created else f"{tid} (the same open task is already stored)")
+    return 0
+
+
 def ledger_main(argv: list[str]) -> int:
     p = argparse.ArgumentParser(prog="shapa ledger", description="The work ledger: features "
                                 "(a new capability: branch + PR), jobs (one commit; fixes, docs "
@@ -546,24 +568,33 @@ def ledger_main(argv: list[str]) -> int:
     add = _subcommand_adder(sub)
     ls = add("list", help="live features with their jobs and tasks (default)")
     ls.add_argument("--all", action="store_true", help="include closed items")
-    a = add("add", help="add a feature, job or task")
-    a.add_argument("kind", choices=["F", "J", "T", "f", "j", "t"])
+    ls.add_argument("--scope", choices=["repo", "global"], default=None, help="the global wiki holds tasks")
+    a = add("add", help="add a feature, job or task (human_task and agent_task are task aliases)")
+    a.add_argument("kind", choices=["F", "J", "T", "f", "j", "t", *db.OWNER_TAGS])
     a.add_argument("title")
     a.add_argument("--parent")
     a.add_argument("--body", default="")
     a.add_argument("--verify", help="shell command that exits 0 only when the item is done")
+    a.add_argument("--scope", choices=["repo", "global"], default=None,
+                   help="where it goes (default repo); the global wiki takes human_task and "
+                        "agent_task only, standalone")
+    a.add_argument("--project", default=None, help="a task: the project it belongs to (project:KEY)")
     for name in ("claim", "release"):
         c = add(name)
         c.add_argument("ids", nargs="+")
         c.add_argument("--session", default="")
+        c.add_argument("--scope", choices=["repo", "global"], default=None)
     cl = add("close", help="close an item (runs its verify first)")
     cl.add_argument("id")
     cl.add_argument("--reason", default="agent", choices=list(db.CLOSE_REASONS))
     cl.add_argument("--ref")
+    cl.add_argument("--scope", choices=["repo", "global"], default=None,
+                    help="close a task of the global wiki")
     cl.add_argument("--no-verify", action="store_true",
                     help="operator closes only: skip the verify command")
     t = add("tree")
     t.add_argument("id")
+    t.add_argument("--scope", choices=["repo", "global"], default=None)
     br = add("branch", help="name a feature's branch and record it")
     br.add_argument("id")
     br.add_argument("--name", help="the branch name (default F<n>-<title slug>)")
@@ -650,7 +681,9 @@ def ledger_main(argv: list[str]) -> int:
                 conn.close()
         return 0
 
-    root = repo_root(args.cwd)
+    if cmd == "add" and (args.scope == "global" or args.kind in db.OWNER_TAGS):
+        return _add_task_cmd(args)
+    root = scoped_root(getattr(args, "scope", None) or "repo", args.cwd)
     if cmd == "close":
         return cmd_close(root, args.id, args.reason, args.ref, args.no_verify)
     conn = _connect(root, create=False)
@@ -658,8 +691,9 @@ def ledger_main(argv: list[str]) -> int:
         if cmd == "list":
             _print_list(conn, getattr(args, "all", False))
         elif cmd == "add":
+            key = db.clean_project(args.project)
             new = db.add_item(conn, args.kind, args.title, parent=args.parent, body=args.body,
-                              verify=args.verify)
+                              verify=args.verify, tags=[db.PROJECT_PREFIX + key] if key else ())
             print(new)
         elif cmd in ("claim", "release"):
             for i in args.ids:
@@ -789,7 +823,8 @@ def row_main(argv: list[str]) -> int:
         conn = _connect(root, create=True)
         try:
             rid, created = db.add_row(conn, args.kind, args.summary, args.body, tags=args.tag,
-                                      about=args.about, alias=args.alias, source=args.source)
+                                      about=args.about, alias=args.alias, source=args.source,
+                                      privileged=True)  # the local CLI is the operator's
         finally:
             conn.close()
         print(rid if created else f"{rid} (identical row already stored)")
@@ -800,16 +835,17 @@ def row_main(argv: list[str]) -> int:
     conn = _connect(root)
     try:
         if cmd == "edit":
-            r = db.update_row(conn, args.id, summary=args.summary, body=args.body, alias=args.alias)
+            r = db.update_row(conn, args.id, summary=args.summary, body=args.body, alias=args.alias,
+                              privileged=True)
             print(f"{r.id} {r.summary}")
         elif cmd == "rm":
             print(f"removed {db.delete(conn, args.ids)}")
         elif cmd == "link":
-            db.link(conn, args.src, args.dst, args.rel)
+            db.link(conn, args.src, args.dst, args.rel, privileged=True)
             print(f"{args.src} {args.rel} {args.dst}")
         elif cmd == "tag":
             db.check_row_tags(args.tags)
-            db.tag(conn, args.id, args.tags)
+            db.tag(conn, args.id, args.tags, privileged=True)
             print(f"{args.id}: {', '.join(db._tags_of(conn, args.id))}")
     finally:
         conn.close()

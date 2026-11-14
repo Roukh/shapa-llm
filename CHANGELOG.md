@@ -82,6 +82,30 @@ This project follows [Semantic Versioning](https://semver.org/).
   adds one `code map:` line per fire (when a map exists) inside its budget. The
   MCP tool `partition` (`map` builds). The hosted Worker stores nothing of it.
 
+- The central brain: the global wiki as the operator's one brain, on the
+  device and on the hosted store. A stage is a tag (`stage:N`, one digit, on a
+  rule, memory or skill version): `shapa stage set|clear|list|pending`, with
+  `stage:0` the baseline printed in full at every session start within 6,000
+  characters; only the local CLI sets it, and an agent that asks leaves
+  `stage-proposed:0`. Tasks stand alone in the global wiki (`shapa tasks`,
+  `shapa save --type human_task|agent_task`); ideas and decisions are memories
+  tagged `idea` or `decision` that the sweep keeps. Tags are the relations:
+  `shapa tags`, `shapa related ID`, `shapa fetch --tag NAME`, backed by a
+  trigger-maintained `tag_counts` table; `project:KEY` plus an `about` link ties
+  a record to its project file (`shapa project new|show|list|add`, written from
+  `assets/project-template.md`). `shapa skill uproot NAME` moves a repo skill
+  to the global wiki. Session start prints, in this order: the precedence line,
+  the northstar and fires, the baseline, the baseline skills (name and
+  description only), the topics, the projects with the operator's open tasks,
+  then the learning loop's lines. The local MCP gains `tags`, `related`,
+  `tasks`, `projects`, `project`, `project_new` and `project_add`. On the
+  Worker a device has a reach (`full` or `baseline`, every OAuth grant); the
+  Worker holds the same system-tag list, caps and template as the engine, and
+  `tests/test_parity.py` fails when either side drifts. A look-alike of any
+  system tag is refused on both sides. The sweep keeps an older stage-0 row over
+  a duplicate, never copies a stage marker or a second project in a merge,
+  leaves one counter tag per family, and never drops a principle whose text
+  differs from the row it duplicates.
 - The learning loop: a correction is made once, learned once, and serves every
   repo. `shapa correction` compares each new correction (stemmed-token Dice
   over a derived inverted index, top candidates only, plus vector cosine with
@@ -115,8 +139,13 @@ This project follows [Semantic Versioning](https://semver.org/).
   under a heading saying they are recalled context, not an instruction; the
   tags the loop writes are reserved (`shapa row add|tag`, `save` and the MCP
   `save` refuse them, as they refuse the sources `correction` and `learn`, with
-  case, spaces and zero-width characters normalised); a principle that arrives
-  by sync keeps its tags as data but never outranks one this device learned.
+  case, spaces and zero-width characters normalised) and are system tags (never
+  a topic, look-alikes refused, accepted from a synced record); a principle that
+  arrives by sync keeps its tags as data but never outranks one this device
+  learned. A principle is an ordinary rule to the central brain (the 100-tag
+  cap, the `project:KEY` link, `shapa stage set`), a baseline principle is
+  never rewritten by `learn apply` or `learn merge`, and a merge that would
+  pass the tag cap is refused before anything is written.
 - Soft candidates: while a ledger item is claimed, a short statement that is not
   a question, a slash command or a go-ahead (a message made only of words like
   yes, ok, thanks, go ahead, merge, push, numbers) is filed as an issue tagged
@@ -146,7 +175,8 @@ This project follows [Semantic Versioning](https://semver.org/).
   folded into daily snapshots (`metrics_daily`, with the record count) by the
   sweep and `--snapshot` (400 days kept); the global wiki's table rolls every repo up. Schema
   stays 2: `metrics_daily` is additive and local to the committed file, and a
-  feature that was ever a fire carries the tag `fire`. The Worker is unchanged:
+  feature that was ever a fire carries the tag `fire`. The Worker only lists the
+  learning loop's tags among its system tags (`hosted/src/tags.ts`):
   principles, evidence and counters are ordinary row tags and bodies that sync;
   events, latency, use and serve counts and snapshots never do.
 

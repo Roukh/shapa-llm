@@ -37,15 +37,19 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from shapa import config
+from shapa import config, db
 from shapa.validate import validate_node
 
 #: Every scope this CLI accepts. ``external`` is CLI-only (see module
 #: docstring) - the note ends up stored as ``scope: repo`` regardless.
 CLI_SCOPES = {"global", "repo", "external"}
-VALID_NOTE_TYPES = {"memory", "rule", "issue", "document", "idea"}
+#: ``idea`` and ``decision`` are memories carrying that tag; ``human_task`` and ``agent_task`` are
+#: ``T`` items carrying it (see :mod:`shapa.tasks`). One list for the CLI and the MCP tool.
+TAG_ALIAS_TYPES = ("idea", "decision")
+TASK_TYPES = tuple(db.OWNER_TAGS)
+VALID_NOTE_TYPES = {"memory", "rule", "issue", "document", *TAG_ALIAS_TYPES, *TASK_TYPES}
 #: Types that exist only in a format-4 database, never as a note file.
-DB_ONLY_TYPES = {"document", "idea"}
+DB_ONLY_TYPES = {"document", *TAG_ALIAS_TYPES, *TASK_TYPES}
 MAX_SUMMARY_CHARS = 160  # F04
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
@@ -84,30 +88,41 @@ def infer_scope(start: str | Path | None, applies_to: str | None) -> str:
 
 
 def save_row(root, scope: str, note_type: str, summary: str, body: str, tags, alias=None,
-             project: str | None = None, merge: bool = False) -> dict:
+             project: str | None = None, merge: bool = False, privileged: bool = False) -> dict:
     """Format 4: a memory/rule/issue is a row in the wiki's database, never a
     note file. *alias* keeps a caller-supplied slug findable by ``get``. A
-    document obeys the lean gate: one per *project* (see :func:`db.add_doc`)."""
-    from shapa import db
+    document obeys the lean gate: one per *project* (see :func:`db.add_doc`).
+    *privileged* is the local CLI: only it may store ``stage:0`` (anything else is
+    stored as ``stage-proposed:0``). The learning loop's own tags are refused from every
+    caller (see :func:`db.check_row_tags`)."""
+    from shapa import tasks
 
     try:
         db.check_row_tags(tags)
     except db.LedgerError as exc:
         return {"error": str(exc)}
+    if not privileged and any(" ".join(str(t).split()).startswith("rank:") for t in (tags or [])):
+        # the order of the operator's list is the operator's: an agent cannot rank its own task first
+        return {"error": "rank:N is set by the operator (`shapa row tag ID rank:N`), not on a save"}
     conn = db.connect(root)
     created, merged = True, False
     try:
         if note_type == "document":
             known = {d.id for d in db.documents(conn)}
             rid = db.add_doc(conn, summary, body, tags=tags or [], alias=alias or None, source="save",
-                             project=project, merge=merge)
+                             project=project, merge=merge, privileged=privileged)
             merged = rid in known
+        elif note_type in TASK_TYPES:
+            rid, created = tasks.add_task(conn, summary, db.OWNER_TAGS[note_type], body, project=project,
+                                          tags=tags or [], standalone_only=scope == "global")
         else:
-            # An idea is a memory tagged `idea`, never a kind of its own.
-            kind = {"memory": "M", "idea": "M", "rule": "R", "issue": "I"}[note_type]
-            all_tags = list(tags or []) + (["idea"] if note_type == "idea" else [])
+            # An idea or a decision is a memory carrying that tag, never a kind of its own.
+            kind = {"memory": "M", "rule": "R", "issue": "I"}.get(note_type, "M")
+            key = db.clean_project(project)
+            all_tags = (list(tags or []) + ([note_type] if note_type in TAG_ALIAS_TYPES else [])
+                        + ([db.PROJECT_PREFIX + key] if key else []))
             rid, created = db.add_row(conn, kind, summary, body, tags=all_tags,
-                                      alias=alias or None, source="save")
+                                      alias=alias or None, source="save", privileged=privileged)
     except db.DocExists as exc:
         return {"error": str(exc), "existing": exc.existing}
     except db.LedgerError as exc:
@@ -132,6 +147,8 @@ def save_note(
     id: str | None = None,  # noqa: A002 - matches the MCP `save` tool's public name
     applies_to: str | None = None,
     start: str | Path | None = None,
+    project: str | None = None,
+    privileged: bool = False,
 ) -> dict[str, Any]:
     """Write one note. Returns ``{"id", "path", "scope", ...}`` on success,
     or ``{"error": "..."}`` on any ordinary bad-input case - this function
@@ -160,7 +177,7 @@ def save_note(
         return {"error": f"summary must be a single line, <={MAX_SUMMARY_CHARS} chars (F04)"}
 
     body = (body or "").strip()
-    if not body:
+    if not body and note_type not in TASK_TYPES:  # a task can be its title alone
         return {"error": "body is required"}
 
     if note_type not in VALID_NOTE_TYPES:
@@ -202,10 +219,9 @@ def save_note(
         stored_scope = "repo"
         collision_start = start
 
-    from shapa import db
-
     if db.exists(root):
-        return save_row(root, stored_scope, note_type, summary, body, tags, alias=(id or "").strip())
+        return save_row(root, stored_scope, note_type, summary, body, tags, alias=(id or "").strip(),
+                        project=project, privileged=privileged)
     if note_type in DB_ONLY_TYPES:
         return {"error": f"type {note_type!r} needs a format-4 wiki (a shapa.db) - "
                          f"run `shapa upgrade {root}` first"}
@@ -290,9 +306,14 @@ def main(argv: list[str] | None = None) -> None:
         help="Repo name to write into. Implies --scope external.",
     )
     parser.add_argument("--summary", required=True, help="One line, <=160 chars.")
-    parser.add_argument("--body", required=True, help="The note's full body.")
+    parser.add_argument("--body", default="", help="The note's full body (a task may have none).")
     parser.add_argument("--type", dest="note_type", default="memory",
-                        choices=sorted(VALID_NOTE_TYPES))
+                        choices=sorted(VALID_NOTE_TYPES),
+                        help="idea and decision are memories tagged so; human_task and agent_task "
+                             "are tasks (the global wiki holds tasks, standalone).")
+    parser.add_argument("--project", default=None,
+                        help="the project this belongs to (the project:KEY tag, and an about link "
+                             "to the project's document)")
     parser.add_argument("--tags", default=None, help="Comma-separated tags.")
     parser.add_argument("--id", default=None, help="Explicit id (default: slugified summary).")
     parser.add_argument("--root", default=None,
@@ -304,7 +325,8 @@ def main(argv: list[str] | None = None) -> None:
     result = save_note(
         args.scope, args.summary, args.body,
         note_type=args.note_type, tags=tags, id=args.id,
-        applies_to=args.applies_to, start=args.root,
+        applies_to=args.applies_to, start=args.root, project=args.project,
+        privileged=True,  # the local CLI is the operator's (it may set stage:0)
     )
     if "error" in result:
         print(f"shapa save: {result['error']}", file=sys.stderr)

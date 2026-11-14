@@ -18,9 +18,14 @@ export type Owner = "human" | "agent" | "";
 
 const STAGE_RE = /^stage:([0-9])$/;
 
+/** The learning loop's own tags (`shapa learn` writes them on a principle and on a correction): the same list as the
+ *  local engine's `db.LEARNING_TAGS` and `db.LEARNING_TAG_PREFIXES` (tests/test_parity.py keeps the two equal). */
+export const LEARNING_TAGS: readonly string[] = ["principle", "churn", "violation", "repeat", "repeat-checked", "blocked", "learned", "meta-learning", "dismissed", "soft", "fire"];
+export const LEARNING_PREFIXES: readonly string[] = ["violations:", "revisions:", "repeats:", "serves:", "repeat-of:", "last-seen:", "evidence:", "learned-at:", "generalized-into:"];
+
 /** Tags that are the engine's, not topics: never listed in TOPICS or the tag index (unless asked). */
-export const SYSTEM_TAGS: readonly string[] = ["skill", "focus", "human_task", "agent_task", IDEA_TAG, DECISION_TAG];
-export const SYSTEM_PREFIXES: readonly string[] = [STAGE_PREFIX, PROPOSED_PREFIX, "skill:", "v:", "status:", RANK_PREFIX, PROJECT_PREFIX];
+export const SYSTEM_TAGS: readonly string[] = ["skill", "focus", "human_task", "agent_task", IDEA_TAG, DECISION_TAG, ...LEARNING_TAGS];
+export const SYSTEM_PREFIXES: readonly string[] = [STAGE_PREFIX, PROPOSED_PREFIX, "skill:", "v:", "status:", RANK_PREFIX, PROJECT_PREFIX, ...LEARNING_PREFIXES];
 
 export function isSystemTag(tag: string): boolean {
   return SYSTEM_TAGS.includes(tag) || SYSTEM_PREFIXES.some((p) => tag.startsWith(p));
