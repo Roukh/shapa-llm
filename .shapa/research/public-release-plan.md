@@ -5,16 +5,20 @@ created: "2026-10-06T21:40:00Z"
 consequence: 8
 locus: output
 scope: repo
-summary: Plan for a public shapa: install, global init, repo init and harness connect as commands; repo polish; feature candidates; open decisions.
+summary: What a public shapa needs - install, init and harness connect as commands, repo polish, feature candidates - from the 2026-10-06 research round.
 ---
 
-# Public release plan (2026-10-06)
+# Public release (research 2026-10-06)
 
-Operator ask, 2026-10-06: an impressive public repo and a genuinely useful tool. CLI and shell matter. `shapa init` in a repo creates `.shapa`, links git and starts everything. Each harness is configured by one simple command that finds its config files and connects shapa and its hooks. Global init happens where the user starts it, by default in shapa's own home under the user's directory. Install, global init and repo init are three clear processes. Then a research round on agent memory and work problems, to pick new features from.
+## Question
 
-Research behind this plan: [[agent-memory-problems]], [[agent-work-problems]], [[memory-tool-landscape]], [[install-and-cli-ux]], [[harness-config-surfaces]].
+Operator ask, 2026-10-06: an impressive public repo and a genuinely useful tool. CLI and shell matter. `shapa init` in a repo creates `.shapa`, links git and starts everything. Each harness is configured by one simple command that finds its config files and connects shapa and its hooks. Global init happens where the user starts it, by default in shapa's own home under the user's directory. Install, global init and repo init are three clear processes. What does shapa need to get there, and which new features does the research support?
 
-## Where shapa stands (0.8.0, checked 2026-10-06)
+## Method
+
+shapa 0.8.0 checked locally against the ask (table below), then the synthesis of five research files: [[agent-memory-problems]], [[agent-work-problems]], [[memory-tool-landscape]], [[install-and-cli-ux]], [[harness-config-surfaces]]. The operator's decisions on it (2026-10-08) are decision memories in this wiki (`shapa fetch --tag decision`); since then `shapa init` (end to end), `shapa doctor` and `shapa commit` shipped.
+
+## Where shapa stood (0.8.0, checked 2026-10-06)
 
 | Area | Today | Gap against the ask |
 |---|---|---|
@@ -112,34 +116,25 @@ Raw, not ranked; tagged with the problem they hit. "Today" marks partial coverag
 | Local web or TUI viewer for rows and ledger (`shapa ui`) | M7 inspectability | Obsidian, `row list` |
 | Team mode: shared repo wiki through git, per-row visibility | M5 team memory | repo wiki in git |
 
-## Decisions (operator, 2026-10-08)
+## Features filed from it (2026-10-08) and where they stand
 
-1. Global wiki default: inside shapa's install home in the user's home directory (`~/.shapa/`, wiki at `~/.shapa/global`).
-2. Database in git: least code, easily transferable, committable and exportable. Read as: keep the one `shapa.db` file (copying it moves everything), add `shapa export`/`import` (JSONL and Markdown) and reuse the export as a git textconv for readable diffs, and have shapa commit `.shapa/` itself. No JSONL source of truth and no merge driver (most code). The binary file stays unmergeable, so the default-branch-only commit rule stays.
-3. Connect: every harness, each at the best tier it supports.
-4. `shapa init` creates `.shapa/`; nothing else in the repo's tracked files.
-5. Every planned feature goes into the F of the FJT ledger.
+| Feature | Covers | State (2026-11-16) |
+|---|---|---|
+| F8 | install and `shapa setup`, shapa's home directory, Python config editing, `shapa uninstall` | closed as expired by the sweep bug (J73) |
+| F9 | `shapa init` end to end: git root, `.shapa/`, safe git hooks, seed import, next steps | merged |
+| F10 | `shapa connect` for every harness | closed as expired (J73) |
+| F11 | `shapa doctor` checks the whole install | merged |
+| F12 | portable, committable, exportable database: export/import, textconv, shapa commits `.shapa/` | commit built; closed as expired (J73) |
+| F13 | PyPI release, README, repo metadata, completions, macOS/Windows CI, listings | gone from the ledger |
+| F14-F16, F18-F20 | compaction and token budget, trust and freshness, ledger proves done, measure memory, `shapa ui`, team mode | closed as expired (J73) |
+| F17 | ledger coordinates parallel agents | open |
 
-## Ledger (written 2026-10-08)
+## Sources
 
-Each feature is one branch and PR, each job one commit. Verify commands name test files that do not exist yet; they tighten as designs firm up, never weaken.
+The five research files named under Method (each cites its own sources), and the shapa 0.8.0 code checked locally.
 
-| Feature | Covers |
-|---|---|
-| F8 | install and `shapa setup`, `~/.shapa` home, Python config editing, `shapa uninstall` |
-| F9 | `shapa init` end to end: git root, `.shapa/`, safe git hooks, seed import, next steps |
-| F10 | `shapa connect` for every harness: shared editor, Claude-style adapters, plugin shims, partial hooks, MCP-only, native packages, `--list` |
-| F11 | `shapa doctor` checks the whole install |
-| F12 | portable, committable, exportable database: export/import, textconv, shapa commits `.shapa/` |
-| F13 | PyPI release, README, repo metadata, completions, macOS/Windows CI, listings |
-| F14 | memory survives compaction, token budget |
-| F15 | memory trust and freshness |
-| F16 | ledger proves done |
-| F17 | ledger coordinates parallel agents |
-| F18 | measure whether memory helps |
-| F19 | `shapa ui` viewer |
-| F20 | team mode |
+## Date
 
-Older open features F1 (install proof in a live session), F2 (memory freshness at session start) and F3 (CI hygiene) stay; F1 is the acceptance test for F8 to F10, F2 overlaps F15.
+2026-10-06 (research), 2026-10-08 (operator decisions), feature states 2026-11-16.
 
 Related: [[installer]] · [[cli-and-hooks]]
