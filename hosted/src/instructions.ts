@@ -52,7 +52,7 @@ Call \`save\` with {wiki, type, summary, body?, tags?}. Pick the wiki: "global" 
 - idea: a thought worth keeping.
 - human_task: something the operator must do. agent_task: something an agent can do. Add project: "KEY" to link either to a project.
 - document: longer text; use title (not summary) and body.
-- note: a file; give path ("research/name.md" or "arch/name.md") and body.
+- note: a file; give path ("research/name.md" or "arch/name.md") and body. A project keeps ONE note: a second with the same project tag is refused (update it).
 summary is one line, up to 160 characters. Identical text is stored once. Never put secrets in; they are masked anyway.
 Projects: \`project_new\` {key}, \`project_add\` {key, section, text}, \`project\` {key}, \`projects\`; ${SECTIONS_NOTE}.
 Tasks: \`tasks\` lists the operator's open tasks. \`ledger_list\` shows features with their jobs and tasks. \`ledger_add\` {wiki, kind: feature|job|task|human_task|agent_task, title, parent?}. \`ledger_set\` {wiki, id, action: claim|release|close|edit}.
@@ -63,7 +63,7 @@ Look before you write: \`search\` {query, tags?}, \`tags\`, \`related\` {id}, th
 const WRITE_REST = `HOW TO WRITE BACK (HTTP, header "Authorization: Bearer <token>")
 POST /v1/wikis/{wiki}/records
   {"type":"memory","summary":"<one line, max 160>","body":"<optional detail>","tags":["<optional>"]}
-type: memory (an event the operator said matters or a strategy shift), rule (a standing rule), issue (a mistake the operator corrected and the fix), decision (a decision the operator made, with its reason), idea, human_task (something the operator must do) | agent_task (something an agent can do), each with optional "project":"KEY", document (use "title" instead of "summary"), note (add "path":"research/name.md"), feature | job | task (use "title"; job and task take "parent").
+type: memory (an event the operator said matters or a strategy shift), rule (a standing rule), issue (a mistake the operator corrected and the fix), decision (a decision the operator made, with its reason), idea, human_task (something the operator must do) | agent_task (something an agent can do), each with optional "project":"KEY", document (use "title" instead of "summary"), note (add "path":"research/name.md"; a project keeps ONE note), feature | job | task (use "title"; job and task take "parent").
 Pick the wiki: "global" for what holds across repos, else the repo's wiki key (GET /v1/wikis).
 Identical text is stored once. Never put secrets in; they are masked anyway.
 Projects: PUT /v1/projects/{key}, POST /v1/projects/{key}/items {"section","text"}, GET /v1/projects/{key}, GET /v1/projects; ${SECTIONS_NOTE}.
@@ -79,7 +79,7 @@ Call \`save\` with {wiki, type, summary, body?, tags?}. Pick the wiki: "global" 
 - idea: a thought worth keeping.
 - human_task: something the operator must do. agent_task: something an agent can do. Add project: "KEY" to link either to a project.
 - document: longer text; use title (not summary) and body.
-- note: a file; give path ("research/name.md" or "arch/name.md") and body.
+- note: a file; give path ("research/name.md" or "arch/name.md") and body. A project keeps ONE note (update it). You read the notes you wrote and the ones the operator marked stage:0.
 summary is one line, up to 160 characters. Identical text is stored once. Never put secrets in; they are masked anyway.
 Projects: \`project_new\` {key}, \`project_add\` {key, section, text}, \`project\` {key}, \`projects\`; ${SECTIONS_NOTE}.
 Tasks: \`tasks\` lists the operator's open tasks; \`ledger_set\` {wiki, id, action: claim|release|close} works a task.
@@ -88,7 +88,7 @@ Look before you write: \`search\` {query, tags?}, \`tags\`, \`related\` {id}, th
 const WRITE_REST_BASELINE = `HOW TO WRITE BACK (HTTP, header "Authorization: Bearer <token>")
 POST /v1/wikis/{wiki}/records
   {"type":"decision","summary":"<one line, max 160>","body":"<optional detail>","tags":["<optional>"]}
-type: decision (a decision the operator made, with its reason), idea, human_task (something the operator must do) | agent_task (something an agent can do), each with optional "project":"KEY", document (use "title" instead of "summary"), note (add "path":"research/name.md").
+type: decision (a decision the operator made, with its reason), idea, human_task (something the operator must do) | agent_task (something an agent can do), each with optional "project":"KEY", document (use "title" instead of "summary"), note (add "path":"research/name.md"; a project keeps ONE note, and you read the notes you wrote and the ones the operator marked stage:0).
 Pick the wiki: "global" for what holds across repos, else the repo's wiki key (GET /v1/wikis).
 Identical text is stored once. Never put secrets in; they are masked anyway.
 Projects: PUT /v1/projects/{key}, POST /v1/projects/{key}/items {"section","text"}, GET /v1/projects/{key}, GET /v1/projects; ${SECTIONS_NOTE}.

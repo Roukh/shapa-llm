@@ -51,12 +51,22 @@ export function tagProblem(c: TagCtx): string | null {
     for (const t of family) {
       if (!STAGE_TAG_RE.test(t) && t !== PROPOSED_TAG) return `invalid stage tag ${JSON.stringify(t.slice(0, 40))}: stage:0 to stage:${STAGE_MAX}, or stage-proposed:0`;
     }
+    // A note takes `stage:0` as an access marker (the one stage tag it may carry): the notes a baseline device may read.
+    if (c.kind === "N") {
+      if (family.some((t) => t !== BASELINE_TAG)) return "a note takes only the access marker stage:0 (no other stage tag, no stage-proposed:0)";
+      return projectAndOwnerProblem(tags, c);
+    }
     if (tags.filter((t) => STAGE_TAG_RE.test(t)).length > 1) return "a record carries at most one stage tag";
     if (tags.some((t) => STAGE_TAG_RE.test(t)) && tags.includes(PROPOSED_TAG)) return "a record carries one stage marker: stage:N or stage-proposed:0, not both";
     if (!stagedKind(c.kind, tags)) return "stage tags apply to rules, memories and skill versions only";
     // The baseline is the global wiki's: stage 0 (and its proposal) has no meaning in a repo wiki.
     if (c.wikiKind !== "global" && (tags.includes(BASELINE_TAG) || tags.includes(PROPOSED_TAG))) return "stage:0 and stage-proposed:0 exist only in the global wiki (a repo wiki uses stage:1 to stage:9)";
   }
+  return projectAndOwnerProblem(tags, c);
+}
+
+/** The project and task-owner rules of a tag list (everything in `tagProblem` after the stage tags). */
+function projectAndOwnerProblem(tags: string[], c: TagCtx): string | null {
   const projects = tags.filter((t) => t.startsWith("project:"));
   if (new Set(projects).size > 1) return "a record carries at most one project tag";
   for (const t of projects) {
@@ -95,11 +105,14 @@ export interface GateIn {
   stored: readonly string[] | null;
   next: readonly string[];
   privileged: boolean;
+  /** The record's kind: a note's `stage:0` is an access marker, not the baseline, and is never gated here. */
+  kind?: Kind;
 }
 export type GateOut = { tags: string[]; notice?: string } | { error: string };
 
 /** The stage-0 rule: refuse any change of a stored stage:0 record, and keep a new or retagged `stage:0` out of the baseline. */
 export function gateStage(g: GateIn): GateOut {
+  if (g.kind === "N") return { tags: [...g.next] };
   if (g.privileged) return { tags: [...g.next] };
   if (g.stored && hasBaseline(g.stored)) return { error: BASELINE_EDIT_REFUSAL };
   if (!hasBaseline(g.next)) return { tags: [...g.next] };
@@ -135,7 +148,7 @@ export function budgetProblem(repo: Repo, wiki: string, n: Normalized): string |
 /** The live stage-0 records of a wiki (at most 2000: the budget keeps the set small). */
 export function baselineSet(repo: Repo, wiki: string): Stored[] {
   const ids = repo.sql
-    .exec(`SELECT id FROM record_tags WHERE wiki = ? AND tag = ? LIMIT 2000`, wiki, BASELINE_TAG)
+    .exec(`SELECT id FROM record_tags WHERE wiki = ? AND tag = ? AND kind != 'N' LIMIT 2000`, wiki, BASELINE_TAG) // a note's stage:0 is access, not baseline
     .toArray().map((r) => r["id"] as string);
   return ids.map((id) => repo.get(wiki, id)).filter((s): s is Stored => s !== null && !s.deleted);
 }

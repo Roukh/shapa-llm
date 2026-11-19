@@ -261,6 +261,16 @@ def _snapshot(wiki_dir: Path, conn, notes: bool):
     return local, syncrec.record_hashes(local)
 
 
+def _overlay_note_tags(local: dict[str, dict], state: dict) -> None:
+    """A note file has no tags: a note the server tagged (the access marker ``stage:0``, a project) is
+    pushed back with the tags it was pulled with, so a local edit never strips them. The hashes are
+    taken before this (a tag change on the server alone is no local edit)."""
+    for rid, tags in state.get("note_tags", {}).items():
+        rec = local.get(rid)
+        if rec is not None and rec["kind"] == "N":
+            local[rid] = {**rec, "tags": list(tags)}
+
+
 def _open_readonly(db_file: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(f"file:{db_file}?mode=ro", uri=True, timeout=5)
     conn.row_factory = sqlite3.Row
@@ -333,6 +343,7 @@ def _locked_sync(result, root, wiki_dir, db_file, path, client, key, name, kind,
         notes = notes_enabled(wiki_dir)
         result.notes_skipped = not notes
         local, hashes = _snapshot(wiki_dir, conn, notes)
+        _overlay_note_tags(local, state)
         tombs = dbsync.local_tombstones(conn)
         counters = dbsync.counters(conn)
         token = _token(conn)

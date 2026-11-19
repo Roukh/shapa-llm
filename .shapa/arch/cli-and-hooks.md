@@ -25,8 +25,11 @@ automatically instead of a human typing it.
 - `shapa/validate.py`, `shapa/frontmatter.py`, `shapa/nodes.py` - frontmatter/lean-shape checks for the files that remain (`arch/`, `research/`).
 - `shapa/upgrade.py` - brings a wiki to the current format; wraps `migrate4.step_database` as one of its mechanical steps.
 - `shapa/status.py` - `shapa doctor`/`status`.
+- `shapa/config.py`, `registry.py` - wiki resolution (`$SHAPA_MEMORY`, then the discovered wiki, then the global pointer, then the default) and the registry of known wikis.
+- `shapa/githooks.py` - links a repo's git hooks at `shapa init`, never into a shared or hook-manager-owned directory it does not own.
+- `shapa/reconfigure.py` - the session-start restructure directive (prompt `assets/prompts/reconfigure.md`); `shapa/memri_import.py` - opt-in importer.
 - `shapa/mcp.py` - the MCP stdio server.
-- `shapa/remote.py`, `remotesync.py`, `remotehttp.py`, `sync.py`, `syncapply.py`, `syncrec.py`, `syncstate.py`, `dbsync.py` - `shapa remote` (login, sync, status, devices, logout, instructions), the opt-in client of the hosted store; contract in `hosted.md`.
+- `shapa/remote.py`, `remotesync.py`, `remotehttp.py`, `sync.py`, `syncapply.py`, `syncrec.py`, `syncstate.py`, `dbsync.py` - `shapa remote` (login, sync, status, devices, logout, instructions), the opt-in client of the hosted store; contract in [[hosted]] and [[hosted-sync]].
 
 ## Interfaces in
 

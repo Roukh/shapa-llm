@@ -9,9 +9,9 @@
 
 import type { Device } from "./devices.js";
 import { ApiError } from "./errors.js";
-import { PROJECT_PREFIX, type Kind } from "./records.js";
+import { LIMITS, PROJECT_PREFIX, normTags, type Kind } from "./records.js";
 import type { Stored } from "./repo.js";
-import { DECISION_TAG, IDEA_TAG, isStagedKind, isSystemTag } from "./tags.js";
+import { BASELINE_TAG, DECISION_TAG, IDEA_TAG, hasBaseline, isStagedKind, isSystemTag } from "./tags.js";
 
 export const BASELINE_REFUSAL = "this device writes notes, tasks, ideas, decisions and files";
 
@@ -49,7 +49,9 @@ export function baselineWrites(kind: Kind, tags: readonly string[]): boolean {
   if (kind === "F" || kind === "J") return false;
   // A memory is writable only as an idea or a decision (the only memories it reads back).
   if (isStagedKind(kind, tags) && !(kind === "M" && (tags.includes(IDEA_TAG) || tags.includes(DECISION_TAG)))) return false;
-  if (tags.some((t) => t.startsWith("stage:") || t.startsWith("stage-proposed:") || t === "skill" || t.startsWith("skill:"))) return false;
+  // A note may carry the access marker `stage:0` (and no other stage tag): it is how a baseline device reads its own notes.
+  const staged = (t: string) => t.startsWith("stage:") || t.startsWith("stage-proposed:");
+  if (tags.some((t) => (staged(t) && !(kind === "N" && t === BASELINE_TAG)) || t === "skill" || t.startsWith("skill:"))) return false;
   if (kind === "D" && tags.includes("focus")) return false;
   return true;
 }
@@ -78,10 +80,23 @@ const BASELINE_ENGINE_TAGS: ReadonlySet<string> = new Set([IDEA_TAG, DECISION_TA
 
 /** Refuse a baseline device any engine tag it adds. A tag the record already held stays (an edit around the
  *  operator's `serves:` tag on a task is not an add); `held` is the record's tags before the write, [] for a create. */
-export function baselineKeepsEngineTags(d: Device, held: readonly string[], next: readonly string[]): void {
+export function baselineKeepsEngineTags(d: Device, held: readonly string[], next: readonly string[], kind?: Kind): void {
   if (!isBaseline(d)) return;
-  const bad = next.find((t) => !held.includes(t) && isSystemTag(t) && !BASELINE_ENGINE_TAGS.has(t) && !t.startsWith(PROJECT_PREFIX));
+  const bad = next.find((t) => !held.includes(t) && isSystemTag(t) && !BASELINE_ENGINE_TAGS.has(t) && !t.startsWith(PROJECT_PREFIX) && !(kind === "N" && t === BASELINE_TAG));
   if (bad !== undefined) throw new ApiError("forbidden", `this device does not set engine tags (${JSON.stringify(bad.slice(0, 40))}): only idea, decision, the task owner and one project`);
+}
+
+/** The access marker of a note: a baseline device reads only notes that carry `stage:0`. It is put on every note a baseline
+ *  device creates (so it can read its own back) and it never takes the marker off a note. */
+export function withAccessMarker(d: Device, kind: Kind, tags: string[]): string[] {
+  if (!isBaseline(d) || kind !== "N" || tags.includes(BASELINE_TAG)) return tags;
+  return normTags([...tags.slice(0, LIMITS.tags - 1), BASELINE_TAG]);
+}
+
+export function baselineKeepsAccess(d: Device, kind: Kind, held: readonly string[], next: readonly string[]): void {
+  if (isBaseline(d) && kind === "N" && hasBaseline(held) && !hasBaseline(next)) {
+    throw new ApiError("forbidden", "a note this device reads keeps its stage:0 marker: this device does not remove it");
+  }
 }
 
 /** A record that is, or is named as, a printed note is written only by a device token with the delete scope. */

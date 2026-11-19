@@ -6,6 +6,8 @@ import { rebuildRelations, quarantineLegacyStage } from "./relations.js";
 export const SCHEMA_VERSION = 1;
 /** Meta key: set once the relation index (record_tags, record_links, tag_counts) and the reach column are built. */
 export const RELATIONS_KEY = "relations_v1";
+/** Meta key: set once `base_vis` and the relation index were rebuilt for the notes' access marker (a note is visible to a baseline device only with `stage:0`). */
+export const NOTE_ACCESS_KEY = "note_access_v1";
 
 const DDL: string[] = [
   `CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
@@ -85,9 +87,18 @@ export function migrate(sql: SqlStorage): void {
 /** The one-time step for rows stored before the relation index: a stage:0 tag stored before stages existed was
  *  never the operator's, so it becomes stage-proposed:0 first; then the index and the reach column are built. */
 export function backfillOnce(sql: SqlStorage): void {
-  const done = sql.exec(`SELECT 1 FROM meta WHERE key = ?`, RELATIONS_KEY).toArray().length > 0;
-  if (done) return;
-  quarantineLegacyStage(sql);
-  rebuildRelations(sql);
-  sql.exec(`INSERT OR IGNORE INTO meta (key, value) VALUES (?, '1')`, RELATIONS_KEY);
+  const has = (key: string) => sql.exec(`SELECT 1 FROM meta WHERE key = ?`, key).toArray().length > 0;
+  if (!has(RELATIONS_KEY)) {
+    quarantineLegacyStage(sql);
+    rebuildRelations(sql);
+    sql.exec(`INSERT OR IGNORE INTO meta (key, value) VALUES (?, '1')`, RELATIONS_KEY);
+    sql.exec(`INSERT OR IGNORE INTO meta (key, value) VALUES (?, '1')`, NOTE_ACCESS_KEY);
+    return;
+  }
+  // A store built before the notes' access marker: recompute `base_vis` and the index once. No relabelling here: a stored
+  // stage:0 is the operator's by now.
+  if (!has(NOTE_ACCESS_KEY)) {
+    rebuildRelations(sql);
+    sql.exec(`INSERT OR IGNORE INTO meta (key, value) VALUES (?, '1')`, NOTE_ACCESS_KEY);
+  }
 }

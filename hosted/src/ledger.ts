@@ -12,8 +12,8 @@ import { fail } from "./errors.js";
 import { onFeatureClosed } from "./focus.js";
 import { BASELINE_EDIT_REFUSAL, gateStage, kindProblem, tagProblem } from "./gates.js";
 import { backlinkProject, projectLinks } from "./projectapi.js";
-import { documentTags, gateNewDocument, mergedBody, projectHolder, refusal } from "./projects.js";
-import { baselineKeepsEngineTags, baselineKeepsRank, baselineMayCreate, baselineMayWrite, baselineWrites, denyBaseline, guardPrinted, isBaseline, ranksChanged, storedNames } from "./reach.js";
+import { documentTags, gateNewDocument, gateProjectNote, mergedBody, projectHolder, refusal } from "./projects.js";
+import { baselineKeepsAccess, baselineKeepsEngineTags, baselineKeepsRank, baselineMayCreate, baselineMayWrite, baselineWrites, denyBaseline, guardPrinted, isBaseline, ranksChanged, storedNames, withAccessMarker } from "./reach.js";
 import {
   CLOSE_REASONS, Invalid, LEDGER_KINDS, PARENT_KIND, PROJECT_PREFIX, RESERVED_DOC_TAGS, FOCUS_TAG, SKILL_TAG, TYPE_NAMES, buildData, contentKey, isNoteId, nowIso, normTags, projectOf,
   type CreateIn, type CreateType, type Data, type Kind, type Normalized, type PatchIn, type RecordWire,
@@ -130,13 +130,13 @@ export function createRecord(repo: Repo, d: Device, wiki: string, body: CreateIn
   if (wrongKind) fail("invalid", wrongKind);
   baselineMayWrite(d, kind, tags);
   baselineKeepsRank(d, [], tags);
-  baselineKeepsEngineTags(d, [], tags);
+  baselineKeepsEngineTags(d, [], tags, kind);
   const text = body.title ?? body.summary ?? "";
   if (body.parent !== undefined && !isLedger(kind)) fail("invalid", "only a job or task takes a parent");
   if (body.parent !== undefined && kind === "F") fail("invalid", "a feature has no parent");
-  const gated = gateStage({ stored: null, next: tags, privileged: false });
+  const gated = gateStage({ stored: null, next: tags, privileged: false, kind });
   if ("error" in gated) fail("forbidden", gated.error);
-  tags = gated.tags;
+  tags = withAccessMarker(d, kind, gated.tags);
 
   let id: string;
   let raw: Data;
@@ -189,7 +189,10 @@ export function createRecord(repo: Repo, d: Device, wiki: string, body: CreateIn
   let existing: Stored | null = null;
   if (kind === "N") {
     existing = repo.raw.get(wiki, id);
-    if (existing && !existing.deleted) fail("conflict", `note ${id} exists; update it instead`);
+    // A baseline device is told only that the path is taken, whether or not it can read the note that takes it.
+    if (existing && !existing.deleted) fail("conflict", isBaseline(d) ? `note path ${id} is taken: choose another path, or update the note if you can read it` : `note ${id} exists; update it instead`);
+    // The lean gate for notes: a project keeps one note (every writer but sync; stored extras are grandfathered).
+    gateProjectNote(repo, wiki, tags);
   } else {
     id = repo.allocId(wiki, kind);
   }
@@ -242,7 +245,7 @@ export function patchRecord(repo: Repo, d: Device, wiki: string, ref: string, p:
   // operator's sync edits a stored stage:0 record.
   guardPrinted(d, wiki, storedNames(rec));
   baselineMayWrite(d, k, rec.tags);
-  if (hasBaseline(rec.tags)) fail("forbidden", BASELINE_EDIT_REFUSAL);
+  if (hasBaseline(rec.tags) && k !== "N") fail("forbidden", BASELINE_EDIT_REFUSAL); // a note's stage:0 is access, not the baseline
   if (p.base_rev !== undefined && p.base_rev !== rec.rev) {
     fail("conflict", `${rec.id} is at rev ${rec.rev}, not ${p.base_rev}`, { current: toWire(rec) });
   }
@@ -257,7 +260,8 @@ export function patchRecord(repo: Repo, d: Device, wiki: string, ref: string, p:
     nextTags = normTags(p.tags);
     baselineMayWrite(d, k, nextTags);
     baselineKeepsRank(d, rec.tags, nextTags);
-    baselineKeepsEngineTags(d, rec.tags, nextTags);
+    baselineKeepsEngineTags(d, rec.tags, nextTags, k);
+    baselineKeepsAccess(d, k, rec.tags, nextTags);
     if (k === "D") {
       // The focus and skill tags make a record the engine's: no edit adds or removes one (a focus
       // record retagged `skill` would be an active skill version), and the focus record's tags are fixed.
@@ -265,7 +269,7 @@ export function patchRecord(repo: Repo, d: Device, wiki: string, ref: string, p:
       if (reserved(nextTags) !== reserved(rec.tags)) fail("invalid", "the focus and skill tags are reserved for the focus record and skill versions");
       if (rec.tags.includes(FOCUS_TAG) && nextTags.join("\n") !== [...rec.tags].sort().join("\n")) fail("invalid", "the focus record's tags are fixed");
     }
-    const gated = gateStage({ stored: rec.tags, next: nextTags, privileged: false });
+    const gated = gateStage({ stored: rec.tags, next: nextTags, privileged: false, kind: k });
     if ("error" in gated) fail("forbidden", gated.error);
     nextTags = gated.tags;
     notice = gated.notice;
@@ -312,6 +316,9 @@ export function patchRecord(repo: Repo, d: Device, wiki: string, ref: string, p:
       const held = projectHolder(repo, wiki, now, rec.uid);
       if (held) fail("conflict", refusal(held, now), { existing: held.id });
     }
+  } else if (k === "N" && p.tags !== undefined && projectKeyOf(next.tags) !== projectKeyOf(rec.tags)) {
+    // The lean gate also covers a retag: a note may not move into a project another note holds.
+    gateProjectNote(repo, wiki, next.tags, rec.id);
   } else if (p.tags !== undefined && PROJECT_KINDS.includes(k)) {
     // A retag moves the `about` link with the project tag.
     next.links = projectLinks(repo, wiki, rec.links, projectKeyOf(next.tags), projectKeyOf(rec.tags));

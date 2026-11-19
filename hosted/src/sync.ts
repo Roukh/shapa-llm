@@ -102,9 +102,13 @@ function applyPut(
   // stage:0 is stored as stage-proposed:0, and an edit of a stored stage:0 record is rejected.
   let note: string | undefined;
   const live = target && !target.deleted ? target : null;
+  // A note file carries no tags, so a note's tags (the access marker `stage:0`, its project) are the server's:
+  // a sync put keeps the stored ones and a note sync creates or revives has none. A client's cached tags can
+  // never re-share a note the operator un-shared over REST or MCP.
+  if (n.kind === "N") n = { ...n, tags: live ? [...live.tags] : [] };
   if (!(live && sameContent(live, n))) {
     const privileged = mayBaseline(d, true);
-    const gated = gateStage({ stored: live ? live.tags : null, next: n.tags, privileged });
+    const gated = gateStage({ stored: live ? live.tags : null, next: n.tags, privileged, kind: n.kind });
     if ("error" in gated) return { id: n.id, status: "rejected", rev: target?.rev ?? 0, error: gated.error };
     if (gated.notice) { n = { ...n, tags: gated.tags }; note = gated.notice; }
     if (privileged) {

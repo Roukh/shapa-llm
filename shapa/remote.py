@@ -6,6 +6,8 @@
     shapa remote sync [--cwd DIR] [--all] [--key KEY] [--hook] [--if-changed] [--dry-run] [--json]
     shapa remote status [--check] [--json]
     shapa remote devices [--revoke ID]
+    shapa remote devices --mint NAME --env-file PATH --env-var VAR [--reach baseline|full]
+                         [--wikis KEYS] [--scopes read,write]
     shapa remote logout
     shapa remote instructions [--client NAME] [--full]
 
@@ -24,7 +26,9 @@ import json
 import os
 import re
 import socket
+import subprocess
 import sys
+from pathlib import Path
 
 from shapa import db, remotesync, sync, syncstate
 from shapa.remotehttp import Client, RemoteError, check_url, clean_text
@@ -203,12 +207,112 @@ def cmd_status(args) -> int:
     return code
 
 
+_ENV_VAR_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
+_WIKI_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/:@-]{0,127}$")
+REACHES = ("full", "baseline")
+
+
+def _git_out(folder, *argv) -> "subprocess.CompletedProcess | None":
+    try:
+        return subprocess.run(["git", *argv], cwd=folder, capture_output=True, text=True, timeout=10,
+                              stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def _check_env_file(path: Path) -> Path:
+    """The file a minted token goes into: not a symlink, not a directory, not tracked by git.
+    Raises :class:`UsageError`."""
+    path = Path(os.path.abspath(os.path.expanduser(str(path))))
+    if path.is_symlink():
+        raise UsageError("--env-file is a symlink: refusing to write a token through it")
+    if path.exists() and not path.is_file():
+        raise UsageError("--env-file is not a regular file")
+    folder = path.parent
+    if not folder.is_dir():
+        raise UsageError("the folder of --env-file does not exist")
+    tracked = _git_out(folder, "ls-files", "--error-unmatch", "--", path.name)
+    if tracked is not None and tracked.returncode == 0:
+        raise UsageError("--env-file is tracked by git: a token must never be committed "
+                         "(untrack it, or choose an ignored file)")
+    return path
+
+
+def _set_env_line(existing: str, var: str, value: str) -> str:
+    """*existing* with the ``VAR=`` line replaced (every other line untouched), or one appended."""
+    lines = existing.splitlines(keepends=True)
+    pat = re.compile(rf"^\s*(export\s+)?{re.escape(var)}\s*=")
+    new = f"{var}={value}\n"
+    done = False
+    out = []
+    for line in lines:
+        if pat.match(line):
+            if not done:
+                out.append(new)
+                done = True
+            continue  # a repeated assignment of the same variable is dropped
+        out.append(line)
+    if not done:
+        if out and not out[-1].endswith("\n"):
+            out[-1] += "\n"
+        out.append(new)
+    return "".join(out)
+
+
+def _write_env_file(path: Path, var: str, token: str) -> None:
+    try:
+        existing = path.read_text(encoding="utf-8") if path.exists() else ""
+    except (OSError, UnicodeDecodeError):
+        raise UsageError("--env-file cannot be read as text") from None
+    syncstate.atomic_write(path, _set_env_line(existing, var, token), 0o600)
+
+
+def cmd_mint(args, admin: Client) -> int:
+    """Mint a device token and put it in an env file; the token is printed nowhere."""
+    name, var = args.mint, args.env_var
+    if not (isinstance(name, str) and 1 <= len(name) <= 64 and name == name.strip()
+            and not re.search(r"[\x00-\x1f\x7f]", name)):
+        raise UsageError("--mint NAME: 1-64 characters, no control characters, no surrounding spaces")
+    if not args.env_file or not var:
+        raise UsageError("--mint needs --env-file PATH and --env-var VAR (the token is never printed)")
+    if not _ENV_VAR_RE.match(var):
+        raise UsageError("--env-var must be a shell variable name")
+    scopes = _parse_scopes(args.scopes)
+    wikis = None
+    if args.wikis and args.wikis != "all":
+        wikis = [w for w in re.split(r"[,\s]+", args.wikis) if w]
+        if not wikis or any(not _WIKI_RE.match(w) for w in wikis):
+            raise UsageError("--wikis is a comma list of wiki keys, or `all`")
+    path = _check_env_file(Path(args.env_file))  # before the server is asked: no token without a place for it
+    body = {"name": name, "scopes": scopes, "reach": args.reach, "wikis": wikis}
+    minted = admin.request("POST", "/admin/devices", body, timeout=15)
+    token, device_id = minted.get("token"), minted.get("id")
+    if not (isinstance(token, str) and _TOKEN_RE.match(token) and isinstance(device_id, str)
+            and _ID_RE.match(device_id)):
+        raise RemoteError("the server did not return a usable device token")
+    try:
+        _write_env_file(path, var, token)
+    except (OSError, UsageError):
+        try:  # no token is kept anywhere: the device is of no use, so it is revoked again
+            admin.request("DELETE", f"/admin/devices/{device_id}", timeout=15)
+        except RemoteError:
+            pass
+        raise UsageError(f"could not write {path}; the new device {device_id} was revoked") from None
+    reach = minted.get("reach") if minted.get("reach") in REACHES else args.reach
+    print(f"minted {clean_text(name, 64)} ({device_id}), reach {reach}: {var} written to {path}")
+    return 0
+
+
 def cmd_devices(args) -> int:
     creds = syncstate.load_credentials()
     url = check_url(args.url) if args.url else (creds.url if creds else None)
     if url is None:
         raise UsageError("not logged in - pass --url URL, or run `shapa remote login URL`")
+    if args.mint is None and (args.env_file or args.env_var):
+        raise UsageError("--env-file and --env-var go with --mint")
     admin = Client(url, _owner_key(), transport=TRANSPORT)
+    if args.mint is not None:
+        return cmd_mint(args, admin)
     if args.revoke:
         if not _ID_RE.match(args.revoke):
             raise UsageError("not a device id")
@@ -222,8 +326,9 @@ def cmd_devices(args) -> int:
         if isinstance(d, dict):
             scopes = ",".join(str(s) for s in d.get("scopes", []) if isinstance(s, str))
             state = " revoked" if d.get("revoked") else ""
+            reach = f" {clean_text(d['reach'], 10)}" if d.get("reach") in REACHES else ""
             print(f"{clean_text(d.get('id', '?'), 64)}  {clean_text(d.get('name', ''), 60)}  "
-                  f"{scopes}{state}")
+                  f"{scopes}{reach}{state}")
     return 0
 
 
@@ -261,9 +366,21 @@ def build_parser() -> argparse.ArgumentParser:
     st.add_argument("--all", action="store_true")
     st.add_argument("--check", action="store_true", help="exit 1 if not logged in or unreachable")
     st.add_argument("--json", action="store_true")
-    dv = sub.add_parser("devices", help="list or revoke devices (needs the owner key)")
+    dv = sub.add_parser("devices", help="list, revoke or mint devices (needs the owner key)")
     dv.add_argument("--revoke", default=None, metavar="ID")
     dv.add_argument("--url", default=None)
+    dv.add_argument("--mint", default=None, metavar="NAME",
+                    help="mint a device token and write it to --env-file as --env-var (never printed)")
+    dv.add_argument("--reach", default="baseline", choices=REACHES,
+                    help="with --mint: baseline reads stage 0 and writes notes, tasks, ideas, "
+                         "decisions and files (default); full is a device like this machine")
+    dv.add_argument("--wikis", default=None, metavar="KEYS",
+                    help="with --mint: comma list of wiki keys the device may use (default: all)")
+    dv.add_argument("--scopes", default="read,write", help="with --mint (default read,write)")
+    dv.add_argument("--env-file", default=None, metavar="PATH",
+                    help="with --mint: the file that gets VAR=<token> (mode 0600; not a symlink, "
+                         "not tracked by git; other lines are kept)")
+    dv.add_argument("--env-var", default=None, metavar="VAR", help="with --mint: the variable name")
     sub.add_parser("logout", help="forget the stored login")
     ins = sub.add_parser("instructions", help="print the server's session defaults")
     ins.add_argument("--client", default="mcp")

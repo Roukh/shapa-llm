@@ -177,6 +177,7 @@ class _Apply:
             ent = self.base.get(rid)
             if text is None or (ent and ent["hash"] == now and syncrec.remove_note(self.wiki_dir, rid)):
                 self.base.pop(rid, None)
+                self.state.setdefault("note_tags", {}).pop(rid, None)
             else:
                 self.skip(rid)
             return
@@ -188,6 +189,12 @@ class _Apply:
         except (ValueError, OSError):
             self.skip(rid)
             return
+        # the file carries no tags: keep the server's, so a local edit pushes them back (the access marker stays)
+        held = self.state.setdefault("note_tags", {})
+        if rec["tags"]:
+            held[rid] = list(rec["tags"])
+        else:
+            held.pop(rid, None)
         self.written.append(rec)
 
 
