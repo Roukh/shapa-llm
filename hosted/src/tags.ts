@@ -101,12 +101,14 @@ export const BUCKET_NAMES: Record<Bucket, string> = {
 export const COUNT_NAMES = ["rule", "memory", "issue", "skill", "document", "task", "job", "feature", "note"] as const;
 
 /** Whether a `baseline` device (an OAuth grant, or a token minted baseline) may see a record at all: rules,
- *  memories, issues and skill versions only at stage 0; ideas and decisions; everything else. */
+ *  memories, issues and skill versions only at stage 0; notes only with the access marker `stage:0`; ideas and
+ *  decisions; everything else. */
 export function baseVisible(kind: Kind, tags: readonly string[]): boolean {
   switch (kind) {
     case "R": case "I": return hasBaseline(tags);
     case "M": return tags.includes(IDEA_TAG) || tags.includes(DECISION_TAG) || hasBaseline(tags);
     case "D": return tags.includes("skill") ? hasBaseline(tags) : true;
+    case "N": return hasBaseline(tags); // a note's stage:0 is the access marker
     default: return true;
   }
 }

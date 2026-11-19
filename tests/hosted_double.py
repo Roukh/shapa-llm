@@ -128,8 +128,9 @@ class HostedDouble:
             did = f"d{len(self.devices) + 1}"
             token = f"shp_{did}_" + "s3cr3t" * 6
             self.devices[did] = {"id": did, "name": req["name"], "scopes": req["scopes"],
+                                 "wikis": req.get("wikis"), "reach": req.get("reach", "full"),
                                  "token": token, "revoked": False}
-            return 200, {"id": did, "token": token}
+            return 200, {"id": did, "token": token, "reach": self.devices[did]["reach"]}
         if path == "/admin/devices" and method == "GET":
             return 200, {"devices": [{k: v for k, v in d.items() if k != "token"}
                                      for d in self.devices.values()]}
@@ -215,6 +216,8 @@ class HostedDouble:
             return {"id": orig, "status": "rejected", "rev": 0, "error": msg}
         if rec["kind"] == "N":  # a note path is its identity
             twin = wiki.records.get(orig)
+            # as the Worker: a note's tags are the server's (a sync put keeps the stored ones; none on create)
+            rec["tags"] = list(twin["tags"]) if twin is not None and not twin["deleted"] else []
         else:
             twin = next((r for r in wiki.records.values() if r["uid"] == rec["uid"]), None)
         if twin is not None:  # the uid already lives here, maybe under another id

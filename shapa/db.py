@@ -853,6 +853,12 @@ def check_stage_tags(tags, letter: str) -> None:
     bad = [t for t in staged if not _STAGE_RE.fullmatch(t)] + [t for t in proposed if t != STAGE_PROPOSED]
     if bad:
         raise LedgerError(f"invalid stage tag {bad[0]!r}: stage:N with N a digit 0-9")
+    if letter == "N":
+        # A note's `stage:0` is the access marker the hosted store reads (a baseline device sees only
+        # the notes that carry it), not the baseline: the one stage tag a note takes, never a proposal.
+        if proposed or any(t != f"{STAGE_PREFIX}0" for t in staged):
+            raise LedgerError("a note takes only the access marker stage:0")
+        return
     if len(set(staged)) > 1:
         raise LedgerError("a record has at most one stage (`shapa stage set ID N` changes it)")
     if staged and proposed:

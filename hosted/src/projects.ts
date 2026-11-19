@@ -7,6 +7,7 @@ import { focusRecord } from "./focus.js";
 import { DOC_BODY_MAX, FOCUS_TAG, LIMITS, PROJECT_PREFIX, SKILL_TAG, cleanProject, projectOf, type Data, type Normalized } from "./records.js";
 import type { Repo, Stored } from "./repo.js";
 import { NAME_RE } from "./skills.js";
+import { projectKeyOf } from "./tags.js";
 
 /** The id of the live project document of `key` in `wiki`, ignoring the record with `exceptUid`. */
 export function projectHolder(repo: Repo, wiki: string, key: string, exceptUid = ""): { id: string; title: string } | null {
@@ -76,6 +77,30 @@ export function projectTagProblem(tags: unknown): string | null {
     }
   }
   return null;
+}
+
+// --- one note per project --------------------------------------------------------------------------
+
+/** A live note of `wiki` that carries `project:KEY`, other than `exceptId`. Every note counts, hidden ones too: the cap is
+ *  the wiki's, whatever the caller may read. `visible` says whether a baseline caller's view can read it. */
+export function noteHolder(repo: Repo, wiki: string, key: string, exceptId = ""): { id: string; visible: boolean } | null {
+  const r = repo.sql
+    .exec(`SELECT id, vis FROM record_tags WHERE wiki = ? AND tag = ? AND kind = 'N' AND id != ? ORDER BY seq LIMIT 1`, wiki, PROJECT_PREFIX + key, exceptId)
+    .toArray()[0];
+  return r ? { id: r["id"] as string, visible: r["vis"] === 1 } : null;
+}
+
+/** Refuse a second note for a project (409 naming the first), or a retag that moves a note into a project another note holds.
+ *  A holder a baseline caller cannot read is never named: its refusal is generic, but the cap holds. `exceptId` is the note
+ *  being retagged. Sync never calls this (stored notes are grandfathered). */
+export function gateProjectNote(repo: Repo, wiki: string, tags: readonly string[], exceptId = ""): void {
+  const key = projectKeyOf(tags);
+  if (key === "") return;
+  const held = noteHolder(repo, wiki, key, exceptId);
+  if (!held) return;
+  const what = `project ${JSON.stringify(key)} already has`;
+  if (repo.baseline && !held.visible) fail("conflict", `${what} a note: a project keeps one note, edit that note instead`);
+  fail("conflict", `${what} note ${held.id}: edit it (PATCH, or the update tool); a project keeps one note`, { existing: held.id });
 }
 
 /** A sync put of a document. Documents already stored are grandfathered: the lean gate stops the

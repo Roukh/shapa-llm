@@ -5,7 +5,7 @@ One directory (``~/.shapa``, or ``$SHAPA_REMOTE_DIR``) holds:
 - ``remote.json`` - ``{url, device, device_id}``; no secret.
 - ``remote.token`` - the device token, mode 0600, the only place it lives.
 - ``sync/<sha1 of the resolved db path>.json`` - one wiki's sync state
-  ``{version, key, url, cursor, base: {id: {rev, uid, updated, hash}}, retry}``.
+  ``{version, key, url, cursor, base: {id: {rev, uid, updated, hash}}, retry, note_tags}``.
 - ``sync/<sha1>.lock`` - the per-wiki lock two sessions queue on.
 
 Every write is atomic (temp file + rename). A missing, truncated or corrupt
@@ -134,7 +134,7 @@ def _valid_base(base) -> bool:
 def fresh_state(key: str, url: str) -> dict:
     return {"version": STATE_VERSION, "key": key, "url": url, "cursor": 0, "base": {},
             "last_sync": "", "retry": [], "refused": {}, "token": None,
-            "named": False}
+            "named": False, "note_tags": {}}
 
 
 def load_state(path: Path, key: str, url: str) -> dict:
@@ -159,6 +159,12 @@ def load_state(path: Path, key: str, url: str) -> dict:
     if not isinstance(data.get("token"), str):
         data["token"] = None
     data["named"] = data.get("named") is True
+    # a note is a file with no tags of its own: the server's (the access marker `stage:0`, its project)
+    # are kept here so a local edit pushes them back unchanged
+    held = data.get("note_tags")
+    data["note_tags"] = ({k: [t for t in v if isinstance(t, str)][:100] for k, v in held.items()
+                          if isinstance(k, str) and isinstance(v, list) and v}
+                         if isinstance(held, dict) else {})
     return data
 
 

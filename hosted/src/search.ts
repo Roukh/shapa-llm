@@ -15,8 +15,9 @@ export function ftsQuery(text: string): string {
 
 const NAME_TO_KIND = Object.fromEntries(Object.entries(TYPE_NAMES).map(([k, v]) => [v, k])) as Record<string, Kind>;
 export const SEARCH_TAGS_MAX = 8;
-/** A record's stage (its stage:N tag; 10 without one, so an unstaged record ranks after a staged one on a tie). */
-const STAGE_SQL = `COALESCE((SELECT MIN(CAST(substr(j.value, 7) AS INTEGER)) FROM json_each(r.tags) j WHERE j.value GLOB 'stage:[0-9]'), 10)`;
+/** A record's stage (its stage:N tag; 10 without one, so an unstaged record ranks after a staged one on a tie). A note has
+ *  none: its `stage:0` is only the access marker and never ranks it. */
+const STAGE_SQL = `CASE WHEN r.kind = 'N' THEN 10 ELSE COALESCE((SELECT MIN(CAST(substr(j.value, 7) AS INTEGER)) FROM json_each(r.tags) j WHERE j.value GLOB 'stage:[0-9]'), 10) END`;
 
 export interface Hit {
   wiki: string;

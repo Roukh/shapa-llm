@@ -44,7 +44,10 @@ async function seed(): Promise<World> {
   const task = await create(op, w, { type: "human_task", title: "VISIBLE-TASK", tags: ["shared-tag"], project });
   const feature = await create(op, w, { type: "feature", title: "VISIBLE-FEATURE" });
   const job = await create(op, w, { type: "job", title: "VISIBLE-JOB", parent: feature.body.id });
-  const note = await create(op, w, { type: "note", path: "research/visible.md", body: "VISIBLE-NOTE", tags: ["shared-tag"] });
+  // A note is visible to a baseline device only with the access marker stage:0; the other two are hidden from it.
+  const note = await create(op, w, { type: "note", path: "research/visible.md", body: "VISIBLE-NOTE", tags: ["shared-tag", "stage:0"] });
+  expect((await create(op, w, { type: "note", path: "research/hidden-plain.md", body: `${HIDDEN}-NOTE`, tags: ["hidden-only-tag", "shared-tag"] })).status).toBe(201);
+  expect((await create(op, w, { type: "note", path: "research/hidden-project.md", body: `${HIDDEN}-PROJECT-NOTE`, tags: [`project:${project}`] })).status).toBe(201);
   const doc = await create(op, w, { type: "document", title: "VISIBLE-DOC", body: "text", project, tags: ["shared-tag"] });
   await send("PUT", `/v1/wikis/${w}/focus`, { token: op, body: { northstar: "VISIBLE-NORTH", fires: [{ feature: feature.body.id }] } });
   await create(op, "global", { type: "human_task", title: "VISIBLE-GLOBAL-TASK" });
@@ -341,7 +344,17 @@ describe("reach: what a baseline device writes", () => {
     // the operator's own notes exist
     expect((await create(s.op, "global", { type: "note", path: "session-instructions.md", body: "OPERATOR-INSTRUCTIONS" })).status).toBeLessThan(500);
     expect((await create(s.op, "global", { type: "note", path: "response-style.md", body: "OPERATOR-STYLE" })).status).toBeLessThan(500);
-    for (const c of await callers()) {
+    const cs = await callers();
+    // untagged, they are hidden from a baseline device like any other note: it cannot even name them (404)
+    for (const c of cs) {
+      for (const ref of ["session-instructions.md", "session-instructions", "response-style.md", "response-style"]) {
+        expect((await send("PATCH", rec("global", `/${ref}`), { token: c.token, body: { body: "planted" } })).status, `${c.name} hidden patch ${ref}`).toBe(404);
+        expect((await send("DELETE", rec("global", `/${ref}`), { token: c.token })).status, `${c.name} hidden delete ${ref}`).toBe(403);
+      }
+    }
+    // the operator marks them stage:0 (readable to a baseline device): the printed-notes guard still holds
+    for (const ref of ["session-instructions.md", "response-style.md"]) expect((await send("PATCH", rec("global", `/${ref}`), { token: s.op, body: { tags: ["stage:0"] } })).status).toBe(200);
+    for (const c of cs) {
       const t = c.token;
       for (const path of ["session-instructions.md", "response-style.md", "Session-Instructions.md", "RESPONSE-STYLE.MD", "arch/session-instructions.md", "research/Response-Style.md"]) {
         expect([400, 403], `${c.name} ${path}`).toContain((await create(t, "global", note(path))).status); // 400: not even a valid note path
