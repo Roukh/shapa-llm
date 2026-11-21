@@ -7,6 +7,38 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-11-20
+
+The mempm release: a lean session start, shapa's own system prompt, and a learning loop that keeps one rule per
+object. In short:
+
+- Session start is one compact JSON (principles P, mistakes X, memories M) under the hook cap; tasks, notes,
+  projects, topics and skills are fetched on demand; agents reach the hosted store through MCP only.
+- `shapa harness` composes shapa's own core prompt for Claude Code, Codex, OpenCode and Gemini (append, replace
+  or default), with exact, edit-safe uninstall.
+- Skill files are the source of truth, mirrored into the wikis; `skill_match` everywhere; a repo skill never
+  shadows a global one.
+- One rule per object, newest principle wins (`--supersedes`, CLI only), `shapa learn import`, `shapa learn split`.
+- Personal and sensitive data never enters stage 0 or arrives from an AI app (pattern table shared by both sides).
+- Repo nodes in the global wiki (`shapa node`), hidden from baseline devices, with promotion candidates.
+- Security: a node document needs its reserved tag, source and the operator's own device; MCP cannot delete rules.
+
+### Security
+
+- Repo nodes carry the reserved tag `shapa-node` and the alias prefix `node:`, both refused to every other writer
+  (REST, MCP, local MCP, a sync from any device without the delete scope) and read by `shapa node` only when tag,
+  source and alias agree. A node holds a repo's principles and only a COUNT of its open corrections, and the
+  Worker hides it from every baseline device. A promotion candidate quotes a "repo node principle", never an
+  operator statement.
+- `supersedes` (it deletes a rule) is the operator's local CLI only; the MCP `save` refuses it.
+- The session start's X (mistakes) holds only the global wiki's issues and those the engine's own hook filed;
+  its heading says P are the operator's standing principles and X, M recorded context. P holds up to 130.
+- A repo skill whose name a global skill holds is not mirrored and never served in its place.
+- The personal-data gate also covers `git_ref`, `claimed_by` and link targets on a sync put, and an edit
+  screens the merged record. A rule is one rule on the Worker too (REST and MCP create and edit).
+- `shapa harness uninstall` never reverts the operator's edits made before a reinstall.
+- `hookcap` only guarantees the cap (it trims the mempm, never cuts a string) and the hook always exits 0.
+
 ### Added
 
 - `shapa learn import FILE --wiki KEY [--scope] [--dry-run] [--json]` (local CLI only, no MCP tool): the
@@ -129,7 +161,7 @@ This project follows [Semantic Versioning](https://semver.org/).
 - The central brain: the global wiki as the operator's one brain, on the
   device and on the hosted store. A stage is a tag (`stage:N`, one digit, on a
   rule, memory or skill version): `shapa stage set|clear|list|pending`, with
-  `stage:0` the baseline printed in full at every session start within 6,000
+  `stage:0` the baseline served at every session start as one-line summaries within 6,000
   characters; only the local CLI sets it, and an agent that asks leaves
   `stage-proposed:0`. Tasks stand alone in the global wiki (`shapa tasks`,
   `shapa save --type human_task|agent_task`); ideas and decisions are memories

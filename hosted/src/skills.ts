@@ -139,12 +139,12 @@ function activeCandidates(repo: Repo, wiki: string): Candidate[] {
 }
 
 /** The skills that best fit a task (at most MATCH_MAX): the global wiki's active skills, plus a repo wiki's when
- *  `wiki` names one (its skill hides the global one of the same name). Every device may call it, a baseline one
+ *  `wiki` names one (a repo skill never shadows a global one of the same name: the global one wins). Every device may call it, a baseline one
  *  included: it reads what `skills` lists. A wiki the device may not use is refused when named, skipped when it
  *  is `global`. */
 export function matchTask(repo: Repo, d: Device, text: string, wiki?: string): SkillMatch[] {
   needScope(d, "read");
-  const order = wiki !== undefined && wiki !== "global" ? [wiki, "global"] : ["global"];
+  const order = wiki !== undefined && wiki !== "global" ? ["global", wiki] : ["global"];
   const pool = new Map<string, Candidate>();
   for (const w of order) {
     if (!wikiAllowed(d, w)) { if (w === wiki) needWiki(d, w); continue; }

@@ -96,6 +96,10 @@ def pii_screen(summary: str, body: str, tags, alias=None, privileged: bool = Fal
         return [], str(exc)
 
 
+SUPERSEDE_REFUSAL = ("superseding deletes a rule, so only the operator's local CLI does it "
+                     "(`shapa save --type rule --supersedes R<n>`); the MCP tool never deletes")
+
+
 def save_row(root, scope: str, note_type: str, summary: str, body: str, tags, alias=None,
              project: str | None = None, merge: bool = False, privileged: bool = False,
              supersedes=None, distinct_from=None) -> dict:
@@ -112,6 +116,8 @@ def save_row(root, scope: str, note_type: str, summary: str, body: str, tags, al
 
     if (supersedes or distinct_from) and note_type != "rule":
         return {"error": "supersedes and distinct_from apply to rules only"}
+    if supersedes and not privileged:
+        return {"error": SUPERSEDE_REFUSAL}
 
     try:
         db.check_row_tags(tags)

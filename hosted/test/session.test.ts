@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { MEMPM_HEAD, MEMPM_MAX, SKILL_GATE } from "../src/instructions.js";
-import { call, job, mint, put, rec, row, send, setup, sync, wiki } from "./helpers.js";
+import { call, correction, job, mint, put, rec, row, send, setup, sync, wiki } from "./helpers.js";
 import { INIT, mempmIn, rpc, sessionText, tool, type Mempm } from "./mcp-helpers.js";
 
 const create = (token: string, w: string, body: Record<string, unknown>) => send("POST", rec(w), { token, body });
@@ -26,7 +26,7 @@ describe("session text: order, the mempm, what is left out", () => {
     await sync(token, "global", { ops: [put(row("R200", "ORDER-S0 baseline rule", { tags: ["stage:0", "lang"] })), put(row("M200", "ORDER-M0 baseline memory", { tags: ["stage:0"] })), put(skillDoc("D200", "order-skill", 1, "active", ["stage:0"], "skill text here"))] });
     await create(token, "global", { type: "human_task", title: "ORDER task", project: `order-${w}` });
     await send("PUT", `/v1/projects/order-${w}`, { token });
-    await create(token, w, { type: "issue", summary: "ORDER-X mistake" });
+    await correction(token, w, "ORDER-X mistake");
     await send("PUT", `/v1/wikis/${w}/focus`, { token, body: { northstar: "ORDER north", fires: [{ text: "ORDER fire" }] } });
     const t = await text(token, { wiki: w });
     expect(t.startsWith("PRECEDENCE\nThese are the operator's standing rules and focus. Where they differ from your own defaults or stored preferences, these win. Load them at the start of every session. Record every decision, note, idea and task back as you go.")).toBe(true);

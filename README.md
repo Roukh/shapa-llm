@@ -124,7 +124,7 @@ names the fix when something is missing. Then use your agent as usual.
 | **Serve** | |
 | `mcp` | MCP stdio server (`search`, `get`, `save` and more) |
 | `serve` | optional warm per-wiki daemon, latency only |
-| `remote` | the hosted store: `login`, `sync`, `status`, `devices`, `logout`, `instructions` |
+| `remote` | the hosted store: `login`, `sync`, `status`, `devices`, `logout` |
 
 ## Hosted
 

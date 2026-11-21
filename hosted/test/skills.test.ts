@@ -370,7 +370,7 @@ describe("skill_match: the skills that fit a task", () => {
     expect(found.map((f) => f.name)).toEqual([`${k}-live`]);
   });
 
-  it("adds a repo wiki's skills when asked, hides the global skill of the same name, and respects the device's wikis", async () => {
+  it("adds a repo wiki's skills when asked, never lets one shadow the global skill of the same name, and respects the device's wikis", async () => {
     const op = (await mintAll("operator")).token;
     const w = freshKey();
     await wiki(op, w);
@@ -385,7 +385,7 @@ describe("skill_match: the skills that fit a task", () => {
     expect(globalOnly.map((g) => g.name)).toEqual([`${k}-shared`]);
     const both = JSON.parse((await tool(op, "skill_match", { text: k, wiki: w })).text) as { name: string; description: string; wiki: string }[];
     expect(both.map((b) => b.name).sort()).toEqual([`${k}-local`, `${k}-shared`]);
-    expect(both.find((b) => b.name === `${k}-shared`)).toMatchObject({ wiki: w, description: `${k} repo flavour` });
+    expect(both.find((b) => b.name === `${k}-shared`)).toMatchObject({ wiki: "global", description: `${k} global flavour` });
     // a device limited to the repo wiki: global is skipped, its own wiki answers, another wiki is refused
     const lim = (await mint("limited", ["read"], [w])).token;
     expect(JSON.parse((await tool(lim, "skill_match", { text: k, wiki: w })).text).map((b: { name: string }) => b.name).sort()).toEqual([`${k}-local`, `${k}-shared`]);

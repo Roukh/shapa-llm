@@ -65,6 +65,8 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from shapa.config import CHARS_PER_TOKEN
+
 try:  # POSIX only; elsewhere installs are not serialised
     import fcntl
 except ImportError:  # pragma: no cover
@@ -90,7 +92,6 @@ MD_END = "<!-- END shapa-harness -->"
 DISPLACED = "# shapa-displaced: "
 BACKUP_SUFFIX = ".shapa-bak"
 LOCK_WAIT = 15.0
-CHARS_PER_TOKEN = 4
 
 #: What the harness keeps no matter what its system prompt says (research, 2026-11-20).
 KEEPS = {
@@ -303,9 +304,15 @@ class FS:
         self.read(p)  # records the original
         if isinstance(data, str):
             data = data.encode("utf-8")
-        self.staged[p] = data
-        if backup:  # copy the file aside once, before the first edit
+        if backup:
+            # What the backup must hold: the file as it stands before this edit, minus anything shapa itself
+            # wired (a reinstall stages the unwire first). It is refreshed on a reinstall, so an uninstall never
+            # restores a backup older than the operator's later edits.
+            base = self.staged.get(p, self.orig.get(p))
+            if base is not None:
+                self.flags.setdefault(p, {}).setdefault("backup_src", base)
             self.flags.setdefault(p, {})["backup"] = True
+        self.staged[p] = data
         if tidy:  # drop an existing backup the file has returned to
             self.flags.setdefault(p, {})["tidy"] = True
 
@@ -321,8 +328,8 @@ class FS:
     def backups_due(self) -> list[Path]:
         out = []
         for p, flags in self.flags.items():
-            if (flags.get("backup") and self.orig.get(p) is not None and self.staged.get(p) != self.orig[p]
-                    and not _bak(p).exists()):
+            src = flags.get("backup_src")
+            if flags.get("backup") and src is not None and _backup_stale(p, src):
                 out.append(_bak(p))
         return out
 
@@ -336,11 +343,14 @@ class FS:
                 if only is not None and p not in only:
                     continue
                 before = self.orig.get(p)
+                src = self.flags.get(p, {}).get("backup_src")
+                if self.flags.get(p, {}).get("backup") and src is not None and _backup_stale(p, src):
+                    existed = _bak(p).exists()
+                    _atomic_write(_bak(p), src, like=p)
+                    if not existed:
+                        made.append(_bak(p))
                 if data == before:
                     continue
-                if self.flags.get(p, {}).get("backup") and before is not None and not _bak(p).exists():
-                    _atomic_write(_bak(p), before, like=p)
-                    made.append(_bak(p))
                 if data is None:
                     with contextlib.suppress(FileNotFoundError):
                         p.unlink()
@@ -372,6 +382,15 @@ class FS:
 
 def _bak(path: Path) -> Path:
     return path.with_name(path.name + BACKUP_SUFFIX)
+
+
+def _backup_stale(path: Path, src: bytes) -> bool:
+    """Whether the backup of *path* is missing or differs from what it should hold."""
+    bak = _bak(path)
+    try:
+        return not bak.exists() or bak.read_bytes() != src
+    except OSError:
+        return True
 
 
 def _atomic_write(path: Path, data: bytes, like: Path | None = None) -> None:

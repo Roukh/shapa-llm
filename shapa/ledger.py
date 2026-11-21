@@ -819,6 +819,8 @@ def row_main(argv: list[str]) -> int:
                                "`shapa learn` file those rows")
         try:
             db.check_row_tags(args.tag)
+            if args.kind.upper() == "R":
+                db.check_atomic_rule(args.summary, args.body, what="a rule")   # one rule per object, on every door
         except db.LedgerError as exc:
             raise CommandError(str(exc))
         root = scoped_root(args.scope, args.cwd)

@@ -161,7 +161,8 @@ def huge(wikis):
         focus.set_fire(c, i + 1, feature=fs[i])
     focus.set_northstar(c, "A repo northstar that is never cut")
     for i in range(14):
-        db.add_row(c, "I", f"Mistake {i}: the operator corrected the way number {i} of doing the thing " + "x" * 60)
+        db.add_row(c, "I", f"Mistake {i}: the operator corrected the way number {i} of doing the thing " + "x" * 60,
+                   source="correction")
     c.close()
     g = wikis.conn(wikis.global_wiki)
     for i in range(26):

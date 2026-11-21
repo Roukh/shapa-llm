@@ -104,4 +104,14 @@ export async function setup(): Promise<{ token: string; id: string; w: string }>
 
 export const rec = (w: string, tail = "") => `/v1/wikis/${w}/records${tail}`;
 
+let issueN = 9000;
+/** A mistake the engine's own hook filed (source `correction`): the only repo issues the session text's X carries. An API
+ *  write never carries a source, so it takes a sync put from the operator's device. */
+export async function correction(token: string, wikiKey: string, summary: string, tags: string[] = []) {
+  const id = `I${++issueN}`;
+  const r = await sync(token, wikiKey, { ops: [put(row(id, summary, { data: { summary, body: "", alias: null, source: "correction", session: "" }, tags }))] });
+  if (r.status !== 200) throw new Error(`correction failed: ${r.status} ${r.text}`);
+  return r;
+}
+
 export { env };

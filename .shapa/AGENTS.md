@@ -105,8 +105,8 @@ of a new row: [[placement]].
   `shapa tasks` lists the operator's open `human_task` items (`--all` for
   every wiki); open text identical to a stored task is stored once.
 - Stages: the tag `stage:N` (one digit, one per record) on a rule, memory or
-  skill version. `stage:0` is the baseline, printed in full at every session
-  start within 6,000 characters. Only `shapa stage set|clear|list|pending` at
+  skill version. `stage:0` is the baseline, served at every session start as
+  one-line summaries within 6,000 characters. Only `shapa stage set|clear|list|pending` at
   the terminal sets it; an agent that asks for `stage:0` leaves a
   `stage-proposed:0` tag, and the operator reviews it with `shapa stage
   pending`. `shapa bootstrap --stage N` prints stages up to N.

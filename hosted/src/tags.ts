@@ -4,7 +4,7 @@
 // relation index (relations.ts), the session text, the stage gate and the reach filter all read
 // from here.
 
-import { PROJECT_PREFIX, RANK_PREFIX, cmp, type Kind } from "./records.js";
+import { NODE_TAG, PROJECT_PREFIX, RANK_PREFIX, cmp, type Kind } from "./records.js";
 
 export const STAGE_MAX = 9;
 export const STAGE_PREFIX = "stage:";
@@ -24,7 +24,7 @@ export const LEARNING_TAGS: readonly string[] = ["principle", "churn", "violatio
 export const LEARNING_PREFIXES: readonly string[] = ["violations:", "revisions:", "repeats:", "serves:", "repeat-of:", "last-seen:", "evidence:", "learned-at:", "generalized-into:"];
 
 /** Tags that are the engine's, not topics: never listed in TOPICS or the tag index (unless asked). */
-export const SYSTEM_TAGS: readonly string[] = ["skill", "focus", "human_task", "agent_task", IDEA_TAG, DECISION_TAG, ...LEARNING_TAGS];
+export const SYSTEM_TAGS: readonly string[] = ["skill", "focus", NODE_TAG, "human_task", "agent_task", IDEA_TAG, DECISION_TAG, ...LEARNING_TAGS];
 export const SYSTEM_PREFIXES: readonly string[] = [STAGE_PREFIX, PROPOSED_PREFIX, "skill:", "v:", "status:", RANK_PREFIX, PROJECT_PREFIX, ...LEARNING_PREFIXES];
 
 export function isSystemTag(tag: string): boolean {
@@ -115,7 +115,9 @@ export function baseVisible(kind: Kind, tags: readonly string[], wiki = ""): boo
     case "R": return hasBaseline(tags);
     case "I": return hasBaseline(tags) || (wiki === "global" && !tags.some((t) => NOT_A_LESSON.includes(t)));
     case "M": return tags.includes(IDEA_TAG) || tags.includes(DECISION_TAG) || hasBaseline(tags);
-    case "D": return tags.includes("skill") ? hasBaseline(tags) || tags.includes("status:active") : true;
+    case "D":
+      if (tags.includes(NODE_TAG)) return false; // a repo node holds a repo's principles: never a baseline device's
+      return tags.includes("skill") ? hasBaseline(tags) || tags.includes("status:active") : true;
     case "N": return hasBaseline(tags); // a note's stage:0 is the access marker
     default: return true;
   }

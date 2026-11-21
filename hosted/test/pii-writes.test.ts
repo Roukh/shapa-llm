@@ -89,6 +89,33 @@ describe("pii gate: MCP", () => {
   });
 });
 
+describe("pii gate: the whole record", () => {
+  it("scans git_ref, claimed_by and the link destinations of a sync put, from the operator's device too (severe categories)", async () => {
+    const { token: op, w } = await setup();
+    const status = async (r: unknown) => (await sync(op, w, { ops: [put(r)] })).body.results[0];
+    const f = job("F650", "feature");
+    const viaRef = await status({ ...f, data: { ...f.data, git_ref: CARD } });
+    expect(viaRef.status).toBe("rejected");
+    expect(viaRef.error).toContain("a payment card number");
+    const g = job("F651", "feature");
+    expect((await status({ ...g, data: { ...g.data, claimed_by: CARD } })).status).toBe("rejected");
+    const h = row("M652", "linked");
+    expect((await status({ ...h, links: [["4111 1111 1111 1111", "about"]] })).status).toBe("rejected");
+    expect((await status(row("M653", "clean"))).status).toBe("accepted");
+  });
+
+  it("scans the merged record on an edit: text the edit leaves alone is held to the same gate", async () => {
+    const { token, w } = await setup();
+    const op = token; // every scope: the operator's machine, which may keep an email over sync
+    const kept = row("M660", "plain", { data: { summary: "plain", body: EMAIL, alias: null, source: "", session: "" } });
+    expect((await sync(op, w, { ops: [put(kept)] })).body.results[0].status).toBe("accepted");
+    const app = await mint("editor-app", ["read", "write"]);
+    const e = await send("PATCH", rec(w, "/M660"), { token: app.token, body: { summary: "retitled only" } });
+    expect(e.status).toBe(400);
+    expect(e.text).not.toContain("jane.roe");
+  });
+});
+
 describe("pii gate: sync", () => {
   it("refuses every category from an app's device and the severe ones from the operator's own", async () => {
     const op = (await setup()).token; // a device token with every scope: the operator's machine

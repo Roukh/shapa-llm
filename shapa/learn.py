@@ -148,7 +148,7 @@ def opposite(a: str, b: str) -> bool:
 
 
 def issue_text(row: db.Row) -> str:
-    m = re.search(r"^Operator:\s*(.*?)(?:\nAgent before:|\Z)", row.body or "", re.S | re.M)
+    m = re.search(r"^(?:Operator|Repo node principle):\s*(.*?)(?:\nAgent before:|\Z)", row.body or "", re.S | re.M)
     return " ".join(((m.group(1) if m else "") or row.summary or "").split())
 
 
@@ -1337,7 +1337,7 @@ def _post_write(target: Scope, rid: str, now: datetime, local: bool = True) -> N
 
 
 SIMILAR_MESSAGE = ("a rule this near already exists, and the newer of two that conflict wins: `--supersedes R<n>` "
-                   "(MCP: `supersedes: [\"R<n>\"]`) files this one and deletes the older, `--into R<n>` merges "
+                   "(the operator's CLI only) files this one and deletes the older, `--into R<n>` merges "
                    "into it, or `--distinct-from R<n>` says this is a different subject:")
 
 
@@ -1445,6 +1445,9 @@ def write_rule(root, label: str, summary: str, body: str, tags, *, alias: str | 
     caller; here: a rule this near an existing one (a share of its words, or a near vector) is refused with
     the candidates unless the write names what it ``supersedes`` (deleted once this one is written, its text
     kept in the evidence) or claims ``distinct_from`` it. Returns ``{"id", "created", "superseded"}``."""
+    if supersedes and not privileged:
+        raise db.LedgerError("superseding deletes a rule, so only the operator's local CLI does it "
+                             "(`shapa save --type rule --supersedes R<n>`)")
     now = now or datetime.now(timezone.utc)
     emb = _embedder(embedder)
     target = Scope(label, Path(root), metrics.repo_key(root))

@@ -448,18 +448,26 @@ def tool_skill(args: dict[str, Any], cwd: str | None) -> dict[str, Any]:
     action = str(args.get("action") or ("show" if args.get("name") else "list")).strip()
     if action in ("list", "show"):
         out: list[Any] = []
-        for wr in config.wiki_roots(args.get("root") or cwd):
+        taken: set[str] = set()      # names the global wiki holds: a repo skill of that name is hidden
+        for wr in sorted(config.wiki_roots(args.get("root") or cwd), key=lambda r: r.kind != "global"):
             if wr.kind not in ("global", "repo") or not db.exists(wr.path):
                 continue
             conn = db.connect(wr.path)
             try:
                 if action == "list":
-                    out += [{**s, "scope": wr.kind} for s in skills.summaries(conn)]
+                    mine = [s for s in skills.summaries(conn) if wr.kind == "global" or s["name"] not in taken]
+                    out += [{**s, "scope": wr.kind} for s in mine]
+                    if wr.kind == "global":
+                        taken |= {s["name"] for s in mine}
                 else:
-                    v = skills.get(conn, str(args.get("name") or ""),
-                                   int(args["version"]) if args.get("version") else None)
+                    name = str(args.get("name") or "")
+                    if wr.kind == "repo" and name in taken:
+                        continue
+                    v = skills.get(conn, name, int(args["version"]) if args.get("version") else None)
                     if v is not None:
                         out.append({**skills.as_dict(v, body=True), "scope": wr.kind})
+                        if wr.kind == "global":
+                            taken.add(name)
             except (ValueError, TypeError) as exc:
                 return {"error": str(exc)}
             finally:
@@ -831,11 +839,10 @@ TOOLS: list[dict[str, Any]] = [
                 },
                 "supersedes": {
                     "type": "array", "items": {"type": "string"},
-                    "description": "rule only: ids (R<n>) of older rules of the SAME wiki this one replaces; "
-                                   "the newer wins and they are deleted. A rule is ONE imperative sentence; one "
-                                   "near an existing rule is refused with the candidates unless it supersedes "
-                                   "them or names them in `distinct_from`. Baseline rules cannot be superseded "
-                                   "here.",
+                    "description": "refused here: superseding deletes a rule, so only the operator's local CLI "
+                                   "does it (`shapa save --type rule --supersedes R<n>`). A rule is ONE "
+                                   "imperative sentence; one near an existing rule is refused with the "
+                                   "candidates unless it names them in `distinct_from`.",
                 },
                 "distinct_from": {
                     "type": "array", "items": {"type": "string"},

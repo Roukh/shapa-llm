@@ -186,3 +186,35 @@ def test_scan_wiki_reads_only(wikis):
     before = db.db_path(wikis.wiki).read_bytes()
     assert pii.scan_wiki(wikis.wiki) == [("M1", ["email"])]
     assert db.db_path(wikis.wiki).read_bytes() == before
+
+
+# --- the whole record: the fields a gate used to skip ------------------------------------------------------
+
+def _pulled(rid, kind, data, links=()):
+    return {"id": rid, "uid": "uid-" + rid.lower() + "-" * 12, "kind": kind, "created": "2026-01-01T00:00:00Z",
+            "updated": "2026-01-01T00:00:00Z", "rev": 0, "deleted": False, "device": "x", "data": data,
+            "tags": [], "links": [list(x) for x in links]}
+
+
+def test_a_pulled_record_with_a_card_in_git_ref_claimed_by_or_a_link_is_dropped():
+    job = {"title": "t", "body": "", "parent": None, "status": "open", "closed_reason": None, "git_ref": None,
+           "alias": None, "claimed_by": None, "closed": None}
+    assert syncrec.validate_record(_pulled("F1", "F", dict(job))) is not None
+    assert syncrec.validate_record(_pulled("F1", "F", {**job, "git_ref": CARD})) is None
+    assert syncrec.validate_record(_pulled("F1", "F", {**job, "claimed_by": CARD})) is None
+    mem = {"summary": "s", "body": "", "alias": None, "source": "", "session": ""}
+    assert syncrec.validate_record(_pulled("M1", "M", mem)) is not None
+    assert syncrec.validate_record(_pulled("M1", "M", mem, links=[("4111 1111 1111 1111", "about")])) is None
+
+
+def test_an_edit_screens_the_text_it_leaves_alone_and_git_ref(g):
+    rid, _ = db.add_row(g, "M", "plain", EMAIL, privileged=True)       # the operator's own store may hold an email
+    assert "email" in refused(db.update_row, g, rid, summary="retitled only")
+    did = db.add_doc(g, "doc", EMAIL, privileged=True, project="p")
+    assert "email" in refused(db.update_doc, g, did, title="retitled only")
+    item = db.add_item(g, "T", "task", body=EMAIL, privileged=True)
+    assert "email" in refused(db.update_item, g, item, title="retitled only")
+    clean = db.add_item(g, "T", "clean task")
+    assert "payment card" in refused(db.update_item, g, clean, git_ref="4111 1111 1111 1111")
+    assert "payment card" in refused(db.add_item, g, "T", "with a ref", git_ref="4111 1111 1111 1111")
+    assert db.update_item(g, clean, title="clean again").title == "clean again"

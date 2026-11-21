@@ -25,6 +25,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+#: The one characters-per-token heuristic (no tokenizer dependency): the session start budget and the harness prompt size.
+CHARS_PER_TOKEN = 4
 ENV_VAR = "SHAPA_MEMORY"
 DEFAULT_DIR = Path.home() / ".shapa" / "memory"
 #: Pointer file written by ``shapa init --global`` to remember the global wiki.

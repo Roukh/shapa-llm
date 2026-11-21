@@ -387,19 +387,31 @@ def _plan(entry: Entry, held: list[Held]) -> str:
 
 
 def mirror(conn: sqlite3.Connection | None, sc: Scan, *, scope: str = "", source: str = "", wiki: str = "",
-           dry_run: bool = False, deadline: float | None = None, allow_empty_delete: bool = True) -> Report:
-    """Apply a :class:`Scan` to the wiki behind *conn* (``None``: an empty wiki, for a dry run)."""
+           dry_run: bool = False, deadline: float | None = None, allow_empty_delete: bool = True,
+           reserved=frozenset()) -> Report:
+    """Apply a :class:`Scan` to the wiki behind *conn* (``None``: an empty wiki, for a dry run). *reserved* are
+    names a repo library may not take (the global library's own): such a directory is skipped with a warning, and a
+    copy the mirror wrote earlier is removed like that of a deleted directory."""
     rep = Report(scope=scope, source=str(source), wiki=wiki, dry_run=dry_run, skipped=sc.skipped,
                  warnings=list(sc.warnings))
     held = _held(conn) if conn is not None else {}
+    taken = sorted(sc.present & set(reserved))
+    for name in taken:
+        rep.skipped += 1
+        if len(rep.warnings) < WARNINGS_MAX:
+            rep.warnings.append(f"{name}: a global skill has this name: the repo copy is not mirrored "
+                                "(rename the directory; a global skill is never shadowed)")
+    present = sc.present - set(taken)
     todo = []
     for e in sc.entries:
+        if e.name in taken:
+            continue
         plan = _plan(e, held.get(e.name, []))
         if plan == "unchanged":
             rep.unchanged += 1
         else:
             todo.append((e, plan))
-    gone = [n for n, hs in held.items() if n not in sc.present and any(h.source.startswith(MIRROR_PREFIX) for h in hs)]
+    gone = [n for n, hs in held.items() if n not in present and any(h.source.startswith(MIRROR_PREFIX) for h in hs)]
     if gone and sc.incomplete:
         rep.skipped_delete = "the library could not be read completely: nothing deleted"
         gone = []
@@ -501,15 +513,39 @@ def _set_watermark(root, key: str, value: str) -> None:
         conn.close()
 
 
+def reserved_names(scope: str, root) -> frozenset[str]:
+    """The names a library of *scope* may not take: for a repo, every skill the global library or the global wiki
+    holds (a repo skill never shadows a global one; repo skills need distinct names). Nothing for global."""
+    if scope != "repo":
+        return frozenset()
+    names: set[str] = set()
+    try:
+        groot = config.global_root()
+        if Path(groot).resolve() != Path(root).resolve():
+            conn = _open_readonly(groot)
+            if conn is not None:
+                try:
+                    names |= set(_held(conn))
+                finally:
+                    conn.close()
+        src = default_source("global")
+        if src.is_dir():
+            names |= scan(src, deadline=time.monotonic() + 2.0).present
+    except Exception:
+        pass
+    return frozenset(names)
+
+
 def run_scope(scope: str, root, source, *, dry_run: bool = False, deadline: float | None = None,
               auto: bool = False) -> Report:
     """Mirror one library into the wiki at *root*. Raises :class:`shapa.db.LedgerError` when the library
     cannot be read; per-skill trouble is in the report."""
     sc = scan(source, deadline=deadline)
+    reserved = reserved_names(scope, root)
     if dry_run:
         conn = _open_readonly(root)
         try:
-            return mirror(conn, sc, scope=scope, source=source, wiki=str(root), dry_run=True)
+            return mirror(conn, sc, scope=scope, source=source, wiki=str(root), dry_run=True, reserved=reserved)
         finally:
             if conn is not None:
                 conn.close()
@@ -518,7 +554,7 @@ def run_scope(scope: str, root, source, *, dry_run: bool = False, deadline: floa
         raise db.LedgerError(f"{root} has no database yet")
     try:
         rep = mirror(conn, sc, scope=scope, source=source, wiki=str(root), deadline=deadline,
-                     allow_empty_delete=not auto)
+                     allow_empty_delete=not auto, reserved=reserved)
     finally:
         conn.close()
     if not rep.partial and not rep.errors and not sc.incomplete:

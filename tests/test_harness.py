@@ -644,3 +644,44 @@ def test_status_survives_a_malformed_config_and_reports_it(box):
     (box.codex / "config.toml").write_text("[[[")
     st = harness.status(["codex"])["harnesses"][0]
     assert not st["wired"] and any("not valid TOML" in p for p in st["problems"])
+
+
+@pytest.mark.parametrize("name,mode,rel", [
+    ("codex", "append", ".codex/AGENTS.md"),
+    ("claude-code", "append", ".claude/CLAUDE.md"),
+    ("gemini", "append", ".gemini/GEMINI.md"),
+    ("codex", "replace", ".codex/config.toml"),
+    ("claude-code", "replace", ".claude/settings.json"),
+    ("opencode", "append", ".config/opencode/opencode.json"),
+])
+def test_uninstall_after_a_reinstall_and_later_edits_never_reverts_the_users_edits(box, name, mode, rel):
+    seeded = box.seed()
+    path = box.home / rel
+    first = seeded[path].decode()
+    install(name, mode=mode)
+    if path.suffix == ".json":
+        data = json.loads(path.read_text())
+        data["later_user_key"] = "kept"
+        path.write_text(json.dumps(data, indent=2) + "\n")
+        later = "later_user_key"
+    else:
+        later = "later_user_line"
+        path.write_text(path.read_text() + f"\n{later} = 1\n")
+    install(name, mode=mode)                         # a reinstall after the user's edit
+    harness.uninstall([name])
+    restored = path.read_text()
+    assert later in restored, "the user's later edit survived the uninstall"
+    if path.suffix == ".json":                        # what was there before shapa stays
+        assert {k: v for k, v in json.loads(restored).items() if k != later} == json.loads(first)
+    else:
+        assert first.strip().split("\n")[0] in restored
+    assert harness.MD_BEGIN not in restored
+
+
+def test_the_characters_per_token_heuristic_has_one_source():
+    from shapa import bootstrap, config
+
+    assert harness.CHARS_PER_TOKEN is config.CHARS_PER_TOKEN is bootstrap.CHARS_PER_TOKEN == 4
+    defining = [p.name for p in (REPO / "shapa").glob("*.py")
+                if re.search(r"^CHARS_PER_TOKEN\s*=", p.read_text(encoding="utf-8"), re.M)]
+    assert defining == ["config.py"]

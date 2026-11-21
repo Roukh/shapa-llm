@@ -22,7 +22,7 @@ Three things that are documents (`D`) told apart by tags, implemented alike in P
 | Direction | What |
 |---|---|
 | in | REST focus, skills and projects routes, MCP `focus`, `focus_set`, `skills`, `skill`, `project_*` ([[hosted-api]]); sync puts of documents ([[hosted-sync]]) |
-| out | fires and baseline skills in the session text ([[hosted-api]]) |
+| out | the focus (fires) in the session text, skills through `skills`, `skill` and `skill_match` ([[hosted-api]]) |
 
 ## Focus, skills and the project document
 
@@ -45,4 +45,4 @@ None of these is a record kind or a schema change: each is a document (`D`) told
 - Closing a feature that is a fire frees its slot, the later fires move up, and the best candidate takes the last slot: `shapa/db.py` `close`, the Worker's `close` (REST and MCP). A closed or missing feature is not shown. Free-text fires are never freed. The operator overrides with `shapa focus promote` / `POST .../focus/promote`.
 - A memory, rule or issue that names a skill (tag `skill:NAME`; in Python also an `about` link to a version) files a new `pending` version: the skill's latest version (any status) plus a `## Lesson [ROWID]` section whose lines are all quoted (`> `), the body cut at 1500 characters, once per row. It never activates. Python does it in `add_row`, `tag` and `link`; the Worker in REST and MCP create and in PATCH of tags; a pulled record never re-files, so a lesson is filed once. Only a device with the write scope can file one.
 - Skill FILES are the source of truth: `shapa skill mirror` (`shapa/skillmirror.py`) writes the operator's library (`skills/<category>/<name>/SKILL.md`, beside the global wiki) and a repo's `.shapa/skills/<name>/SKILL.md` as these versions (a version's `source` is `mirror:<hash>`), and they reach this store as ordinary record syncs (a repo's skill files are never notes). Every ACTIVE version is readable by every device, a baseline one included (`baseVisible`; a store older than this rule rebuilds its reach column once, meta key `skill_access_v1`); a pending or previous one only by a full device. The MCP tool `skill_match` {text, wiki?} (`skillmatch.ts`: BM25 over name counted twice and description, the engine's tokenizer, at most 6, each with name, description, wiki and a `matches:` reason; the global skills plus the named wiki's, which hides a global skill of the same name) is open to every device.
-- A skill version's body reaches the session text only as a baseline skill: the active version of a skill carrying `stage:0` (printed with its name and description, the body indented and cut). A pending, previous or higher-stage version never does, and the local `shapa bootstrap` prints a skill's name and description only.
+- A skill version's body is never in the session text, on either side: an agent reads it with `skill` (a baseline device reads every ACTIVE version, never a pending or previous one), and `skill_match` names at most 6 active skills for a task.

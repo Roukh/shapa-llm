@@ -216,13 +216,18 @@ def test_supersedes_is_capped(wikis):
         apply(wikis, NEW, supersedes=[f"R{i}" for i in range(1, 12)])
 
 
-def test_save_rule_supersedes_from_the_mcp_tool_and_from_the_cli(wikis, monkeypatch):
+def test_save_rule_supersedes_is_the_operators_cli_only_and_the_mcp_tool_never_deletes(wikis, monkeypatch):
     monkeypatch.chdir(wikis.repo)
     old = mcp.tool_save({"scope": "repo", "summary": OLD, "body": "x", "type": "rule"}, str(wikis.repo))["id"]
     res = mcp.tool_save({"scope": "repo", "summary": NEW, "body": "y", "type": "rule"}, str(wikis.repo))
     assert res["candidates"][0]["id"] == old and "supersedes" in res["error"]
-    ok = mcp.tool_save({"scope": "repo", "summary": NEW, "body": "y", "type": "rule", "supersedes": [old]},
-                       str(wikis.repo))
+    refused = mcp.tool_save({"scope": "repo", "summary": NEW, "body": "y", "type": "rule", "supersedes": [old]},
+                            str(wikis.repo))
+    assert "local CLI" in refused["error"] and "id" not in refused
+    assert [r.id for r in rows(wikis.wiki, "R")] == [old]                      # nothing written, nothing deleted
+    with pytest.raises(db.LedgerError, match="local CLI"):                      # the engine's own door as well
+        learn.write_rule(wikis.repo, "repo", NEW, "y", [], supersedes=[old])
+    ok = save.save_note("repo", NEW, "y", note_type="rule", start=wikis.repo, supersedes=[old], privileged=True)
     assert ok["id"] != old and old not in {r.id for r in rows(wikis.wiki, "R")}
     assert f"supersedes {old}" in [r for r in rows(wikis.wiki, "R") if r.id == ok["id"]][0].body
     again = mcp.tool_save({"scope": "repo", "summary": "Keep logs short and plain always.", "body": "z", "type": "rule",
@@ -233,15 +238,15 @@ def test_save_rule_supersedes_from_the_mcp_tool_and_from_the_cli(wikis, monkeypa
     assert "error" not in cli and ok["id"] not in {r.id for r in rows(wikis.wiki, "R")}
 
 
-def test_an_mcp_save_cannot_supersede_a_baseline_rule_or_another_wikis_rule(wikis, monkeypatch):
+def test_the_cli_cannot_supersede_another_wikis_rule_and_the_mcp_tool_never_touches_a_baseline_one(wikis, monkeypatch):
     monkeypatch.chdir(wikis.repo)
     g = save.save_note("global", OLD, "x", note_type="rule", start=wikis.repo, tags=["stage:0"], privileged=True)
     assert "error" not in g
     res = mcp.tool_save({"scope": "global", "summary": NEW, "body": "y", "type": "rule", "supersedes": [g["id"]]},
                         str(wikis.repo))
-    assert "baseline" in res["error"] and g["id"] in {r.id for r in rows(wikis.global_wiki, "R")}
-    res = mcp.tool_save({"scope": "repo", "summary": NEW, "body": "y", "type": "rule",
-                         "supersedes": [f"global/{g['id']}"]}, str(wikis.repo))
+    assert "local CLI" in res["error"] and g["id"] in {r.id for r in rows(wikis.global_wiki, "R")}
+    res = save.save_note("repo", NEW, "y", note_type="rule", start=wikis.repo,
+                         supersedes=[f"global/{g['id']}"], privileged=True)
     assert "own wiki" in res["error"]
     done = save.save_note("global", NEW, "y", note_type="rule", start=wikis.repo, supersedes=[g["id"]], privileged=True)
     assert "error" not in done and g["id"] not in {r.id for r in rows(wikis.global_wiki, "R")}
@@ -277,13 +282,14 @@ def test_a_subproject_key_is_exactly_what_clean_project_makes_of_it(wikis):
 
 # --- break-it regressions ----------------------------------------------------------------------------
 
-def test_an_mcp_save_cannot_supersede_a_rule_it_is_not_about(wikis, monkeypatch):
+def test_an_mcp_save_cannot_delete_a_rule_by_naming_it_whatever_its_words(wikis, monkeypatch):
     monkeypatch.chdir(wikis.repo)
     keep = mcp.tool_save({"scope": "repo", "summary": "Name database tables in the singular form.", "body": "x",
                           "type": "rule"}, str(wikis.repo))["id"]
-    res = mcp.tool_save({"scope": "repo", "summary": NEW, "body": "y", "type": "rule", "supersedes": [keep]},
-                        str(wikis.repo))
-    assert "same subject" in res["error"] and keep in {r.id for r in rows(wikis.wiki, "R")}
+    for text in (NEW, "Name database tables in the singular form, always."):   # unrelated, and a word-overlap match
+        res = mcp.tool_save({"scope": "repo", "summary": text, "body": "y", "type": "rule", "supersedes": [keep]},
+                            str(wikis.repo))
+        assert "local CLI" in res["error"] and keep in {r.id for r in rows(wikis.wiki, "R")}
 
 
 def test_the_learning_tags_stay_reserved_for_the_new_promote_tag_too(wikis, monkeypatch):
@@ -314,3 +320,16 @@ def test_the_save_cli_exits_two_with_the_candidates_when_a_rule_is_near_another(
         save.main(["--scope", "repo", "--root", str(wikis.repo), "--summary", NEW, "--body", "y", "--type", "rule",
                    "--supersedes", "R1"])
     assert exc.value.code == 0 and [r.id for r in rows(wikis.wiki, "R")] == ["R2"]
+
+
+def test_the_row_cli_refuses_a_rule_that_holds_several_but_not_other_kinds(wikis):
+    from shapa import ledger
+
+    cwd = ["--scope", "repo", "--cwd", str(wikis.repo)]
+    with pytest.raises(ledger.CommandError, match="ONE rule"):
+        ledger.row_main(["add", "R", "1. Use npm. 2. Never pnpm.", *cwd])
+    with pytest.raises(ledger.CommandError, match="ONE rule"):
+        ledger.row_main(["add", "R", "Use npm.", "--body", "- Use the lockfile\n- Never edit it by hand", *cwd])
+    assert rows(wikis.wiki, "R") == []
+    assert ledger.row_main(["add", "M", "1. a thing 2. another thing", *cwd]) == 0   # a memory may hold a list
+    assert ledger.row_main(["add", "R", "Install packages with npm inside a worktree.", *cwd]) == 0

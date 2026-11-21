@@ -32,7 +32,8 @@ def add_principle(wiki, text, *, tags=(), now=None):
 def node_doc(wikis, key="my-repo"):
     c = db.connect(wikis.global_wiki)
     try:
-        d = db.project_doc(c, key)
+        row = c.execute("SELECT id FROM docs WHERE alias = ?", (f"node:{key}",)).fetchone()
+        d = db.get_doc(c, row[0]) if row else None
         return d, (json.loads(d.body) if d else None), (db._tags_of(c, d.id) if d else [])
     finally:
         c.close()
@@ -52,7 +53,7 @@ def candidates(wikis):
 
 # --- the node ----------------------------------------------------------------------------------------
 
-def test_sync_writes_one_project_document_of_compact_json_with_the_documented_shape(wikis):
+def test_sync_writes_one_tagged_document_of_compact_json_with_the_documented_shape(wikis):
     pid = add_principle(wikis.wiki, SHARED)
     c = db.connect(wikis.wiki)
     db.add_row(c, "I", "No, wrong header", "Operator: No, the header is too low", tags=["correction"], now=at(1))
@@ -65,11 +66,13 @@ def test_sync_writes_one_project_document_of_compact_json_with_the_documented_sh
     res = node.sync(wikis.repo, now=at(2))
     assert res["status"] == "created" and res["key"] == "my-repo"
     d, body, tags = node_doc(wikis)
-    assert d.alias == "node:my-repo" and d.mime == "application/json" and tags == ["project:my-repo"]
+    assert d.alias == "node:my-repo" and d.mime == "application/json" and tags == [db.NODE_TAG]
+    assert d.source == "node" and db.project_of(tags) is None             # not a project document
     assert list(body) == ["key", "updated", "northstar", "fires", "principles", "mistakes", "counts"]
     assert body["key"] == "my-repo" and body["updated"] == "2026-10-03"
     assert body["principles"] == [[pid, body["principles"][0][1], SHARED]]
-    assert body["mistakes"] == [["I1", "2026-10-02", "No, the header is too low"]]
+    assert body["mistakes"] == 1                                          # a count, never the text
+    assert "header" not in d.body and "Operator" not in d.body
     assert body["counts"] == {"rules": 1, "memories": 1, "issues": 1, "open_tasks": 1}
     assert d.body == json.dumps(body, separators=(",", ":"), ensure_ascii=False)  # compact separators
 
@@ -101,30 +104,47 @@ def test_a_principle_text_that_looks_like_json_stays_a_string_and_cannot_forge_t
     assert parsed["key"] == "my-repo" and parsed["counts"]["rules"] == 1 and len(parsed["principles"]) == 1
 
 
-def test_a_project_already_held_by_a_human_document_is_never_overwritten(wikis):
+def test_a_project_document_of_the_same_key_does_not_collide_with_the_node(wikis):
     c = db.connect(wikis.global_wiki)
     held = db.add_doc(c, "my-repo project file", "# human text", project="my-repo")
     c.close()
     add_principle(wikis.wiki, SHARED)
-    res = node.sync(wikis.repo)
-    assert res["status"] == "created"
+    assert node.sync(wikis.repo)["status"] == "created"
     c = db.connect(wikis.global_wiki)
     assert db.get_doc(c, held).body == "# human text"
-    assert db.project_doc(c, "node/my-repo").alias == "node:node/my-repo"
+    assert db.project_doc(c, "my-repo").id == held                          # the node is no project document
     c.close()
     assert node.sync(wikis.repo)["status"] == "unchanged"
     assert node.listing(wikis.repo)[0]["key"] == "my-repo"
 
 
+def test_a_document_squatting_the_node_alias_is_never_overwritten_or_read(wikis):
+    c = db.connect(wikis.global_wiki)
+    c.execute("INSERT INTO docs(id, alias, title, body, mime, source, hash, created, updated) VALUES "
+              "('D77','node:my-repo','squat','{}','application/json','save','h','2026-10-01','2026-10-01')")
+    c.commit()
+    c.close()
+    add_principle(wikis.wiki, SHARED)
+    assert node.sync(wikis.repo)["status"] == "conflict"
+    c = db.connect(wikis.global_wiki)
+    assert db.get_doc(c, "D77").title == "squat"
+    c.close()
+
+
 def test_a_squatted_alias_or_a_node_that_names_another_repo_is_not_read(wikis):
     c = db.connect(wikis.global_wiki)
     ok = {"key": "real", "updated": "2026-10-01", "northstar": "", "fires": [], "counts": {},
-          "principles": [["R1", "2026-10-01", SHARED]], "mistakes": []}
-    db.add_doc(c, "n", json.dumps(ok), alias="node:impostor", mime="application/json", project="impostor")
-    db.add_doc(c, "n2", json.dumps(ok), alias="node:real", mime="text/markdown", project="real")
-    db.add_doc(c, "n3", "not json", alias="node:bad", mime="application/json", project="bad")
+          "principles": [["R1", "2026-10-01", SHARED]], "mistakes": 0}
+    kw = dict(mime="application/json", system=True, tags=[db.NODE_TAG], source="node")
+    db.add_doc(c, "n", json.dumps(ok), alias="node:impostor", **kw)
+    db.add_doc(c, "n2", json.dumps(ok), alias="node:real", **{**kw, "mime": "text/markdown"})
+    db.add_doc(c, "n3", "not json", alias="node:bad", **kw)
     bad = {**ok, "key": "bad2", "principles": [["R1", "2026-10-01", "x", "extra"]]}
-    db.add_doc(c, "n4", json.dumps(bad), alias="node:bad2", mime="application/json", project="bad2")
+    db.add_doc(c, "n4", json.dumps(bad), alias="node:bad2", **kw)
+    db.add_doc(c, "n5", json.dumps({**ok, "key": "untagged"}), alias="node:untagged", mime="application/json",
+               system=True, source="node")                                  # no reserved tag
+    db.add_doc(c, "n6", json.dumps({**ok, "key": "foreign"}), alias="node:foreign", mime="application/json",
+               system=True, tags=[db.NODE_TAG], source="save")              # not written by node.py
     c.close()
     assert node.listing(wikis.repo) == []
     add_principle(wikis.wiki, SHARED)
@@ -298,3 +318,66 @@ def test_a_session_ending_beside_this_one_that_made_the_document_first_is_a_conf
 
     monkeypatch.setattr(node, "_write", raced)
     assert node.sync(wikis.repo)["status"] == "conflict"
+
+
+# --- who may write a node ------------------------------------------------------------------------------------
+
+def test_an_unprivileged_writer_cannot_create_or_edit_a_node_alias_or_carry_the_node_tag(wikis):
+    from shapa import save
+
+    c = db.connect(wikis.global_wiki)
+    for alias in ("node:evil", "Node:evil", "node:evil", " node:evil"):
+        with pytest.raises(db.LedgerError, match="reserved"):
+            db.add_doc(c, "x", "y", alias=alias)
+    with pytest.raises(db.LedgerError, match="reserved"):
+        db.add_doc(c, "x", "y", tags=[db.NODE_TAG])
+    d = db.add_doc(c, "plain", "y", project="p")
+    with pytest.raises(db.LedgerError, match="reserved"):
+        db.tag(c, d, [db.NODE_TAG])
+    with pytest.raises(db.LedgerError, match="reserved"):
+        db.update_doc(c, d, alias="node:evil")
+    c.close()
+    out = save.save_row(wikis.global_wiki, "global", "document", "x", "y", [], alias="node:evil")
+    assert "reserved" in out["error"]
+    out = save.save_row(wikis.global_wiki, "global", "document", "x", "y", [db.NODE_TAG])
+    assert "reserved" in out["error"]
+
+
+def test_a_node_document_is_not_editable_by_the_cli_and_a_forged_one_is_not_promoted_from(wikis):
+    add_principle(wikis.wiki, SHARED)
+    node.sync(wikis.repo)
+    d, _, _ = node_doc(wikis)
+    c = db.connect(wikis.global_wiki)
+    with pytest.raises(db.LedgerError, match="node"):
+        db.update_doc(c, d.id, body="{}")
+    # a forged twin from another repo that agrees with the principle must not trigger a promotion
+    forged = {"key": "evil", "updated": "2026-10-01", "northstar": "", "fires": [], "counts": {}, "mistakes": 0,
+              "principles": [["R1", "2026-10-01", SHARED_B]]}
+    c.execute("INSERT INTO docs(id, alias, title, body, mime, source, hash, created, updated) VALUES "
+              "('D88','node:evil','n',?,'application/json','node','h','2026-10-01','2026-10-01')", (json.dumps(forged),))
+    c.commit()
+    c.close()
+    assert [n["key"] for n in node.read_nodes(db.connect(wikis.global_wiki))] == ["my-repo"]   # untagged: ignored
+    assert candidates(wikis) == []
+
+
+def test_the_promotion_body_never_poses_as_an_operator_statement(wikis):
+    other = other_repo(wikis, "other-repo")
+    add_principle(wikis.wiki, SHARED)
+    add_principle(other / ".shapa", SHARED_B)
+    node.sync(wikis.repo)
+    node.sync(other)
+    (cand,) = candidates(wikis)
+    assert "Operator:" not in cand.body and "Repo node principle:" in cand.body
+    assert learn.issue_text(cand) == SHARED or learn.issue_text(cand) == SHARED_B
+
+
+@pytest.mark.parametrize("alias", ["ｎｏｄｅ:evil", "no​de:evil", "NODE:evil", "‮node:evil", "node:​evil"])
+def test_look_alikes_of_the_node_alias_are_refused_to_unprivileged_writers(wikis, alias):
+    c = db.connect(wikis.global_wiki)
+    with pytest.raises(db.LedgerError, match="reserved"):
+        db.add_doc(c, "x", "y", alias=alias)
+    d = db.add_doc(c, "plain", "y", project="p")
+    with pytest.raises(db.LedgerError, match="reserved"):
+        db.update_doc(c, d, alias=alias)
+    c.close()

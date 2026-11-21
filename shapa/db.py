@@ -75,7 +75,10 @@ DOC_BODY_MAX = 1_000_000  # the hosted contract's record limit
 #: versions. The lean gate (one document per project) never counts them.
 FOCUS_TAG = "focus"
 SKILL_TAG = "skill"
-RESERVED_DOC_TAGS = (FOCUS_TAG, SKILL_TAG)
+#: A repo node in the global wiki (``node.py``). Not plain ``node``: a wiki's own Node.js topic must not collide.
+NODE_TAG = "shapa-node"
+NODE_ALIAS_PREFIX = "node:"
+RESERVED_DOC_TAGS = (FOCUS_TAG, SKILL_TAG, NODE_TAG)
 PROJECT_PREFIX = "project:"
 _PROJECT_RE = re.compile(r"^[a-z0-9][a-z0-9._/-]{0,79}$")
 
@@ -104,7 +107,7 @@ LEARNING_TAGS = ("principle", "churn", "violation", "repeat", "repeat-checked", 
                  "meta-learning", "dismissed", "soft", "fire", "promote")
 LEARNING_TAG_PREFIXES = ("violations:", "revisions:", "repeats:", "serves:", "repeat-of:", "last-seen:",
                          "evidence:", "learned-at:", "generalized-into:")
-SYSTEM_TAGS = (SKILL_TAG, FOCUS_TAG, *OWNER_TAGS, IDEA_TAG, DECISION_TAG, *LEARNING_TAGS)
+SYSTEM_TAGS = (SKILL_TAG, FOCUS_TAG, NODE_TAG, *OWNER_TAGS, IDEA_TAG, DECISION_TAG, *LEARNING_TAGS)
 SYSTEM_TAG_PREFIXES = (STAGE_PREFIX, PROPOSED_PREFIX, "skill:", "v:", "status:", "rank:", PROJECT_PREFIX,
                        *LEARNING_TAG_PREFIXES)
 #: Kept under its old names for the callers that import them.
@@ -587,7 +590,7 @@ def add_item(conn: sqlite3.Connection, kind: str, title: str, *, parent: str | N
     if kind not in ITEM_KINDS:
         raise LedgerError(f"item kind must be one of {ITEM_KINDS}, got {kind!r}")
     tags = list(tags)
-    _pii_gate([title, body, alias, *map(str, tags)], tags, privileged)
+    _pii_gate([title, body, alias, git_ref, *map(str, tags)], tags, privileged)
     # The file is committed whole: no secret may enter it (redact.py).
     title = one_line(redact(title), 200)
     if not title:
@@ -622,8 +625,13 @@ def update_item(conn: sqlite3.Connection, item_id: str, *, privileged: bool = Fa
     bad = set(fields) - allowed
     if bad:
         raise LedgerError(f"cannot set {sorted(bad)}")
-    _pii_gate([fields.get("title"), fields.get("body"), fields.get("alias")], (), privileged,
-              stored_tags=_tags_of(conn, item_id) if fields.keys() & {"title", "body", "alias"} else ())
+    if fields.keys() & {"title", "body", "alias", "git_ref"}:
+        # the MERGED record: every text field as it will be stored, the ones this edit leaves alone included
+        held = conn.execute("SELECT title, body, alias, git_ref, claimed_by FROM items WHERE id = ?",
+                            (item_id,)).fetchone()
+        merged = [fields[k] if k in fields else (held[k] if held is not None else None)
+                  for k in ("title", "body", "alias", "git_ref")] + [held["claimed_by"] if held is not None else None]
+        _pii_gate(merged, (), privileged, stored_tags=_tags_of(conn, item_id))
     fields = {k: redact(v) if isinstance(v, str) and k in ("title", "body", "verify") else v
               for k, v in fields.items()}
     with write(conn):
@@ -1139,7 +1147,10 @@ def update_row(conn: sqlite3.Connection, row_id: str, *, summary: str | None = N
         if row is None:
             raise LedgerError(f"no row {row_id!r}")
         if summary is not None or body is not None or alias:
-            _pii_gate([summary, body, alias], (), privileged, stored_tags=_tags_of(conn, row["id"]))
+            # the MERGED row: the fields this edit leaves alone are screened as well
+            _pii_gate([summary if summary is not None else row["summary"],
+                       body if body is not None else row["body"], alias or row["alias"], row["source"]],
+                      (), privileged, stored_tags=_tags_of(conn, row["id"]))
         s = one_line(redact(summary)) if summary is not None else row["summary"]
         b = redact(str(body).strip()) if body is not None else row["body"]
         if f"{STAGE_PREFIX}0" in _tags_of(conn, row["id"]) and (
@@ -1258,6 +1269,11 @@ def check_project_tags(tags) -> None:
                 raise LedgerError(f"invalid project tag {t!r}: lowercase letters, digits and . _ / - only")
 
 
+def is_node_alias(alias) -> bool:
+    """Whether *alias* names a node document, however it is spelled (case, width, invisible characters)."""
+    return _plain(" ".join(str(alias or "").split())).startswith(NODE_ALIAS_PREFIX)
+
+
 def _clean_mime(mime: str | None) -> str:
     mime = (mime or DEFAULT_MIME).strip().lower()
     if not _MIME_RE.match(mime):
@@ -1289,7 +1305,9 @@ def add_doc(conn: sqlite3.Connection, title: str, body: str = "", *, tags=(), al
     tags = [t for t in (_clean_tag(x) for x in tags) if t]
     if not system and any(t in RESERVED_DOC_TAGS for t in tags):
         raise LedgerError(f"the tags {', '.join(RESERVED_DOC_TAGS)} are reserved: "
-                          "use `shapa focus` and `shapa skill`")
+                          "use `shapa focus`, `shapa skill` and `shapa node`")
+    if not system and is_node_alias(alias):
+        raise LedgerError(f"the alias prefix {NODE_ALIAS_PREFIX!r} is reserved for `shapa node`")
     key = clean_project(project)
     if key:
         tags = [t for t in tags if not t.startswith(PROJECT_PREFIX)] + [PROJECT_PREFIX + key]
@@ -1347,7 +1365,7 @@ def merge_docs(conn: sqlite3.Connection, src_id: str, dst_id: str) -> str:
 
 def update_doc(conn: sqlite3.Connection, doc_id: str, *, title: str | None = None,
                body: str | None = None, alias: str | None = None, mime: str | None = None,
-               privileged: bool = False) -> Doc:
+               privileged: bool = False, system: bool = False) -> Doc:
     with write(conn):
         r = conn.execute("SELECT * FROM docs WHERE id = ? OR alias = ?", (doc_id, doc_id)).fetchone()
         if r is None:
@@ -1355,8 +1373,14 @@ def update_doc(conn: sqlite3.Connection, doc_id: str, *, title: str | None = Non
         have = _tags_of(conn, r["id"])
         if f"{STAGE_PREFIX}0" in have and not privileged:
             raise LedgerError(f"{r['id']} is baseline (stage 0): its text changes only from the local CLI")
+        if not system and is_node_alias(alias):
+            raise LedgerError(f"the alias prefix {NODE_ALIAS_PREFIX!r} is reserved for `shapa node`")
+        if NODE_TAG in have and not system:
+            raise LedgerError(f"{r['id']} is a node: `shapa node sync` writes it")
         if title is not None or body is not None or alias:
-            _pii_gate([title, body, alias], (), privileged, stored_tags=have)
+            # the MERGED document: the fields this edit leaves alone are screened as well
+            _pii_gate([title if title is not None else r["title"], body if body is not None else r["body"],
+                       alias or r["alias"], r["source"]], (), privileged, stored_tags=have)
         t = one_line(redact(title), TITLE_MAX) if title is not None else r["title"]
         if not t:
             raise LedgerError("title is required")
@@ -1508,15 +1532,15 @@ def tag(conn: sqlite3.Connection, target: str, tags, *, privileged: bool = False
         clean = [t for t in (_clean_tag(x) for x in tags) if t]
         if any(t in RESERVED_DOC_TAGS for t in clean):
             raise LedgerError(f"the tags {', '.join(RESERVED_DOC_TAGS)} are reserved: "
-                              "use `shapa focus` and `shapa skill`")
+                              "use `shapa focus`, `shapa skill` and `shapa node`")
         check_project_tags([" ".join(str(x).split()) for x in tags])  # before any truncation
         moves = sorted({t for t in clean if t.startswith(PROJECT_PREFIX)})
         if len(moves) > 1:
             raise LedgerError("a document belongs to one project")
         doc = get_doc(conn, target)
         if doc is not None and any(t in RESERVED_DOC_TAGS for t in doc.tags):
-            raise LedgerError(f"{target} is the focus record or a skill version: its tags are the engine's, "
-                              "use `shapa focus` and `shapa skill`")
+            raise LedgerError(f"{target} is the focus record, a skill version or a node: its tags are the "
+                              "engine's, use `shapa focus`, `shapa skill` and `shapa node`")
         if doc is not None and moves:
             was, new = project_of(doc.tags), moves[0][len(PROJECT_PREFIX):]
             # the lean gate also covers a retag: no moving into a project another document holds

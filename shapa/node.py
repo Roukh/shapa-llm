@@ -5,18 +5,23 @@ is ONE project document in the global wiki per repo (the one-document-per-projec
 repo's wiki key, alias ``node:KEY``, mime ``application/json``) whose body is compact JSON::
 
     {"key", "updated", "northstar", "fires": [...], "principles": [[id, date, text], ...],
-     "mistakes": [[id, date, text], ...], "counts": {"rules", "memories", "issues", "open_tasks"}}
+     "mistakes": N, "counts": {"rules", "memories", "issues", "open_tasks"}}
 
 ``principles`` are the repo wiki's own principles (project and subproject scope, newest first, at most
-:data:`MAX_PRINCIPLES`); ``mistakes`` its open corrections (at most :data:`MAX_MISTAKES`). Every text is one
-masked line (:func:`shapa.learn.flatten`) and the body is written with ``json.dumps``, so a principle whose
-text looks like JSON stays a string. :func:`sync` is idempotent: no write when nothing but ``updated``
-would change. When a project of that key already holds a human document, the node goes to the key
-``node/KEY`` instead: it never overwrites one.
+:data:`MAX_PRINCIPLES`); ``mistakes`` is only the COUNT of its open corrections: raw correction text never
+leaves the repo wiki. Every text is one masked line (:func:`shapa.learn.flatten`) and the body is written with
+``json.dumps``, so a principle whose text looks like JSON stays a string. :func:`sync` is idempotent: no
+write when nothing but ``updated`` would change.
+
+The node carries the reserved tag :data:`shapa.db.NODE_TAG` (which hides it from a ``baseline`` device on
+the Worker and takes it out of the project gate) and ``source = "node"``; the alias prefix ``node:`` and the
+tag are refused to every other writer. A document is trusted as a node only when the alias, the tag, the
+source, the mime and the shape agree: it never overwrites or reads anything else.
 
 **Promotion.** A principle that appears (same normalised text, or a near duplicate by the learning loop's
 word-overlap check) in the nodes of two or more repos is filed in the global wiki as a PENDING candidate:
-an issue tagged ``correction``, ``soft`` and ``promote`` whose body names the source ids. ``shapa learn
+an issue tagged ``correction``, ``soft`` and ``promote`` whose body names the source ids and quotes the
+"repo node principle" (never as an operator statement). ``shapa learn
 pending`` lists it and ``shapa learn apply`` turns it into a global principle as for any correction;
 ``shapa learn dismiss`` removes it and it is not filed again (a per-device note in the derived index).
 Nothing is promoted automatically. At most :data:`MAX_NEW_PER_SYNC` are filed per sync and
@@ -47,15 +52,14 @@ from shapa import db, learn, metrics
 
 BUDGET_S = 2.0
 MAX_PRINCIPLES = 40
-MAX_MISTAKES = 20
 MAX_NODES = 200            # node documents one promotion pass reads
 MAX_NEW_PER_SYNC = 3
 MAX_OPEN = 5
 PROMOTE_MIN_REPOS = 2
 MAX_SOURCES = 8            # sources named in one candidate
-ALIAS_PREFIX = "node:"
+ALIAS_PREFIX = db.NODE_ALIAS_PREFIX
+SOURCE = "node"            # an unprivileged writer cannot set it together with the reserved tag
 MIME = "application/json"
-FALLBACK_PREFIX = "node/"
 _KEY_RE = re.compile(r"^[a-z0-9][a-z0-9._/-]{0,79}$")
 _ID_RE = re.compile(r"^[A-Z][1-9][0-9]{0,8}$")
 _DATE_RE = re.compile(r"^\d{4}-\d\d-\d\d$")
@@ -113,14 +117,9 @@ def build(conn, key: str) -> dict:
             principles.append([rid, str(r["updated"] or r["created"])[:10], learn.flatten(r["summary"])])
     principles.sort(key=lambda x: (x[1], x[0]), reverse=True)
     node["principles"] = principles[:MAX_PRINCIPLES]
-    mistakes = []
-    for rid, created, summary, body in conn.execute(
-            "SELECT m.id, m.created, m.summary, m.body FROM tags c JOIN mri m ON m.id = c.id "
-            "WHERE c.tag = 'correction' AND NOT EXISTS (SELECT 1 FROM tags x WHERE x.id = c.id AND "
-            "x.tag IN ('learned','dismissed')) ORDER BY m.created DESC, m.rowid DESC LIMIT ?", (MAX_MISTAKES,)):
-        row = db.Row(rid, "I", None, summary, body, "", "", "", created, created, [])
-        mistakes.append([rid, str(created)[:10], learn.flatten(learn.issue_text(row))])
-    node["mistakes"] = mistakes
+    node["mistakes"] = conn.execute(
+        "SELECT COUNT(*) FROM tags c WHERE c.tag = 'correction' AND NOT EXISTS (SELECT 1 FROM tags x "
+        "WHERE x.id = c.id AND x.tag IN ('learned','dismissed'))").fetchone()[0]
     n = db.counts(conn)
     node["counts"] = {"rules": n["R"], "memories": n["M"], "issues": n["I"], "open_tasks": n["T"]}
     return node
@@ -130,12 +129,18 @@ def dump(node: dict) -> str:
     return json.dumps(node, separators=(",", ":"), ensure_ascii=False)
 
 
+def trusted(doc: db.Doc) -> bool:
+    """Whether *doc* is a node this engine wrote: the exact alias prefix, the reserved tag and the source all
+    hold. A baseline device or any other writer cannot make all three, so a forged document is never read."""
+    return ((doc.alias or "").startswith(ALIAS_PREFIX) and db.NODE_TAG in doc.tags and doc.source == SOURCE)
+
+
 def parse(doc: db.Doc, expect_key: str | None = None) -> dict | None:
-    """A node document's body as a validated dict, or ``None``: the alias, the mime and the shape must all
-    hold, and the key in the body must be the one the alias names (a document cannot speak for another
-    repo). Every text is flattened again: what is stored here is never trusted."""
+    """A node document's body as a validated dict, or ``None``: the document must be :func:`trusted`, the mime
+    and the shape must hold, and the key in the body must be the one the alias names (a document cannot speak
+    for another repo). Every text is flattened again: what is stored here is never trusted."""
     alias = doc.alias or ""
-    if not alias.startswith(ALIAS_PREFIX) or doc.mime != MIME or len(doc.body) > 400_000:
+    if not trusted(doc) or doc.mime != MIME or len(doc.body) > 400_000:
         return None
     try:
         raw = json.loads(doc.body)
@@ -143,64 +148,57 @@ def parse(doc: db.Doc, expect_key: str | None = None) -> dict | None:
         return None
     if not isinstance(raw, dict) or not isinstance(raw.get("key"), str) or not _KEY_RE.match(raw["key"]):
         return None
-    named = alias[len(ALIAS_PREFIX):]
-    if named not in (raw["key"], FALLBACK_PREFIX + raw["key"][:70]) or (expect_key and raw["key"] != expect_key):
+    if alias[len(ALIAS_PREFIX):] != raw["key"] or (expect_key and raw["key"] != expect_key):
         return None
-
-    def triples(v, cap):
-        if not isinstance(v, list):
+    principles = []
+    if not isinstance(raw.get("principles"), list):
+        return None
+    for t in raw["principles"][:MAX_PRINCIPLES]:
+        if (not isinstance(t, list) or len(t) != 3 or not all(isinstance(x, str) for x in t)
+                or not _ID_RE.match(t[0]) or not _DATE_RE.match(t[1])):
             return None
-        out = []
-        for t in v[:cap]:
-            if (not isinstance(t, list) or len(t) != 3 or not all(isinstance(x, str) for x in t)
-                    or not _ID_RE.match(t[0]) or not _DATE_RE.match(t[1])):
-                return None
-            out.append([t[0], t[1], learn.flatten(t[2])])
-        return out
-
-    principles, mistakes = triples(raw.get("principles"), MAX_PRINCIPLES), triples(raw.get("mistakes"), MAX_MISTAKES)
-    if principles is None or mistakes is None or not isinstance(raw.get("updated"), str):
+        principles.append([t[0], t[1], learn.flatten(t[2])])
+    mistakes = raw.get("mistakes")
+    if (not isinstance(mistakes, int) or isinstance(mistakes, bool) or not isinstance(raw.get("updated"), str)):
         return None
     counts = raw.get("counts") if isinstance(raw.get("counts"), dict) else {}
     fires = raw.get("fires") if isinstance(raw.get("fires"), list) else []
     return {"key": raw["key"], "updated": raw["updated"][:32],
             "northstar": learn.flatten(str(raw.get("northstar") or ""), 240),
             "fires": [learn.flatten(str(f), 160) for f in fires[:3] if isinstance(f, str)],
-            "principles": principles, "mistakes": mistakes,
+            "principles": principles, "mistakes": max(0, mistakes),
             "counts": {k: int(counts[k]) for k in ("rules", "memories", "issues", "open_tasks")
                        if isinstance(counts.get(k), int)}}
 
 
 def _write(gconn, key: str, node: dict, now: datetime) -> tuple[str, str]:
-    """Create or update the node document: ``(status, doc id)``. A project of this key held by a document
-    that is not a node moves the node to ``node/KEY``; an alias held by something else is skipped over."""
-    for project in (key, FALLBACK_PREFIX + key):
-        alias = ALIAS_PREFIX + project
-        held = db.project_doc(gconn, project)
-        if held is not None:
-            if held.alias != alias or held.mime != MIME:
-                continue                                   # a human document: never overwritten
-            stored = parse(held)
-            if stored is not None and stored["key"] == key:
-                same = {k: v for k, v in stored.items() if k != "updated"}
-                if same == {k: v for k, v in node.items() if k != "updated"}:
-                    return "unchanged", held.id
-            db.update_doc(gconn, held.id, title=f"node: {key}", body=dump(node), mime=MIME)
-            return "updated", held.id
-        if gconn.execute("SELECT 1 FROM docs WHERE alias = ? OR id = ?", (alias, alias)).fetchone():
-            continue
-        did = db.add_doc(gconn, f"node: {key}", dump(node), alias=alias, mime=MIME, source="node", now=now,
-                         project=project)
+    """Create or update the node document: ``(status, doc id)``. A document holding the alias that is not a
+    node this engine wrote is never overwritten (``conflict``)."""
+    alias = ALIAS_PREFIX + key
+    held = gconn.execute("SELECT id FROM docs WHERE alias = ? OR id = ?", (alias, alias)).fetchone()
+    if held is None:
+        did = db.add_doc(gconn, f"node: {key}", dump(node), alias=alias, mime=MIME, source=SOURCE, now=now,
+                         tags=[db.NODE_TAG], system=True)
         return "created", did
-    return "conflict", ""
+    doc = db.get_doc(gconn, held[0])
+    if doc is None or not trusted(doc) or doc.mime != MIME:
+        return "conflict", ""
+    stored = parse(doc)
+    if stored is not None and stored["key"] == key:
+        same = {k: v for k, v in stored.items() if k != "updated"}
+        if same == {k: v for k, v in node.items() if k != "updated"}:
+            return "unchanged", doc.id
+    db.update_doc(gconn, doc.id, title=f"node: {key}", body=dump(node), mime=MIME, system=True)
+    return "updated", doc.id
 
 
 # --- promotion -----------------------------------------------------------------------------------------
 
 def read_nodes(gconn, deadline: Deadline | None = None) -> list[dict]:
     out = []
-    for (did,) in gconn.execute("SELECT id FROM docs WHERE alias LIKE 'node:%' ORDER BY updated DESC, id "
-                                "LIMIT ?", (MAX_NODES,)).fetchall():
+    for (did,) in gconn.execute(
+            "SELECT d.id FROM docs d JOIN tags t ON t.id = d.id WHERE t.tag = ? AND d.alias LIKE 'node:%' "
+            "AND d.source = ? ORDER BY d.updated DESC, d.id LIMIT ?", (db.NODE_TAG, SOURCE, MAX_NODES)).fetchall():
         if deadline is not None and deadline.over():
             break
         d = db.get_doc(gconn, did)
@@ -292,7 +290,7 @@ def promote(gconn, groot, deadline: Deadline, now: datetime) -> list[str]:
                 if repo not in seen and len(sources) < MAX_SOURCES:
                     seen.add(repo)
                     sources.append(f"{repo}/{rid} ({date})")
-            body = f"Sources: {', '.join(sources)}\nOperator: {text}"
+            body = f"Sources: {', '.join(sources)}\nRepo node principle: {text}"
             try:
                 rid, created = db.add_row(gconn, "I", f"promote to global: {text}", body,
                                           tags=["correction", "soft", "promote", "repeat-checked"],
@@ -369,7 +367,7 @@ def listing(cwd=None) -> list[dict]:
     conn = glob.conn()
     try:
         return [{"key": n["key"], "updated": n["updated"], "principles": len(n["principles"]),
-                 "mistakes": len(n["mistakes"]), "counts": n["counts"]} for n in read_nodes(conn)]
+                 "mistakes": n["mistakes"], "counts": n["counts"]} for n in read_nodes(conn)]
     finally:
         conn.close()
 

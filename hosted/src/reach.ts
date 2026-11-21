@@ -9,7 +9,7 @@
 
 import type { Device } from "./devices.js";
 import { ApiError } from "./errors.js";
-import { LIMITS, PROJECT_PREFIX, normTags, type Kind } from "./records.js";
+import { LIMITS, NODE_TAG, PROJECT_PREFIX, isNodeAlias, normTags, type Kind } from "./records.js";
 import type { Stored } from "./repo.js";
 import { BASELINE_TAG, DECISION_TAG, IDEA_TAG, hasBaseline, isStagedKind, isSystemTag } from "./tags.js";
 
@@ -52,7 +52,7 @@ export function baselineWrites(kind: Kind, tags: readonly string[]): boolean {
   // A note may carry the access marker `stage:0` (and no other stage tag): it is how a baseline device reads its own notes.
   const staged = (t: string) => t.startsWith("stage:") || t.startsWith("stage-proposed:");
   if (tags.some((t) => (staged(t) && !(kind === "N" && t === BASELINE_TAG)) || t === "skill" || t.startsWith("skill:"))) return false;
-  if (kind === "D" && tags.includes("focus")) return false;
+  if (kind === "D" && (tags.includes("focus") || tags.includes(NODE_TAG))) return false;
   return true;
 }
 
@@ -103,6 +103,20 @@ export function baselineKeepsAccess(d: Device, kind: Kind, held: readonly string
 export function guardPrinted(d: Device, wiki: string, names: unknown[]): void {
   if (wiki !== "global" || mayWritePrinted(d)) return;
   if (names.some(printedName)) throw new ApiError("forbidden", "the notes printed into every session text change only from a device token with the delete scope");
+}
+
+/** The alias prefix `node:` belongs to the engine's node documents, which arrive only by the operator's sync: no
+ *  create or edit through REST or MCP names one, whoever the device is. */
+export function guardNodeAlias(names: unknown[]): void {
+  if (names.some(isNodeAlias)) throw new ApiError("invalid", "the alias prefix node: is reserved for the engine's repo nodes");
+}
+
+/** A repo node (the tag, or the alias prefix) is written by the operator's own device alone: a device token with the delete scope. */
+export function guardNodeSync(d: Device, tags: readonly string[], alias: unknown, storedTags: readonly string[] = []): void {
+  if (mayWritePrinted(d)) return;
+  if (tags.includes(NODE_TAG) || storedTags.includes(NODE_TAG) || isNodeAlias(alias)) {
+    throw new ApiError("forbidden", "repo nodes are written only by the operator's own device (a device token with the delete scope)");
+  }
 }
 
 export const storedNames = (s: Stored): string[] => [s.id, s.alias, String(s.data["alias"] ?? "")];

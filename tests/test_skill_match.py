@@ -80,7 +80,7 @@ def test_the_name_counts_for_more_than_the_same_word_in_a_description(conn):
     assert names(found)[0] == "alarm-clock"
 
 
-def test_a_repo_skill_hides_the_global_one_of_the_same_name(wikis, conn):
+def test_a_global_skill_is_never_hidden_by_a_repo_skill_of_the_same_name(wikis, conn):
     r = wikis.conn()
     try:
         skills.add_version(r, "tdd", "This repo's own test-first rules.", "repo", new=True, active=True,
@@ -89,7 +89,7 @@ def test_a_repo_skill_hides_the_global_one_of_the_same_name(wikis, conn):
         r.close()
     found = skills.match_skills(skills.local_candidates(str(wikis.repo)), "test-first bugs")
     tdd = [x for x in found if x["name"] == "tdd"]
-    assert len(tdd) == 1 and tdd[0]["scope"] == "repo"
+    assert len(tdd) == 1 and tdd[0]["scope"] == "global"
 
 
 def run_cli(wikis, *argv):

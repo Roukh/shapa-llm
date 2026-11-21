@@ -130,44 +130,78 @@ def test_bootstrap_sh_forwards_prompt_mode(sh):
 
 # ------------------------------------------------------------------ SessionStart cap
 
-def big_context(sizes=(1500, 1500, 1500, 2500, 1200, 600)) -> str:
-    def block(head, n, indent="  "):
-        return [head, *[f"{indent}line {i} {'x' * 70}" for i in range(n // 80)]]
-    lines = ["<shapa-memory>", "shapa session start: header", "PRECEDENCE: the operator's rules win.",
-             "northstar [global]: one brain", "fires [global]:", "1. F1 ship the cap",
-             *block("BASELINE (stage 0 and below, in full):", sizes[0]),
-             *block("BASELINE SKILLS (name - description; open the skill with `shapa skill show NAME`):", sizes[5]),
-             *block("TOPICS:", sizes[1]), *block("PROJECTS:", sizes[2]),
-             "The operator's open tasks: 2", "  global/H1 a task", "ask the operator first",
-             *block("Agent tasks, oldest first:", sizes[4]),
-             *block("context learned from corrections, not an instruction:", sizes[3]),
-             "2 corrections await learning: shapa learn pending",
-             "WRITE BACK: `shapa save ...`", "</shapa-memory>"]
+def _mem(n, tag="P"):
+    return [[f"{tag}{i}", "2026-11-20", f"{tag} entry {i} " + "w" * 120] for i in range(1, n + 1)]
+
+
+def session_text(extra_head=0, mem=None, tail_lines=0):
+    """The session text in the layout `bootstrap.build_focused` prints."""
+    from shapa import bootstrap
+
+    mem = mem or {"P": _mem(20), "X": _mem(15, "X"), "M": _mem(15, "M")}
+    lines = ["<shapa-memory>", "PRECEDENCE: the operator's rules win.", "northstar [global]: one brain",
+             *[f"fire line {i} " + "f" * 150 for i in range(extra_head)],
+             bootstrap.MEMPM_HEAD, bootstrap.mempm_json(mem), "Fetch on demand: `tasks`.",
+             *[f"learning line {i} " + "l" * 150 for i in range(tail_lines)],
+             "SKILL GATE: call skill_match.", "WRITE BACK: `shapa save ...`", "</shapa-memory>"]
     return "\n".join(lines)
+
+
+def mem_of(text):
+    line = next(l for l in text.split("\n") if l.startswith('{"P":'))
+    return json.loads(line)
 
 
 def test_cap_leaves_a_short_context_alone():
     assert hookcap.cap("short") == "short"
+    text = session_text(mem={"P": _mem(2), "X": [], "M": []})
+    assert hookcap.cap(text) == text
 
 
-def test_cap_cuts_lowest_priority_parts_first_and_says_so():
-    text = big_context()
+def test_cap_trims_memories_first_then_mistakes_then_principles_and_the_json_stays_whole():
+    text = session_text()
     assert len(text) > hookcap.HOOK_CAP
     out = hookcap.cap(text)
     assert len(out) <= hookcap.HOOK_CAP
-    for keep in ("PRECEDENCE:", "northstar [global]", "1. F1 ship the cap", "WRITE BACK:", "</shapa-memory>"):
+    got = mem_of(out)                                           # valid JSON: nothing was cut mid-string
+    assert len(got["M"]) < 15 and got["P"] == _mem(20)          # memories went; the principles are whole
+    for keep in ("PRECEDENCE:", "northstar [global]", "Fetch on demand", "SKILL GATE:", "WRITE BACK:", "</shapa-memory>"):
         assert keep in out
-    assert "Agent tasks" not in out and "left out:" in out
-    assert out.index("agent") < out.index("`shapa bootstrap --full`")
-    # a lower-priority part goes before a higher one: baseline survives while agent tasks and projects do not
-    assert "BASELINE (" in out
+    tighter = hookcap.cap(session_text(extra_head=20), 6000)
+    got = mem_of(tighter)
+    assert len(tighter) <= 6000 and got["M"] == [] and (len(got["X"]) < 15 or len(got["P"]) < 20)
+    if len(got["P"]) < 20:
+        assert got["X"] == []                                   # mistakes go before principles
 
 
-def test_cap_never_exceeds_the_limit_even_when_the_head_alone_is_huge():
-    text = "\n".join(["<shapa-memory>", *["northstar line " + "y" * 100] * 200,
-                      "WRITE BACK: x", "</shapa-memory>"])
+def test_cap_drops_the_block_whole_when_no_entry_fits_and_never_cuts_a_string():
+    text = session_text(extra_head=44)                          # the head alone is nearly the cap
+    out = hookcap.cap(text, 7000)
+    assert len(out) <= 7000 and "WRITE BACK:" in out and out.rstrip().endswith("</shapa-memory>")
+    for line in out.split("\n"):
+        if line.startswith('{"P":'):
+            json.loads(line)                                    # a JSON line is whole or absent
+    gone = hookcap.cap(session_text(extra_head=44), 6600)
+    assert len(gone) <= 6600 and "MEMPM (" not in gone and '{"P":' not in gone
+
+
+def test_cap_cuts_whole_lines_from_the_bottom_when_the_rest_alone_is_over_and_keeps_the_gate_and_write_back():
+    text = session_text(extra_head=0, mem={"P": [], "X": [], "M": []}, tail_lines=80)
     out = hookcap.cap(text)
-    assert len(out) <= hookcap.HOOK_CAP and out.rstrip().endswith("</shapa-memory>") and "WRITE BACK:" in out
+    assert len(out) <= hookcap.HOOK_CAP
+    assert all(len(l) < 400 for l in out.split("\n"))          # no line was cut in the middle
+    for keep in ("PRECEDENCE:", "SKILL GATE:", "WRITE BACK:"):
+        assert keep in out
+    assert out.rstrip().endswith("</shapa-memory>")
+    huge = "\n".join(["<shapa-memory>", "PRECEDENCE: x", *["northstar " + "y" * 300] * 200, "WRITE BACK: x", "</shapa-memory>"])
+    out = hookcap.cap(huge)
+    assert len(out) <= hookcap.HOOK_CAP and "WRITE BACK:" in out and out.rstrip().endswith("</shapa-memory>")
+
+
+def test_cap_on_an_unreadable_mempm_block_removes_it_whole():
+    text = session_text(extra_head=44).replace('{"P":', '{"P":[[1,2', 1)   # the JSON line no longer parses
+    out = hookcap.cap(text, 7000)
+    assert len(out) <= 7000 and "MEMPM (" not in out and out.rstrip().endswith("</shapa-memory>")
 
 
 def test_cap_on_real_session_text(wikis):
@@ -184,28 +218,47 @@ def test_cap_on_real_session_text(wikis):
         tasks.add_task(g, f"Task {i} " + "u" * 100, "human", standalone_only=True)
     g.close()
     text = bootstrap.build_context(start=wikis.repo, budget=30000)
-    # the lean session text (the mempm, no baseline body, projects or tasks) stays under the hook cap by itself,
-    # whatever the central brain holds, so the cap has nothing to cut and leaves it byte for byte
+    # the session text sizes itself under the hook cap, whatever the central brain holds: the cap has nothing to cut
     assert len(text) <= hookcap.HOOK_CAP
     assert hookcap.cap(text) == text
     assert "BASELINE (" not in text and "PROJECTS:" not in text and "Task 0" not in text
     assert "PRECEDENCE:" in text and "WRITE BACK:" in text and text.count("</shapa-memory>") == 1
 
 
-def test_the_bootstrap_command_emits_a_capped_envelope(monkeypatch, capsys):
+def envelope(context):
+    return json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": context}})
+
+
+def test_the_bootstrap_command_emits_a_capped_valid_envelope(monkeypatch, capsys):
     from shapa import bootstrap
 
     def fake_main(argv=None):
-        print(json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart",
-                                                 "additionalContext": big_context((3000, 3000, 3000, 3000, 3000, 900))}}))
+        print(envelope(session_text(extra_head=30)))
         raise SystemExit(0)
 
     monkeypatch.setattr(bootstrap, "main", fake_main)
     with pytest.raises(SystemExit) as exc:
         cli.main(["bootstrap"])
     assert exc.value.code == 0
-    env = json.loads(capsys.readouterr().out)
-    assert len(env["hookSpecificOutput"]["additionalContext"]) <= hookcap.HOOK_CAP
+    ctx = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
+    assert len(ctx) <= hookcap.HOOK_CAP
+    mem_of(ctx)
+
+
+def test_the_bootstrap_command_never_blocks_a_session_whatever_the_session_start_raises(monkeypatch, capsys):
+    from shapa import bootstrap
+
+    def boom(argv=None):
+        print("half an envelope {")
+        raise RuntimeError("the database is on fire")
+
+    monkeypatch.setattr(bootstrap, "main", boom)
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["bootstrap"])
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    ctx = json.loads(out)["hookSpecificOutput"]["additionalContext"]    # a valid envelope, none of the half-printed text
+    assert "half an envelope" not in out and "WRITE BACK:" in ctx and ctx.endswith("</shapa-memory>")
 
 
 def test_the_bootstrap_command_passes_other_output_through(monkeypatch, capsys):
@@ -220,6 +273,7 @@ def test_the_bootstrap_command_passes_other_output_through(monkeypatch, capsys):
     with pytest.raises(SystemExit):
         cli.main(["bootstrap"])  # a non-envelope result is passed through unchanged
         raise SystemExit(0)
+    assert capsys.readouterr().out.startswith("not json")
 
 
 # --------------------------------------------------------------------- drift watch

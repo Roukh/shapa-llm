@@ -178,3 +178,20 @@ def test_the_mempm_json_is_written_alike_on_both_sides():
     `mempmJson` to the same expected text."""
     assert bootstrap.mempm_json(MEMPM_SAMPLE) == MEMPM_SAMPLE_JSON
     assert json.loads(MEMPM_SAMPLE_JSON) == MEMPM_SAMPLE
+
+
+def test_the_reserved_document_tags_and_the_node_alias_prefix_match():
+    assert _list("RESERVED_DOC_TAGS") == list(db.RESERVED_DOC_TAGS)
+    consts = _consts()
+    assert (consts["NODE_TAG"], consts["NODE_ALIAS_PREFIX"]) == (db.NODE_TAG, db.NODE_ALIAS_PREFIX)
+    assert db.NODE_TAG in db.SYSTEM_TAGS and "shapa-node" == db.NODE_TAG
+
+
+def test_the_atomic_rule_word_list_and_the_shared_cases_match_the_worker():
+    ts = (SRC / "atomic.ts").read_text(encoding="utf-8")
+    words = re.search(r"const COMMAND_WORD_LIST[^=]*=\s*\[(.*?)\];", ts, re.S).group(1)
+    assert sorted(_literal(t) for t in re.findall(_STRING, words)) == sorted(db.COMMAND_WORDS)
+    cases = json.loads((SRC.parent / "test" / "atomic-cases.json").read_text(encoding="utf-8"))
+    assert cases["commands"] == sorted(db.COMMAND_WORDS)
+    for c in cases["cases"]:
+        assert db.several_rules(c["summary"], c["body"]) == c["why"], c["name"]

@@ -351,7 +351,8 @@ def uproot(repo, glob, name: str) -> dict:
 
 
 def shadowing(repo, glob) -> list[str]:
-    """Names a repo wiki's skill shares with a global one (the repo's copy hides the global's)."""
+    """Names a repo wiki's skill shares with a global one. The global skill wins everywhere (``skill``,
+    ``skill_match``); the repo copy is ignored and the mirror refuses it."""
     return sorted(set(_heads(repo)) & set(_heads(glob)))
 
 
@@ -443,10 +444,10 @@ def active_summaries(conn, scope: str) -> list[dict]:
 
 
 def local_candidates(cwd=None) -> list[dict]:
-    """The active skills in scope for *cwd*: the repo wiki's, then the global wiki's (a repo's skill hides
-    the global one of the same name, as ``shapa skill list`` says)."""
+    """The active skills in scope for *cwd*: the global wiki's, then the repo wiki's. A name the global wiki
+    holds is the global skill: a repo skill never shadows it (repo skills need distinct names)."""
     out: dict[str, dict] = {}
-    for wr in sorted(_roots(cwd), key=lambda r: r.kind != "repo"):
+    for wr in sorted(_roots(cwd), key=lambda r: r.kind != "global"):
         if wr.kind not in ("repo", "global") or not db.exists(wr.path):
             continue
         conn = db.connect(wr.path)

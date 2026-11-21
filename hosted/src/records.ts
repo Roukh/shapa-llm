@@ -472,7 +472,15 @@ export const MAX_FIRES = 3;
 export const FOCUS_ALIAS = "focus";
 export const FOCUS_TAG = "focus";
 export const SKILL_TAG = "skill";
-export const RESERVED_DOC_TAGS: readonly string[] = [FOCUS_TAG, SKILL_TAG];
+/** A repo node (the local engine's `node.py`): hidden from a baseline device, written only by the operator's sync.
+ *  Not plain `node`: a wiki's own Node.js topic must not collide. */
+export const NODE_TAG = "shapa-node";
+export const NODE_ALIAS_PREFIX = "node:";
+export const RESERVED_DOC_TAGS: readonly string[] = [FOCUS_TAG, SKILL_TAG, NODE_TAG];
+
+/** Whether an alias names a node document, however it is spelled (case, width, padding). */
+export const isNodeAlias = (alias: unknown): boolean =>
+  typeof alias === "string" && alias.normalize("NFKC").trim().toLowerCase().startsWith(NODE_ALIAS_PREFIX);
 export const PROJECT_PREFIX = "project:";
 export const RANK_PREFIX = "rank:";
 export const NORTHSTAR_MAX = 600;

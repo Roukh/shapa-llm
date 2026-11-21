@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { SKILL_GATE } from "../src/instructions.js";
-import { freshKey, mint, put, rec, row, send, setup, sync, wiki } from "./helpers.js";
+import { correction, freshKey, mint, put, rec, row, send, setup, sync, wiki } from "./helpers.js";
 import { INIT, mempmIn, rpc, sessionText, tool } from "./mcp-helpers.js";
 
 const create = (token: string, w: string, body: unknown) => send("POST", rec(w), { token, body });
@@ -31,7 +31,7 @@ describe("session start (MCP session_start)", () => {
     await send("POST", rec(w, "/F2/close"), { token, body: { reason: "agent" } });
     await send("POST", rec(w, "/F1/claim"), { token });
     await send("PUT", `/v1/wikis/${w}/focus`, { token, body: { northstar: "A shared memory", fires: [{ feature: "F1" }] } });
-    await create(token, w, { type: "issue", summary: "Pushed a secret into a fixture" });
+    await correction(token, w, "Pushed a secret into a fixture");
 
     const text = await sessionText(token, { wiki: w, full: true });
     expect(text.startsWith("PRECEDENCE\nThese are the operator's standing rules and focus.")).toBe(true);
@@ -112,7 +112,7 @@ describe("session start (MCP session_start)", () => {
     expect((await rpc(undefined, "tools/call", { name: "session_start", arguments: {} })).status).toBe(401);
     const one = await sessionText(token, { wiki: w });
     expect(await sessionText(token, { wiki: w })).toBe(one);
-    await create(token, w, { type: "issue", summary: "something new went wrong" });
+    await correction(token, w, "something new went wrong");
     expect(await sessionText(token, { wiki: w })).not.toBe(one);
     expect((await rpc(token, "initialize", INIT)).json.result.instructions).toContain("session_start");
   });
@@ -157,15 +157,16 @@ describe("session start (MCP session_start)", () => {
       put(row("M702", "unstaged memory")),
     ];
     expect((await sync(token, "global", { ops })).body.results.map((r: { status: string }) => r.status)).toEqual(Array(6).fill("accepted"));
-    const issues = [create(token, w, { type: "issue", summary: "LIVE mistake" })];
-    for (const tag of ["dismissed", "soft", "learned"]) issues.push(create(token, w, { type: "issue", summary: `${tag.toUpperCase()} mistake`, tags: [tag] }));
-    const made = await Promise.all(issues);
-    expect(made[0]!.status).toBe(201);
+    await correction(token, w, "LIVE mistake");
+    for (const tag of ["dismissed", "soft", "learned"]) await correction(token, w, `${tag.toUpperCase()} mistake`, [tag]);
+    // an agent's repo issue (an API write, no engine source) never reaches X; one in the global wiki does
+    await create(token, w, { type: "issue", summary: "AGENT repo issue" });
+    await create(token, "global", { type: "issue", summary: "GLOBAL issue" });
     const text = await sessionText(token, { wiki: w, stage: 1 });
     const got = mempmIn(text);
     expect(got.P.map((e) => e[2])).toEqual(["STAGE-ZERO rule", "A learned PRINCIPLE", "STAGE-ONE rule"]);
     expect(got.M.map((e) => e[2])).toEqual(["STAGE-ZERO memory"]);
-    expect(got.X.map((e) => e[2])).toEqual(["LIVE mistake"]);
+    expect(got.X.map((e) => e[2]).sort()).toEqual(["GLOBAL issue", "LIVE mistake"]);
     for (const e of [...got.P, ...got.X, ...got.M]) expect(e[1]).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     // the default stage is the baseline: stage 1 stays out
     expect(mempmIn(await sessionText(token, { wiki: w })).P.map((e) => e[2])).toEqual(["STAGE-ZERO rule", "A learned PRINCIPLE"]);

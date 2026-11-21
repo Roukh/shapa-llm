@@ -248,7 +248,10 @@ def _pii_clean(raw: dict, rec_id: str, kind: str, tags: list[str]) -> bool:
     government IDs, birth dates, health data) and, when it carries a stage tag, to every category. The Worker
     already refused the rest from every app. A record that fails is dropped and counted, like any malformed one."""
     data = raw.get("data") if isinstance(raw.get("data"), dict) else {}
-    texts = [data.get(k) for k in ("title", "summary", "body", "alias") if isinstance(data.get(k), str)]
+    texts = [data.get(k) for k in ("title", "summary", "body", "alias", "source", "session", "git_ref", "claimed_by",
+                                   "mime") if isinstance(data.get(k), str)]
+    links = raw.get("links") if isinstance(raw.get("links"), list) else []
+    texts += [l[0] for l in links[:200] if isinstance(l, (list, tuple)) and l and isinstance(l[0], str)]
     texts += [rec_id, *tags]
     try:
         pii.check(texts, pii.level_for(tags, privileged=True))

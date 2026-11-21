@@ -12,7 +12,7 @@ source: memri (15 notes consolidated; ids in this file's git history)
 ---
 # ghobz Git Identity & Repo Hygiene
 
-Two `gh` accounts: `Roukh` (roukh-*), `gh0bz` (ghobz org). Match the remote owner (`git remote -v`) before any git/PR op: set local (never `--global`) identity and `gh auth switch`. In gh0bz repos (incl. `ghobz_projects/*`) `admin@ghobz.com` may author commits but never reach client runtime (SMTP, CRM data, env vars). Fix wrong author: `commit --amend --reset-author` + `push --force-with-lease`.
+Two `gh` accounts: `Roukh` (roukh-*), `gh0bz` (ghobz org). Match the remote owner (`git remote -v`) before any git/PR op: set local (never `--global`) identity and `gh auth switch`. In gh0bz repos (incl. `ghobz_projects/*`) `admin@example.org` may author commits but never reach client runtime (SMTP, CRM data, env vars). Fix wrong author: `commit --amend --reset-author` + `push --force-with-lease`.
 
 Pre-commit: strip scraper artifacts (`.firecrawl/`, `.playwright-mcp/`), unused assets (grep zero refs), screenshots, dead code, oversized media (compress, don't delete), `node_modules`; re-verify build/typecheck.
 
