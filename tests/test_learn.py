@@ -287,7 +287,7 @@ def test_at_most_four_principle_lines_print_each_capped_and_masked(wikis):
     c = wikis.conn(wikis.global_wiki)
     for i in range(9):
         db.add_row(c, "R", f"Rule number {i}: " + "word " * 80 + "sk-abcdefghijklmnopqrstuvwxyz0123456789ABCD",
-                   "", tags=["principle", "evidence:1"], source="learn")
+                   "", tags=["principle", "evidence:1"], source="learn", privileged=True)
     c.close()
     learn._mark_local(wikis.global_wiki, "R1")      # local or not, the cap and the mask hold
     text = bootstrap.build_context(start=wikis.repo)

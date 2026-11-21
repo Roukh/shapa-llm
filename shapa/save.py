@@ -37,7 +37,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from shapa import config, db
+from shapa import config, db, pii
 from shapa.validate import validate_node
 
 #: Every scope this CLI accepts. ``external`` is CLI-only (see module
@@ -87,6 +87,15 @@ def infer_scope(start: str | Path | None, applies_to: str | None) -> str:
     return "repo" if config.discover(start) is not None else "global"
 
 
+def pii_screen(summary: str, body: str, tags, alias=None, privileged: bool = False) -> tuple[list[str], str | None]:
+    """``(warnings, error)`` of the personal-data gate (:mod:`shapa.pii`) over one write's fields: the error names
+    the categories found and never the value; the warnings are allowed hits to check (counted, never echoed)."""
+    try:
+        return pii.check([summary, body, alias, *map(str, tags or [])], pii.level_for(tags, privileged)), None
+    except pii.Rejected as exc:
+        return [], str(exc)
+
+
 def save_row(root, scope: str, note_type: str, summary: str, body: str, tags, alias=None,
              project: str | None = None, merge: bool = False, privileged: bool = False,
              supersedes=None, distinct_from=None) -> dict:
@@ -108,6 +117,9 @@ def save_row(root, scope: str, note_type: str, summary: str, body: str, tags, al
         db.check_row_tags(tags)
     except db.LedgerError as exc:
         return {"error": str(exc)}
+    warns, refused = pii_screen(summary, body, tags, alias, privileged)
+    if refused:
+        return {"error": refused}
     if not privileged and any(" ".join(str(t).split()).startswith("rank:") for t in (tags or [])):
         # the order of the operator's list is the operator's: an agent cannot rank its own task first
         return {"error": "rank:N is set by the operator (`shapa row tag ID rank:N`), not on a save"}
@@ -121,7 +133,8 @@ def save_row(root, scope: str, note_type: str, summary: str, body: str, tags, al
             merged = rid in known
         elif note_type in TASK_TYPES:
             rid, created = tasks.add_task(conn, summary, db.OWNER_TAGS[note_type], body, project=project,
-                                          tags=tags or [], standalone_only=scope == "global")
+                                          tags=tags or [], standalone_only=scope == "global",
+                                          privileged=privileged)
         else:
             # An idea or a decision is a memory carrying that tag, never a kind of its own.
             kind = {"memory": "M", "rule": "R", "issue": "I"}.get(note_type, "M")
@@ -152,9 +165,11 @@ def save_row(root, scope: str, note_type: str, summary: str, body: str, tags, al
     if superseded:
         out["superseded"] = superseded
     if merged:
-        out["warnings"] = [f"merged into the project's one document {rid} as a section"]
+        warns.append(f"merged into the project's one document {rid} as a section")
     elif not created:
-        out["warnings"] = [f"identical text already stored as {rid}"]
+        warns.append(f"identical text already stored as {rid}")
+    if warns:
+        out["warnings"] = warns
     return out
 
 
@@ -209,6 +224,9 @@ def save_note(
     tags = tags or []
     if not isinstance(tags, list) or not all(isinstance(t, str) for t in tags):
         return {"error": "tags must be a list of strings"}
+    _, refused = pii_screen(summary, body, tags, id, privileged)  # also guards a format-3 wiki's note files
+    if refused:
+        return {"error": refused}
 
     # ---- resolve the target root, and the scope actually STORED in the
     # note (an "external" write always stores scope: repo - decision 6

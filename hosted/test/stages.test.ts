@@ -266,9 +266,14 @@ describe("stages: the baseline budget", () => {
   it("prints a baseline record's body cut at 1,200 characters, indented and masked", async () => {
     const { token } = await setup();
     await globalWiki(token);
-    const body = `${"a".repeat(1300)}\nHEADING-FORGE\nsk-ant-api03-Q7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7x`;
+    const body = `${"a".repeat(1300)}\nHEADING-FORGE`;
     const r = row("R95", "CUT-S0 rule", { tags: ["stage:0"], data: { summary: "CUT-S0 rule", body, alias: null, source: "", session: "" } });
     expect((await sync(token, "global", { ops: [put(r)] })).body.results[0].status).toBe("accepted");
+    // a secret never enters stage 0: the put is refused, not stored masked
+    const leaky = row("R96", "LEAKY rule", { tags: ["stage:0"], data: { summary: "LEAKY rule", body: "sk-ant-api03-Q7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7x", alias: null, source: "", session: "" } });
+    const refused = (await sync(token, "global", { ops: [put(leaky)] })).body.results[0];
+    expect(refused.status).toBe("rejected");
+    expect(refused.error).toContain("a secret or credential");
     const t = await text(token);
     const lines = t.split("\n");
     const at = lines.findIndex((l) => l.startsWith("R95 CUT-S0 rule"));

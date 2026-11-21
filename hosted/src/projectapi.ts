@@ -5,6 +5,7 @@
 
 import { type Device, needScope, needWiki, randomHex } from "./devices.js";
 import { fail } from "./errors.js";
+import { piiGate } from "./piigate.js";
 import { gateNewDocument, projectHolder } from "./projects.js";
 import { appendItem, isSection, parseSections, PROJECT_TEMPLATE, SECTIONS, type Section } from "./projectfile.js";
 import { Invalid, LIMITS, PROJECT_PREFIX, buildData, cleanProject, cmp, nowIso, normLinks, projectOf, type Link, type Normalized } from "./records.js";
@@ -119,6 +120,7 @@ function documentOf(repo: Repo, wiki: string, key: string): Stored | null {
 export function newProject(repo: Repo, d: Device, key: string, wiki: string, title?: string): { project: ProjectCard; created: boolean } {
   usable(repo, d, wiki, "write");
   validKey(key);
+  piiGate([title]);
   const held = documentOf(repo, wiki, key);
   if (held) return { project: cardOf(wiki, key, held), created: false };
   // Every session start lists a wiki's projects: a store of thousands of them is spam, not a plan. A baseline device
@@ -145,6 +147,7 @@ export function addItem(repo: Repo, d: Device, key: string, wiki: string, sectio
   usable(repo, d, wiki, "write");
   validKey(key);
   if (!isSection(section)) fail("invalid", `section must be one of ${SECTIONS.join(", ")}`);
+  piiGate([text]);
   const doc = documentOf(repo, wiki, key);
   if (!doc) fail("not_found", `no project ${key} in ${wiki}: create it first (PUT /v1/projects/${encodeURIComponent(key)})`);
   let r;

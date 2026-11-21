@@ -17,6 +17,7 @@ import { budgetProblem, gateStage, kindProblem, mayBaseline, tagProblem } from "
 import { guardPrinted, storedNames } from "./reach.js";
 import { projectKeyOf } from "./tags.js";
 import { projectOf } from "./records.js";
+import { piiSyncGate } from "./piigate.js";
 
 interface SyncIn {
   cursor: number;
@@ -68,6 +69,15 @@ function applyPut(
     const rawTags = Array.isArray((raw as { tags?: unknown } | null)?.tags) ? ((raw as { tags: unknown[] }).tags) : [];
     const bad = tagProblem({ kind: n.kind, tags: rawTags, wikiKind }) ?? kindProblem(wikiKind, n.kind, n.data["parent"]);
     if (bad) return { id: n.id, status: "rejected", rev: 0, error: bad };
+    // Personal and sensitive data: every category from any device but the operator's own, the severe ones from that
+    // one, and every category for a put that carries a stage tag. The raw text is screened (a secret is refused, not
+    // masked into a shape that looks harmless), with the note path and the tags.
+    const rd = (raw as { data?: Record<string, unknown> } | null)?.data ?? {};
+    const refused = piiSyncGate(
+      [rd["title"], rd["summary"], rd["body"], rd["alias"], rd["source"], rd["session"], n.kind === "N" ? n.id : null],
+      rawTags, mayBaseline(d, true),
+    );
+    if (refused) return { id: n.id, status: "rejected", rev: 0, error: refused };
   }
   if (n.deleted) {
     // A put that carries the tombstone flag is a delete and needs the delete scope.

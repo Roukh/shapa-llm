@@ -108,3 +108,44 @@ def test_the_precedence_sentence_is_the_same():
     worker = "".join(_literal(t) for t in re.findall(_STRING, _body_of("PRECEDENCE")))
     assert bootstrap.PRECEDENCE == f"PRECEDENCE: {worker}"
     assert "these win" in worker
+
+
+# --- the personal-data gate (shapa/pii.py and hosted/src/pii.ts) -----------------------------------------
+
+def test_the_pii_pattern_table_is_the_same_file_byte_for_byte():
+    from shapa import piitable
+
+    worker = (SRC / "pii-patterns.json").read_bytes()
+    assert worker == piitable.PATH.read_bytes()
+    assert json.loads(worker)["version"] == piitable.TABLE["version"]
+
+
+def test_both_sides_read_the_table_they_hold_and_share_the_levels_and_stage_zero_tags():
+    from shapa import pii
+
+    for name in ("pii.ts", "redact.ts"):
+        assert 'from "./pii-patterns.json"' in (SRC / name).read_text(encoding="utf-8"), name
+    consts = _consts()
+    assert (consts["FULL"], consts["OPERATOR"]) == (pii.FULL, pii.OPERATOR)
+    assert _list("STAGE0_TAGS") == list(pii.STAGE0_TAGS) == ["stage:0", "stage-proposed:0"]
+
+
+def test_the_rejection_sentence_is_the_same_on_both_sides():
+    from shapa import pii
+
+    ts = (SRC / "pii.ts").read_text(encoding="utf-8")
+    head = "refused: the text looks like it holds "
+    tail = ("Personal and sensitive data never goes into the wiki: remove it, or say what you mean without the value.")
+    assert head in ts and tail in ts
+    py = str(pii.Rejected(["email"]))
+    assert py.startswith(head) and py.endswith(tail)
+    assert "possible personal data (" in ts and "allowed, but check it is not about a person" in ts
+
+
+def test_the_secret_patterns_of_the_table_are_masked_by_both_maskers():
+    from shapa import piitable, redact
+
+    names = [s["name"] for s in piitable.TABLE["secrets"]]
+    assert [n for n, _ in redact.PATTERNS][-len(names):] == names
+    ts = (SRC.parent / "test" / "redact.test.ts").read_text(encoding="utf-8")
+    assert all(f'"{n}"' in ts for n in names)  # the vitest parity list names them in the same order

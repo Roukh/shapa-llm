@@ -69,10 +69,12 @@ describe("focus: the northstar and the three fires", () => {
 
   it("cuts oversized text, keeps it one line and masks secrets", async () => {
     const { token, w } = await setup();
-    const r = await putFocus(token, w, { northstar: `${"x".repeat(4000)}\nsecond line`, fires: [{ text: "key sk-ant-api03-Q7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7x\nnext" }] });
+    const secret = await putFocus(token, w, { fires: [{ text: "key sk-ant-api03-Q7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7x\nnext" }] });
+    expect(secret.status).toBe(400); // refused by the personal-data gate, not stored masked
+    expect(JSON.stringify(secret.body)).not.toContain("sk-ant");
+    const r = await putFocus(token, w, { northstar: `${"x".repeat(4000)}\nsecond line`, fires: [{ text: "first line\nnext" }] });
     expect(r.body.northstar.length).toBeLessThanOrEqual(600);
     expect(r.body.northstar).not.toContain("\n");
-    expect(r.body.fires[0].title).not.toContain("sk-ant");
     expect(r.body.fires[0].title).not.toContain("\n");
   });
 

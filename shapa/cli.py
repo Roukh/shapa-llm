@@ -92,7 +92,8 @@ commands:
                  archives status:superseded notes (never deletes)
   heartbeat      prune orphan notes (--dry-run)
   score          rank notes by value (--use FILE to record a use)
-  validate       validate note frontmatter (FILE..., or a wiki DIR)
+  validate       validate note frontmatter (FILE..., or a wiki DIR); --pii lists stored records the
+                 personal-data gate would refuse today (id and category only)
   upgrade [PATH|--all] [--check] [--json]
                  bring wikis to the current format: apply mechanical
                  migrations, report the judgment work list (exit 1 while

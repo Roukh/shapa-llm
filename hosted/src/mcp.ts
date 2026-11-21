@@ -208,8 +208,8 @@ export function buildServer(env: Env, cred: Cred): McpServer {
     },
     ({ wiki, type, ...rest }) =>
       guarded(async () => {
-        const { record, created, notice } = await unwrap(s.create(cred, wiki, { type, ...rest }));
-        const note = notice ? ` (${notice})` : "";
+        const { record, created, notice, warnings } = await unwrap(s.create(cred, wiki, { type, ...rest }));
+        const note = (notice ? ` (${notice})` : "") + (warnings?.length ? ` Warning: ${warnings.join(" ")}` : "");
         if (!created && type === "document") return text(`Merged into ${record.id} in ${wiki} as a section.${note}`);
         return text(`${created ? "Saved" : "Already saved as"} ${record.id} in ${wiki}.${note}`);
       }),
@@ -234,8 +234,8 @@ export function buildServer(env: Env, cred: Cred): McpServer {
     },
     ({ wiki, id, ...patch }) =>
       guarded(async () => {
-        const { record: r, notice }: { record: RecordWire; notice?: string } = await unwrap(s.patch(cred, wiki, id, patch));
-        return text(`Updated ${r.id} in ${wiki} (rev ${r.rev}).${notice ? ` (${notice})` : ""}`);
+        const { record: r, notice, warnings }: { record: RecordWire; notice?: string; warnings?: string[] } = await unwrap(s.patch(cred, wiki, id, patch));
+        return text(`Updated ${r.id} in ${wiki} (rev ${r.rev}).${notice ? ` (${notice})` : ""}${warnings?.length ? ` Warning: ${warnings.join(" ")}` : ""}`);
       }),
   );
 

@@ -353,6 +353,7 @@ export function registerV1(app: App): void {
     async (c) => {
       const r = await unwrap(store(c.env).create(cred(c), c.req.valid("param").wiki, c.req.valid("json")));
       if (r.notice) c.header("X-Shapa-Notice", r.notice);
+      if (r.warnings?.length) c.header("X-Shapa-Warning", r.warnings.join(" | "));
       return c.json(r.record, r.created ? 201 : 200);
     },
   );
@@ -367,6 +368,7 @@ export function registerV1(app: App): void {
       const { wiki, id } = c.req.valid("param");
       const r = await unwrap(store(c.env).patch(cred(c), wiki, id, c.req.valid("json")));
       if (r.notice) c.header("X-Shapa-Notice", r.notice);
+      if (r.warnings?.length) c.header("X-Shapa-Warning", r.warnings.join(" | "));
       return c.json(r.record, 200);
     },
   );

@@ -8,6 +8,8 @@
 // as word characters like they do in Python's `re`, and `$` is `(?=\n?$)` to keep Python's
 // "end, or before a final newline" meaning.
 
+import piiTable from "./pii-patterns.json";
+
 export const PLACEHOLDER = "[REDACTED]";
 
 const W = String.raw`\p{L}\p{N}_`; // Python's \w (Unicode)
@@ -68,7 +70,7 @@ export const PATTERNS: readonly Pattern[] = [
   // the value must be a single unbroken run (prose such as "token: none of these apply" stays).
   pattern(
     "credential-assignment",
-    String.raw`${B_START}[${W}.-]{0,64}(?:api[_-]?key|secret|token|passw(?:or)?d|passwd|pwd|access[_-]?key|` +
+    String.raw`(?:api[_-]?key|secret|token|passw(?:or)?d|passwd|pwd|access[_-]?key|` +
       String.raw`private[_-]?key|client[_-]?secret)[${W}.-]{0,64}["']?\s*[:=]\s*["']?` +
       String.raw`(?<secret>[A-Za-z0-9+/_=.~-]{12,})`,
     "i",
@@ -77,6 +79,12 @@ export const PATTERNS: readonly Pattern[] = [
     "conn-string-password",
     String.raw`${B_START}(?:password|pwd)\s*=\s*(?<secret>[^;\s"']{6,})`,
     "i",
+  ),
+  // The secrets of the personal-data gate's shared table (pii-patterns.json, a byte copy of
+  // shapa/assets/pii-patterns.json): chat and mail provider tokens, cookie headers, storage account keys.
+  // Masked here like the rest; pii.ts refuses them from every writer that is not the operator's own device.
+  ...(piiTable as { secrets: Array<{ name: string; re: string; flags: string }> }).secrets.map((s) =>
+    pattern(s.name, s.re.replaceAll("(?P<", "(?<"), s.flags),
   ),
 ];
 

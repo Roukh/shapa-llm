@@ -25,7 +25,7 @@ describe("redact: parity with shapa/redact.py", () => {
       "pem-private-key", "anthropic-key", "openai-key", "stripe-key", "stripe-webhook", "github-token",
       "gitlab-token", "slack-token", "aws-access-key", "google-api-key", "huggingface-token", "npm-token",
       "supabase-key", "resend-key", "jwt", "url-password", "bearer", "basic-auth", "credential-assignment",
-      "conn-string-password",
+      "conn-string-password", "telegram-bot-token", "slack-webhook", "sendgrid-key", "cookie-header", "azure-account-key",
     ]);
   });
 

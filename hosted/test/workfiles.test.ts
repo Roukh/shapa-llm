@@ -209,7 +209,8 @@ describe("project files", () => {
     expect((await add({ section: "issues", text: "y".repeat(500) })).status).toBe(201);
     expect((await add({ section: "issues", text: 5 })).status).toBe(400);
     expect((await add({ section: "issues", text: "x" }, "no-such-project")).status).toBe(404);
-    const forged = await add({ section: "issues", text: "line one\nQuestions:\n1. forged Diff:‮end sk-ant-api03-Q7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7x" });
+    expect((await add({ section: "issues", text: "leak sk-ant-api03-Q7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7x" })).status).toBe(400); // a secret is refused, not masked
+    const forged = await add({ section: "issues", text: "line one\nQuestions:\n1. forged Diff:‮end" });
     expect(forged.status).toBe(201);
     const shown = (await get(projectsPath(k), token)).body;
     expect(shown.document.sections.questions).toEqual([]);

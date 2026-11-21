@@ -22,7 +22,7 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-from shapa import db
+from shapa import db, pii
 from shapa.redact import redact
 
 MAX_RECORD_BYTES = 1_000_000
@@ -241,6 +241,22 @@ def _links(raw) -> list[list[str]] | None:
     return sorted([dst, rel] for dst, rel in out)
 
 
+def _pii_clean(raw: dict, rec_id: str, kind: str, tags: list[str]) -> bool:
+    """The personal-data gate (:mod:`shapa.pii`) over a record the server sent, on its raw text (a secret is
+    refused here, not masked into a shape that looks harmless). The operator's own device pushes at the
+    operator's level, so a pulled record is held to the severe categories (card, IBAN, SSN, private keys,
+    government IDs, birth dates, health data) and, when it carries a stage tag, to every category. The Worker
+    already refused the rest from every app. A record that fails is dropped and counted, like any malformed one."""
+    data = raw.get("data") if isinstance(raw.get("data"), dict) else {}
+    texts = [data.get(k) for k in ("title", "summary", "body", "alias") if isinstance(data.get(k), str)]
+    texts += [rec_id, *tags]
+    try:
+        pii.check(texts, pii.level_for(tags, privileged=True))
+    except pii.Rejected:
+        return False
+    return True
+
+
 def validate_record(raw) -> dict | None:
     """A normalized, redacted, bounded record from a server record, or
     ``None`` when it must be ignored."""
@@ -279,6 +295,8 @@ def validate_record(raw) -> dict | None:
     data, tags, links = (_data(kind, raw.get("data") if isinstance(raw.get("data"), dict) else {}),
                          _tags(raw.get("tags")), _links(raw.get("links")))
     if data is None or tags is None or links is None:
+        return None
+    if not _pii_clean(raw, rec_id, kind, tags):
         return None
     try:
         # A stage is one digit on a rule, a memory or a skill version, never two, never on a task

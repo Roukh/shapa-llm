@@ -508,7 +508,21 @@ def main(argv: list[str] | None = None) -> None:
                         help="Also check for F09 duplicate ids across every "
                              "wiki_roots() root (global/repo/external), instead "
                              "of validating a single directory's files.")
+    parser.add_argument("--pii", action="store_true",
+                        help="List the stored records (id and category only, never the value) that the "
+                             "personal-data gate would refuse today, so the operator can clean them up. "
+                             "Exits 1 when there are any; nothing is rewritten.")
     args = parser.parse_args(argv)
+
+    if args.pii:
+        from shapa import pii
+
+        root = Path(args.paths[0]) if args.paths and Path(args.paths[0]).is_dir() else config.memory_dir()
+        found = pii.scan_wiki(root, _live_md_files(root))
+        for rid, cats in found:
+            print(f"{rid}: {', '.join(cats)}")
+        print(f"{len(found)} record(s) would be refused today")
+        sys.exit(1 if found else 0)
 
     if args.all_roots:
         start = args.paths[0] if args.paths else None

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { call, freshKey, get, mint, put, rec, row, send, setup, sync, wiki } from "./helpers.js";
+import { call, freshKey, get, job, mint, put, rec, row, send, setup, sync, wiki } from "./helpers.js";
 import { INIT, rpc, tool } from "./mcp-helpers.js";
 
 const create = (token: string, w: string, body: Record<string, unknown>) => send("POST", rec(w), { token, body });
@@ -111,8 +111,12 @@ describe("session text: a record can never forge a section or an instruction blo
     await seedOperator(token);
     const secret = "sk-ant-api03-Q7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7x";
     const rule = row("R410", `rule ${secret}`, { tags: ["stage:0", "tagged"], data: { summary: `rule ${secret}`, body: `body ${secret}`, alias: null, source: "", session: "" } });
-    await sync(token, "global", { ops: [put(rule)] });
-    await create(token, "global", { type: "human_task", title: `task ${secret}` });
+    // stage 0 refuses a secret outright, whoever writes it; the operator's own device may still sync a
+    // lower stage, where the secret is masked at write and again when printed
+    expect((await sync(token, "global", { ops: [put(rule)] })).body.results[0].status).toBe("rejected");
+    expect((await create(token, "global", { type: "human_task", title: `task ${secret}` })).status).toBe(400);
+    const task = job("T410", `task ${secret}`, null, { tags: ["human_task"] });
+    expect((await sync(token, "global", { ops: [put(task)] })).body.results[0].status).toBe("accepted");
     const t = await text(token);
     expect(t).not.toContain("sk-ant-api03");
     expect(t).toContain("[REDACTED]");

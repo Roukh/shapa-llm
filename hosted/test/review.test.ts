@@ -319,9 +319,11 @@ describe("the two notes printed into every session", () => {
     const op = await operator();
     await ensureNotes(op);
     const secret = "sk-ant-api03-Q7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7x";
-    const body = `First line\nsecret ${secret}\nbidi${String.fromCharCode(0x202e)}hidden${ZW}end\n\nLast line`;
+    const body = `First line\nbidi${String.fromCharCode(0x202e)}hidden${ZW}end\n\nLast line`;
+    // a secret is refused at write (the personal-data gate), so the printed text never has one to mask
+    expect((await send("PATCH", rec("global", "/session-instructions"), { token: op, body: { body: `First line\nsecret ${secret}` } })).status).toBe(400);
     expect((await send("PATCH", rec("global", "/session-instructions"), { token: op, body: { body } })).status).toBe(200);
-    expect((await send("PATCH", rec("global", "/response-style"), { token: op, body: { body: `style ${secret}\nsecond style line` } })).status).toBe(200);
+    expect((await send("PATCH", rec("global", "/response-style"), { token: op, body: { body: `style\nsecond style line` } })).status).toBe(200);
     const text = (await get("/v1/instructions?client=mcp", op)).body.text as string;
     expect(text).toContain("OPERATOR'S SESSION INSTRUCTIONS\nFirst line\n");
     expect(text).toContain("\n\nLast line");

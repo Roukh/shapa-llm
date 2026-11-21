@@ -72,7 +72,7 @@ import tempfile
 from pathlib import Path
 from datetime import datetime
 
-from shapa import config, db, ledger, memlog, redact, store
+from shapa import config, db, ledger, memlog, pii, redact, store
 
 #: The scopes a manual capture invocation may target (mirrors `shapa save`).
 #: "external" is CLI-only convenience: it writes into a DIFFERENT repo's own
@@ -725,6 +725,13 @@ def _capture(transcript_path, session_id, root, now, scope, applies_to, cwd,
     rows_by_root: dict[Path, list[tuple[dict, str]]] = {}
     preview: list[str] = []
     for cand in candidates:
+        # The hook is an AI app's write: a candidate that holds personal or sensitive data is dropped, whole
+        # (the gate of shapa/pii.py; it never blocks the session, and never echoes the value).
+        try:
+            if pii.scan([cand["summary"], cand["body"], *(cand.get("tags") or [])]).blocked:
+                continue
+        except Exception:
+            continue
         target = _route(cand, manual, base_root, base_scope, repo_name, has_git_no_wiki,
                         global_root_path)
         if target is None:
@@ -768,9 +775,12 @@ def _capture(transcript_path, session_id, root, now, scope, applies_to, cwd,
             continue
         try:
             for cand, source in cands:
-                rid, created = db.add_row(conn, "M", cand["summary"], cand["body"],
-                                          tags=cand.get("tags") or [], source=source,
-                                          session=sid, now=now)
+                try:
+                    rid, created = db.add_row(conn, "M", cand["summary"], cand["body"],
+                                              tags=cand.get("tags") or [], source=source,
+                                              session=sid, now=now)
+                except db.PiiRejected:
+                    continue  # the gate refused it: the next candidate is still considered
                 if created:
                     written.append(memlog.Record(
                         id=rid, created=memlog.now_iso(now), session=sid, repo=repo_name,

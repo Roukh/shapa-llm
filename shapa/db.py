@@ -42,6 +42,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import threading
+
+from shapa import pii
 from shapa.redact import redact
 
 DB_FILENAME = "shapa.db"
@@ -230,6 +233,42 @@ _TRIGGERS = (
 
 class LedgerError(ValueError):
     """A ledger operation the data does not allow (unknown id, wrong kind)."""
+
+
+class PiiRejected(LedgerError):
+    """A write refused by the personal-data gate (shapa/pii.py); ``categories`` name what it found, never the value."""
+
+    def __init__(self, exc: "pii.Rejected"):
+        self.categories = list(exc.categories)
+        super().__init__(str(exc))
+
+
+_screen = threading.local()
+
+
+@contextmanager
+def unscreened():
+    """Writes inside the block skip the personal-data gate: the one-off migration of a wiki's own old data,
+    which is moved, never newly written (existing rows are not rewritten; ``shapa validate --pii`` lists them)."""
+    was = getattr(_screen, "off", False)
+    _screen.off = True
+    try:
+        yield
+    finally:
+        _screen.off = was
+
+
+def _pii_gate(texts, tags=(), privileged: bool = False, *, stored_tags=()) -> list[str]:
+    """Refuse a write that holds personal or sensitive data (see :mod:`shapa.pii`): every category for an
+    unprivileged writer and for anything that goes to stage 0, the severe ones for the operator's CLI.
+    Returns the warnings of a write it lets through."""
+    if getattr(_screen, "off", False):
+        return []
+    level = pii.level_for([*tags, *stored_tags], privileged)
+    try:
+        return pii.check([t for t in texts if t], level)
+    except pii.Rejected as exc:
+        raise PiiRejected(exc) from None
 
 
 class DocExists(LedgerError):
@@ -542,10 +581,13 @@ def _require_item(conn, item_id: str) -> Item:
 
 def add_item(conn: sqlite3.Connection, kind: str, title: str, *, parent: str | None = None,
              body: str = "", verify: str | None = None, alias: str | None = None,
-             git_ref: str | None = None, now: datetime | None = None, tags=()) -> str:
+             git_ref: str | None = None, now: datetime | None = None, tags=(),
+             privileged: bool = False) -> str:
     kind = kind.upper()
     if kind not in ITEM_KINDS:
         raise LedgerError(f"item kind must be one of {ITEM_KINDS}, got {kind!r}")
+    tags = list(tags)
+    _pii_gate([title, body, alias, *map(str, tags)], tags, privileged)
     # The file is committed whole: no secret may enter it (redact.py).
     title = one_line(redact(title), 200)
     if not title:
@@ -575,11 +617,13 @@ def add_item(conn: sqlite3.Connection, kind: str, title: str, *, parent: str | N
     return new_id
 
 
-def update_item(conn: sqlite3.Connection, item_id: str, **fields) -> Item:
+def update_item(conn: sqlite3.Connection, item_id: str, *, privileged: bool = False, **fields) -> Item:
     allowed = {"title", "body", "verify", "git_ref", "alias"}
     bad = set(fields) - allowed
     if bad:
         raise LedgerError(f"cannot set {sorted(bad)}")
+    _pii_gate([fields.get("title"), fields.get("body"), fields.get("alias")], (), privileged,
+              stored_tags=_tags_of(conn, item_id) if fields.keys() & {"title", "body", "alias"} else ())
     fields = {k: redact(v) if isinstance(v, str) and k in ("title", "body", "verify") else v
               for k, v in fields.items()}
     with write(conn):
@@ -1036,6 +1080,8 @@ def add_row(conn: sqlite3.Connection, kind: str, summary: str, body: str = "", *
     kind = kind.upper()
     if kind not in MRI_KINDS:
         raise LedgerError(f"row kind must be one of {MRI_KINDS}, got {kind!r}")
+    tags = list(tags)
+    _pii_gate([summary, body, alias, *map(str, tags)], tags, privileged)
     # The file is committed whole: no secret may enter it, whoever writes the
     # row (capture, correction, save, migration).
     summary = one_line(redact(summary))
@@ -1092,6 +1138,8 @@ def update_row(conn: sqlite3.Connection, row_id: str, *, summary: str | None = N
                            (row_id, row_id)).fetchone()
         if row is None:
             raise LedgerError(f"no row {row_id!r}")
+        if summary is not None or body is not None or alias:
+            _pii_gate([summary, body, alias], (), privileged, stored_tags=_tags_of(conn, row["id"]))
         s = one_line(redact(summary)) if summary is not None else row["summary"]
         b = redact(str(body).strip()) if body is not None else row["body"]
         if f"{STAGE_PREFIX}0" in _tags_of(conn, row["id"]) and (
@@ -1228,6 +1276,8 @@ def add_doc(conn: sqlite3.Connection, title: str, body: str = "", *, tags=(), al
     :class:`DocExists` naming the first, or with ``merge`` appended to it as a
     section (its id is returned). Focus records and skill versions are not
     project documents and are never gated."""
+    tags = list(tags)
+    _pii_gate([title, body, alias, *map(str, tags)], tags, privileged)
     title = one_line(redact(title), TITLE_MAX)
     if not title:
         raise LedgerError("title is required")
@@ -1305,6 +1355,8 @@ def update_doc(conn: sqlite3.Connection, doc_id: str, *, title: str | None = Non
         have = _tags_of(conn, r["id"])
         if f"{STAGE_PREFIX}0" in have and not privileged:
             raise LedgerError(f"{r['id']} is baseline (stage 0): its text changes only from the local CLI")
+        if title is not None or body is not None or alias:
+            _pii_gate([title, body, alias], (), privileged, stored_tags=have)
         t = one_line(redact(title), TITLE_MAX) if title is not None else r["title"]
         if not t:
             raise LedgerError("title is required")
@@ -1438,7 +1490,20 @@ def check_atomic_rule(summary: str, body: str = "", *, what: str = "a rule") -> 
                           "per object (`shapa learn split R<n> --into TEXT --into TEXT`, or one save each)")
 
 
+def _stage0_text_gate(conn: sqlite3.Connection, target: str, tags) -> None:
+    """Personal data never enters stage 0: a record that is being moved into the baseline (or proposed for it)
+    is screened with every category, whoever moves it, on the text it already holds."""
+    if not pii.is_stage0(tags):
+        return
+    table = {"F": "items", "J": "items", "T": "items", "D": "docs"}.get(target[:1], "mri")
+    cols = "summary, body" if table == "mri" else "title, body"
+    r = conn.execute(f"SELECT {cols} FROM {table} WHERE id = ?", (target,)).fetchone()
+    if r is not None:
+        _pii_gate([r[0], r[1]], tags, False)
+
+
 def tag(conn: sqlite3.Connection, target: str, tags, *, privileged: bool = False) -> None:
+    _stage0_text_gate(conn, target, tags)
     if kind_of(target) == DOC_KIND:
         clean = [t for t in (_clean_tag(x) for x in tags) if t]
         if any(t in RESERVED_DOC_TAGS for t in clean):
@@ -1482,6 +1547,8 @@ def retag(conn: sqlite3.Connection, target: str, *, add=(), drop_prefix: str | N
     and each of *drop*), add *add*, and stamp the record updated so a sync
     sees the change. Used for state kept in tags (a skill's status, a
     feature's rank, a record's stage). Dropping ``stage:0`` takes *privileged*."""
+    add = list(add)
+    _stage0_text_gate(conn, target, add)
     with write(conn):
         have = set(_tags_of(conn, target))
         gone = {t for t in have if t in drop or (drop_prefix and t.startswith(drop_prefix))}

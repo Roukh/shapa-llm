@@ -162,10 +162,11 @@ class TestRedaction(WikiCase):
     def test_every_write_path_redacts(self):
         conn = self.conn()
         try:
-            rid, _ = db.add_row(conn, "I", f"leaked {self.SECRET}", f"body {self.SECRET}")
-            db.update_row(conn, rid, body=f"edited {self.SECRET}")
-            f1 = db.add_item(conn, "F", f"feature {self.SECRET}", body=self.SECRET)
-            db.update_item(conn, f1, title=f"renamed {self.SECRET}")
+            # the operator's CLI is the one writer that is masked, not refused (tests/test_pii_writes.py)
+            rid, _ = db.add_row(conn, "I", f"leaked {self.SECRET}", f"body {self.SECRET}", privileged=True)
+            db.update_row(conn, rid, body=f"edited {self.SECRET}", privileged=True)
+            f1 = db.add_item(conn, "F", f"feature {self.SECRET}", body=self.SECRET, privileged=True)
+            db.update_item(conn, f1, title=f"renamed {self.SECRET}", privileged=True)
         finally:
             conn.close()
         self.assertNotIn(self.SECRET.encode(), db.db_path(self.wiki).read_bytes())

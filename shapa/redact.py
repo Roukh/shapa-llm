@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import re
 
+from shapa.piitable import TABLE
+
 PLACEHOLDER = "[REDACTED]"
 
 #: (name, pattern). A pattern with a ``secret`` group masks only that group.
@@ -46,11 +48,17 @@ PATTERNS: tuple[tuple[str, re.Pattern], ...] = (
     # like a credential, and the value must be a single unbroken run (prose
     # such as "token: none of these apply" stays untouched).
     ("credential-assignment", re.compile(
-        r"(?i)\b[\w.-]{0,64}(?:api[_-]?key|secret|token|passw(?:or)?d|passwd|pwd|access[_-]?key|"
+        r"(?i)(?:api[_-]?key|secret|token|passw(?:or)?d|passwd|pwd|access[_-]?key|"
         r"private[_-]?key|client[_-]?secret)[\w.-]{0,64}[\"']?\s*[:=]\s*[\"']?"
         r"(?P<secret>[A-Za-z0-9+/_=.~-]{12,})")),
     ("conn-string-password", re.compile(r"(?i)\b(?:password|pwd)\s*=\s*(?P<secret>[^;\s\"']{6,})")),
 )
+
+# The secrets of the personal-data gate's shared table (shapa/assets/pii-patterns.json): chat and mail
+# provider tokens, cookie headers, storage account keys. Masked here like the rest; the gate (shapa/pii.py)
+# refuses them from every writer that is not the operator's own CLI.
+PATTERNS = PATTERNS + tuple(
+    (spec["name"], re.compile(spec["re"], re.I if "i" in spec["flags"] else 0)) for spec in TABLE["secrets"])
 
 
 def _mask(match: re.Match) -> str:

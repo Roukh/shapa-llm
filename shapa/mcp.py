@@ -300,6 +300,10 @@ def tool_save(args: dict[str, Any], cwd: str | None) -> dict[str, Any]:
             "error": f"invalid id {note_id!r} - ids may not contain '/', '\\\\', a NUL "
                      "byte, or be exactly '.' or '..' (path-traversal guard)",
         }
+    # a format-3 wiki's note file: the same personal-data gate as a database row (the id is a path)
+    note_warnings, refused = save_mod.pii_screen(summary, body, tags, note_id)
+    if refused:
+        return {"error": refused}
     path = root / f"{note_id}.md"
     if path.exists():
         return {
@@ -347,8 +351,8 @@ def tool_save(args: dict[str, Any], cwd: str | None) -> dict[str, Any]:
         return {"error": f"note failed validation and was not saved: {errors}"}
 
     out: dict[str, Any] = {"id": note_id, "path": str(path), "scope": scope}
-    if result.warnings:
-        out["warnings"] = [v.message for v in result.warnings]
+    if result.warnings or note_warnings:
+        out["warnings"] = [*note_warnings, *(v.message for v in result.warnings)]
     return out
 
 

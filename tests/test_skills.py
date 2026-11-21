@@ -91,7 +91,7 @@ def test_a_body_that_brings_its_own_frontmatter_cannot_change_the_name(conn):
 
 def test_secrets_never_enter_a_skill(conn):
     v = skills.add_version(conn, "keys", "d", "use sk-ant-api03-Q7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7x now",
-                           new=True, active=True)
+                           new=True, active=True, privileged=True)
     assert "sk-ant" not in skills.get(conn, v.name).body
 
 

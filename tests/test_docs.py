@@ -141,13 +141,13 @@ def test_add_get_update_documents(wikis):
 def test_documents_take_tags_and_links_and_are_redacted(wikis):
     conn = wikis.conn()
     try:
-        d = db.add_doc(conn, f"Notes {SECRET}", f"body {SECRET}", tags=["ops"])
+        d = db.add_doc(conn, f"Notes {SECRET}", f"body {SECRET}", tags=["ops"], privileged=True)  # masked, not refused
         db.tag(conn, d, ["runbook"])
         m, _ = db.add_row(conn, "M", "a memory")
         db.link(conn, d, m, "related")
         assert db.get_doc(conn, d).tags == ["ops", "runbook"]
         assert (d, m, "related") in db.links_of(conn, d)
-        db.update_doc(conn, d, body=f"again {SECRET}")
+        db.update_doc(conn, d, body=f"again {SECRET}", privileged=True)
     finally:
         conn.close()
     assert SECRET.encode() not in db.db_path(wikis.wiki).read_bytes()

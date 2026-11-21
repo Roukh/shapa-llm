@@ -11,6 +11,8 @@ import { type Device, needScope, needWiki, randomHex } from "./devices.js";
 import { fail } from "./errors.js";
 import { onFeatureClosed } from "./focus.js";
 import { BASELINE_EDIT_REFUSAL, gateStage, kindProblem, tagProblem } from "./gates.js";
+import { piiGate } from "./piigate.js";
+import { isStage0 } from "./pii.js";
 import { backlinkProject, projectLinks } from "./projectapi.js";
 import { documentTags, gateNewDocument, gateProjectNote, mergedBody, projectHolder, refusal } from "./projects.js";
 import { baselineKeepsAccess, baselineKeepsEngineTags, baselineKeepsRank, baselineMayCreate, baselineMayWrite, baselineWrites, denyBaseline, guardPrinted, isBaseline, ranksChanged, storedNames, withAccessMarker } from "./reach.js";
@@ -106,6 +108,8 @@ export interface Created {
   created: boolean;
   /** Set when the server stored something other than what was asked (a stage:0 tag kept out of the baseline). */
   notice?: string;
+  /** Allowed hits of the personal-data gate (a public IP address, a postcode, a named relative): categories only, never the value. */
+  warnings?: string[];
 }
 
 export function createRecord(repo: Repo, d: Device, wiki: string, body: CreateIn): Created {
@@ -137,6 +141,9 @@ export function createRecord(repo: Repo, d: Device, wiki: string, body: CreateIn
   const gated = gateStage({ stored: null, next: tags, privileged: false, kind });
   if ("error" in gated) fail("forbidden", gated.error);
   tags = withAccessMarker(d, kind, gated.tags);
+  // Personal and sensitive data never enters a wiki through an app (and never stage 0): refused with the category named.
+  const warnings = piiGate([body.title, body.summary, body.body, body.alias, body.path, body.mime, body.project], tags);
+  const warn = (c: Created): Created => (warnings.length ? { ...c, warnings } : c);
 
   let id: string;
   let raw: Data;
@@ -164,20 +171,20 @@ export function createRecord(repo: Repo, d: Device, wiki: string, body: CreateIn
     if (held) {
       const merged = mergedBody(held.data, String(built.data["title"]), String(built.data["body"]));
       const n = { ...norm(held), data: { ...held.data, body: merged }, updated: stamp(held.updated) };
-      return { record: toWire(repo.save(wiki, n, d.name, held)), created: false };
+      return warn({ record: toWire(repo.save(wiki, n, d.name, held)), created: false });
     }
   }
   if (kind === "M" || kind === "R" || kind === "I") {
     // Identical text is stored once. The holder is found through the caller's view, and merged into only as far as
     // the caller could edit it directly.
     const same = repo.identicalRow(wiki, kind, String(built.data["summary"]), String(built.data["body"]));
-    if (same) return saveIntoHolder(repo, d, wiki, same, tags);
+    if (same) return warn(saveIntoHolder(repo, d, wiki, same, tags));
   }
   const owner = tags.find((t) => t in OWNER_TAGS);
   if (kind === "T" && owner && body.parent === undefined) {
     // Identical open text is stored once: the same task is the same task.
     const same = repo.identicalOpenTask(wiki, owner, String(built.data["title"]), String(built.data["body"]));
-    if (same) return saveIntoHolder(repo, d, wiki, same, tags);
+    if (same) return warn(saveIntoHolder(repo, d, wiki, same, tags));
   }
   let alias = built.alias;
   let data = built.data;
@@ -206,7 +213,7 @@ export function createRecord(repo: Repo, d: Device, wiki: string, body: CreateIn
   // A lesson is filed into a skill only from the operator's own writers: never from a baseline device.
   if ((kind === "M" || kind === "R" || kind === "I") && !isBaseline(d)) lessonFromRow(repo.raw, wiki, saved, d.name);
   if (kind === "D" && projectOf(tags)) backlinkProject(repo, wiki, saved, d.name);
-  return { record: toWire(saved), created: true, ...(gated.notice ? { notice: gated.notice } : {}) };
+  return warn({ record: toWire(saved), created: true, ...(gated.notice ? { notice: gated.notice } : {}) });
 }
 
 // --- read -----------------------------------------------------------------------------------
@@ -232,6 +239,7 @@ export function listRecords(
 export interface Patched {
   record: RecordWire;
   notice?: string;
+  warnings?: string[];
 }
 
 export function patchRecord(repo: Repo, d: Device, wiki: string, ref: string, p: PatchIn): Patched {
@@ -274,6 +282,12 @@ export function patchRecord(repo: Repo, d: Device, wiki: string, ref: string, p:
     nextTags = gated.tags;
     notice = gated.notice;
   }
+  // The personal-data gate over what this edit writes (and, when it moves the record toward stage 0, over the text it already holds).
+  const toBaseline = isStage0(nextTags) && !isStage0(rec.tags);
+  const warnings = piiGate(
+    [p.summary, p.title, p.body, p.alias, p.git_ref, ...(toBaseline ? [rec.data["summary"], rec.data["title"], rec.data["body"], rec.data["alias"]] : [])],
+    p.tags === undefined ? [] : nextTags,
+  );
   const data: Data = { ...rec.data };
   const only = (field: string, ok: boolean) => {
     if (!ok) fail("invalid", `${field} does not apply to a ${TYPE_NAMES[k]}`);
@@ -306,6 +320,7 @@ export function patchRecord(repo: Repo, d: Device, wiki: string, ref: string, p:
     tags: nextTags,
   };
   if (contentKey({ ...next, updated: rec.updated }) === contentKey(norm(rec)) && alias === rec.alias) return { record: toWire(rec) };
+  const done = (r: Patched): Patched => (warnings.length ? { ...r, warnings } : r);
   if (k === "D") {
     // The lean gate also covers a retag: a document may not move into a project another one holds,
     // and the focus and skill tags are the engine's, not a way around the gate.
@@ -327,7 +342,7 @@ export function patchRecord(repo: Repo, d: Device, wiki: string, ref: string, p:
   const saved = repo.save(wiki, next, d.name, rec);
   if ((k === "M" || k === "R" || k === "I") && !isBaseline(d)) lessonFromRow(repo.raw, wiki, saved, d.name);
   if (k === "D" && p.tags !== undefined && projectOf(saved.tags) && projectOf(saved.tags) !== projectOf(rec.tags)) backlinkProject(repo, wiki, saved, d.name);
-  return { record: toWire(saved), ...(notice ? { notice } : {}) };
+  return done({ record: toWire(saved), ...(notice ? { notice } : {}) });
 }
 
 // --- ledger moves ---------------------------------------------------------------------------
@@ -368,6 +383,7 @@ export function close(
   if (!(CLOSE_REASONS as readonly string[]).includes(reason)) fail("invalid", `reason must be one of ${CLOSE_REASONS.join(", ")}`);
   const rec = ledgerItem(repo, d, wiki, ref);
   if (rec.data["status"] === "closed") return { record: toWire(rec), closed: [] };
+  piiGate([gitRef]); // the one free-text field a close can write
   const ts = nowIso();
   const patch: Data = { status: "closed", closed_reason: reason, closed: ts };
   if (gitRef) patch["git_ref"] = gitRef;
