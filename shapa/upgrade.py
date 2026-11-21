@@ -632,6 +632,20 @@ def _print_human(reports: list[WikiReport], check: bool) -> None:
         print(f"{len(reports)} wiki(s) checked, none behind")
 
 
+def _mirror_skills(path) -> list:
+    """Mirror the skill libraries in scope after an upgrade (``shapa.skillmirror.auto``: quiet, bounded,
+    only a library that changed). Never raises: an upgrade does not fail on a skill. Returns the runs
+    that changed something."""
+    if path:  # an explicit PATH names one wiki to upgrade, not a session's scope
+        return []
+    try:
+        from shapa import skillmirror
+
+        return [r for r in skillmirror.auto() if r.changed]
+    except Exception:
+        return []
+
+
 def _print_memri_report(root: Path, path: str, stats: "memri_import.ImportStats") -> None:
     verb = "would write" if stats.dry_run else "wrote"
     print(f"shapa upgrade --import-memri {path} -> {root}" + (" [dry-run]" if stats.dry_run else ""))
@@ -731,17 +745,24 @@ def main(argv: list[str] | None = None) -> None:
         if gone:
             registry.unregister(gone)
 
+    mirrored = [] if args.check else _mirror_skills(args.path)
+
     if args.json:
-        print(json.dumps({
+        out = {
             "shapa": __version__,
             "format": registry.CURRENT_FORMAT,
             "mode": "check" if args.check else "apply",
             "steps": STEP_TEXT,
             "wikis": [asdict(r) for r in reports],
             "behind": [r.path for r in reports if r.behind],
-        }, indent=2))
+        }
+        if mirrored:
+            out["skills_mirrored"] = [r.as_dict(names=0) for r in mirrored]
+        print(json.dumps(out, indent=2))
     else:
         _print_human(reports, args.check)
+        for r in mirrored:
+            print(f"skills mirrored ({r.scope}): +{len(r.added)} ~{len(r.updated)} -{len(r.deleted)}")
     sys.exit(1 if any(r.behind for r in reports) else 0)
 
 

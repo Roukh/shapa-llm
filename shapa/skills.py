@@ -32,6 +32,14 @@ CLI::
     shapa skill update NAME --scope ... [--description TEXT] [--body ...] [--activate]
     shapa skill activate NAME [--version N] --scope ...
     shapa skill uproot NAME [--json]       # from a repo: move its skill to the global wiki
+    shapa skill match "TASK TEXT" [--json] # at most 6 active skills that fit a task (BM25 over name + description)
+    shapa skill mirror [--scope global|repo] [--source DIR] [--dry-run] [--json]
+                                           # skill FILES are the source of truth (shapa/skillmirror.py)
+
+Skill files: the global library (``<global wiki>/../skills``, ``$SHAPA_SKILLS_DIR``) and a repo's own
+``<repo wiki>/skills/<name>/SKILL.md`` (tracked in git) are mirrored into these versioned documents by
+``shapa skill mirror``, which ``shapa upgrade`` and the session-start catch-up of ``shapa commit --hook``
+run when a library changed. A mirrored version carries ``source`` ``mirror:<hash>``.
 """
 
 from __future__ import annotations
@@ -115,8 +123,11 @@ def _from_doc(d: db.Doc) -> SkillVersion | None:
 
 
 def versions(conn: sqlite3.Connection, name: str) -> list[SkillVersion]:
-    """Every version of a skill, oldest first."""
-    out = [v for v in (_from_doc(d) for d in db.documents(conn)) if v and v.name == name]
+    """Every version of a skill, oldest first. Found by the ``skill:NAME`` tag, so the cost does not
+    grow with the number of other documents (a library of thousands of skills writes in one pass)."""
+    ids = [r[0] for r in conn.execute("SELECT id FROM tags WHERE tag = ? AND id >= 'D' AND id < 'E'",
+                                      (NAME_TAG + name,))]
+    out = [v for v in (_from_doc(d) for d in (db.get_doc(conn, i) for i in ids) if d) if v and v.name == name]
     return sorted(out, key=lambda v: (v.version, v.created))
 
 
@@ -139,9 +150,34 @@ def get(conn, name: str, version: int | None = None) -> SkillVersion | None:
     return active[-1] if active else None
 
 
+HEAD_CHARS = 4096  # characters of a body read to find its description (a body may be 1 MB)
+
+
+def _heads(conn) -> dict[str, list[SkillVersion]]:
+    """Every skill version by name with only the first :data:`HEAD_CHARS` characters of its body: all a
+    list or a match needs (the name, status, version and description). A library of thousands of skills
+    is listed without reading their bodies."""
+    ids = [r[0] for r in conn.execute("SELECT id FROM tags WHERE tag = ? AND id >= 'D' AND id < 'E'", (db.SKILL_TAG,))]
+    if not ids or not db._has_table(conn, "docs"):
+        return {}
+    tags: dict[str, list[str]] = {}
+    for rid, tag in conn.execute("SELECT id, tag FROM tags WHERE id >= 'D' AND id < 'E' AND id IN "
+                                 "(SELECT id FROM tags WHERE tag = ? AND id >= 'D' AND id < 'E') ORDER BY tag",
+                                 (db.SKILL_TAG,)):
+        tags.setdefault(rid, []).append(tag)
+    out: dict[str, list[SkillVersion]] = {}
+    for r in conn.execute("SELECT id, alias, title, substr(body, 1, ?) AS body, mime, source, hash, created, updated "
+                          "FROM docs WHERE id IN (SELECT id FROM tags WHERE tag = ? AND id >= 'D' AND id < 'E')",
+                          (HEAD_CHARS, db.SKILL_TAG)):
+        v = _from_doc(db.Doc(**{k: r[k] for k in r.keys()}, tags=tags.get(r["id"], [])))
+        if v:
+            out.setdefault(v.name, []).append(v)
+    return {k: sorted(vs, key=lambda v: (v.version, v.created)) for k, vs in out.items()}
+
+
 def summaries(conn) -> list[dict]:
     out = []
-    for name, vs in sorted(_all(conn).items()):
+    for name, vs in sorted(_heads(conn).items()):
         cur = next((v for v in reversed(vs) if v.status == "active"), vs[-1])
         out.append({"name": name, "description": cur.description,
                     "active": next((v.version for v in reversed(vs) if v.status == "active"), None),
@@ -200,14 +236,16 @@ def add_version(conn, name: str, description: str, body: str, *, new: bool = Fal
     full = _compose(name, desc, text)
     if len(full.encode("utf-8")) > db.DOC_BODY_MAX:
         raise db.LedgerError(f"a skill is at most {db.DOC_BODY_MAX} bytes")
+    # a brand-new skill is written active at once (nothing to demote, no baseline to budget)
+    first_active = active and not existing
     doc_id = db.add_doc(conn, f"{name} v{number}", full, source=source, system=True,
                         alias=f"{NAME_TAG}{name}.v{number}",
                         privileged=privileged,
                         tags=[db.SKILL_TAG, f"{NAME_TAG}{name}", f"{VERSION_TAG}{number}",
-                              f"{STATUS_TAG}{'pending'}",
+                              f"{STATUS_TAG}{'active' if first_active else 'pending'}",
                               *_inherited_stage(conn, existing[-1] if existing else None, privileged)])
-    version = get(conn, name, number)
-    if active:
+    version = _from_doc(db.get_doc(conn, doc_id))
+    if active and not first_active:
         version = activate(conn, name, number)
     return version
 
@@ -314,7 +352,7 @@ def uproot(repo, glob, name: str) -> dict:
 
 def shadowing(repo, glob) -> list[str]:
     """Names a repo wiki's skill shares with a global one (the repo's copy hides the global's)."""
-    return sorted(set(_all(repo)) & set(_all(glob)))
+    return sorted(set(_heads(repo)) & set(_heads(glob)))
 
 
 # --- lessons from rows --------------------------------------------------------------------------
@@ -365,10 +403,102 @@ def lesson_from_row(conn, row_id: str) -> list[SkillVersion]:
     return out
 
 
+# --- matching a task to skills --------------------------------------------------------------------
+
+MATCH_MAX = 6          # skills one match returns, whatever the caller asks
+MATCH_TEXT_MAX = 2000  # characters of a task read
+
+
+def match_skills(candidates, text: str, limit: int = MATCH_MAX) -> list[dict]:
+    """The skills that best fit a task: BM25 (:mod:`shapa.bm25`, the engine's one implementation) over
+    each skill's name (counted twice: a name says what a skill is for) and description. *candidates* are
+    dicts with ``name`` and ``description`` (and whatever else the caller keeps, passed through).
+    At most :data:`MATCH_MAX`; each gets a ``reason`` naming the task words it matched. A task with no
+    word in common with any skill returns nothing: never a guess."""
+    from shapa import bm25
+
+    text = str(text or "")[:MATCH_TEXT_MAX]
+    query = bm25.words(text)
+    if not query or not candidates:
+        return []
+    docs = {c["name"]: bm25.words(f"{c['name']} {c['name']} {c.get('description', '')}") for c in candidates}
+    scores = bm25.bm25_scores(text, docs)
+    out = []
+    for c in candidates:
+        score = scores.get(c["name"], 0.0)
+        if score <= 0:
+            continue
+        have = set(docs[c["name"]])
+        terms = [w for w in dict.fromkeys(query) if w in have][:6]
+        out.append({**c, "score": round(score, 4), "reason": "matches: " + ", ".join(terms)})
+    out.sort(key=lambda r: (-r["score"], r["name"]))
+    return out[:max(1, min(int(limit or MATCH_MAX), MATCH_MAX))]
+
+
+def active_summaries(conn, scope: str) -> list[dict]:
+    """The skills of a wiki that have an active version (a skill with none is not served): name,
+    description, scope."""
+    return [{"name": s["name"], "description": s["description"], "scope": scope}
+            for s in summaries(conn) if s["active"] is not None]
+
+
+def local_candidates(cwd=None) -> list[dict]:
+    """The active skills in scope for *cwd*: the repo wiki's, then the global wiki's (a repo's skill hides
+    the global one of the same name, as ``shapa skill list`` says)."""
+    out: dict[str, dict] = {}
+    for wr in sorted(_roots(cwd), key=lambda r: r.kind != "repo"):
+        if wr.kind not in ("repo", "global") or not db.exists(wr.path):
+            continue
+        conn = db.connect(wr.path)
+        try:
+            for s in active_summaries(conn, wr.kind):
+                out.setdefault(s["name"], s)
+        finally:
+            conn.close()
+    return list(out.values())
+
+
 # --- the CLI -------------------------------------------------------------------------------------
 
 def _line(v: SkillVersion) -> str:
     return f"{v.name} v{v.version} {v.status}"
+
+
+def _run_mirror(args) -> int:
+    from shapa import skillmirror
+
+    if args.source and not args.scope:
+        raise CommandError("--source names one library: say which wiki it mirrors into with --scope global|repo")
+    reports = []
+    for scope in ([args.scope] if args.scope else ["global", "repo"]):
+        try:
+            root = scoped_root(scope, args.cwd)
+        except CommandError:
+            if args.scope:
+                raise
+            continue  # no repo wiki here: only the global library
+        source = Path(args.source).expanduser() if args.source else skillmirror.default_source(scope, root)
+        if not args.source and not args.scope and not source.is_dir():
+            continue  # a library that is not there is not an error when no scope was asked for
+        reports.append(skillmirror.run_scope(scope, root, source, dry_run=args.dry_run,
+                                             deadline=None))
+    if args.json:
+        print(json.dumps({"mirrors": [r.as_dict() for r in reports]}, indent=2))
+        return 0
+    if not reports:
+        print("no skill library found (global: $SHAPA_SKILLS_DIR or <global wiki>/../skills; "
+              "repo: <wiki>/skills)")
+    for r in reports:
+        verb = "would " if r.dry_run else ""
+        print(f"{r.scope}: {r.source} -> {r.wiki}: {verb}add {len(r.added)}, {verb}update {len(r.updated)}, "
+              f"{verb}delete {len(r.deleted)}, unchanged {r.unchanged}, skipped {r.skipped}")
+        for w in r.warnings[:10]:
+            print(f"  warning: {w}")
+        for e in r.errors[:10]:
+            print(f"  error: {e}")
+        if r.skipped_delete:
+            print(f"  note: {r.skipped_delete}")
+    return 0
 
 
 def run_skill(argv: list[str]) -> int:
@@ -402,8 +532,29 @@ def run_skill(argv: list[str]) -> int:
     ur = add("uproot", help="move this repo's skill to the global wiki, so every repo has it")
     ur.add_argument("name")
     ur.add_argument("--json", action="store_true")
+    mt = add("match", help="the (at most 6) skills that best fit a task text")
+    mt.add_argument("text")
+    mt.add_argument("--json", action="store_true")
+    mr = add("mirror", help="mirror skill files (SKILL.md) into the wiki as versioned skills")
+    mr.add_argument("--scope", default=None, **scope_kw)
+    mr.add_argument("--source", default=None, help="the library directory (with --scope)")
+    mr.add_argument("--dry-run", action="store_true", dest="dry_run")
+    mr.add_argument("--json", action="store_true")
     args = p.parse_args(argv)
     cmd = args.cmd or "list"
+
+    if cmd == "match":
+        found = match_skills(local_candidates(args.cwd), args.text)
+        if args.json:
+            print(json.dumps({"skills": found}, indent=2))
+        elif not found:
+            print("no skill matches this text")
+        for r in found if not args.json else []:
+            print(f"{r['name']} [{r['scope']}] - {r['description']}\n  {r['reason']}")
+        return 0
+
+    if cmd == "mirror":
+        return _run_mirror(args)
 
     if cmd == "uproot":
         repo, glob = _connect(scoped_root("repo", args.cwd)), _connect(scoped_root("global", args.cwd))
@@ -436,7 +587,7 @@ def run_skill(argv: list[str]) -> int:
                 if label == "global":
                     gconn = _connect(root)
                     try:
-                        in_global = set(_all(gconn))
+                        in_global = set(_heads(gconn))
                     finally:
                         gconn.close()
         for label, root in targets:

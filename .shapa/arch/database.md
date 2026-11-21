@@ -18,7 +18,7 @@ and memory/rule/issue rows, in one sqlite file tracked in git.
 - `shapa/db.py` - schema, row/item CRUD, worktree-to-primary-checkout resolution, the after-merge sweep.
 - `shapa/ledger.py` - `shapa ledger`/`row`/`correction`, plus the git and harness trigger functions (`on_commit`, `pre_commit`, `reconcile`, `on_merge`, `hook_posttool`).
 - `shapa/migrate4.py` - format 3 to 4 migration (notes/checklist/ideas/memory-log into rows and ledger items).
-- `shapa/focus.py` (`shapa focus`) and `shapa/skills.py` (`shapa skill`) - the northstar, the three fires and the skill versions, kept in documents.
+- `shapa/focus.py` (`shapa focus`) and `shapa/skills.py` (`shapa skill`) - the northstar, the three fires and the skill versions, kept in documents. `shapa/skillmirror.py` mirrors skill FILES (the global library, a repo's `.shapa/skills/`) into those versions; `db.write` nests as a savepoint so a bulk writer commits once per batch.
 - Central brain: `shapa/stages.py` (`shapa stage`, the baseline), `tasks.py` (`shapa tasks`, standalone `human_task`/`agent_task`), `projectfile.py` (`shapa project`, template `assets/project-template.md`), `relate.py` (`shapa tags`, `shapa related`, `fetch --tag`); rules of each in [[hosted-tags]] and [[hosted-documents]].
 - `shapa/commit.py` - `shapa commit`: the wiki commits its own database on the default branch (SessionEnd hook, SessionStart catch-up), scrubbing configured terms first.
 

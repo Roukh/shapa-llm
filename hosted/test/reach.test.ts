@@ -35,7 +35,7 @@ async function seed(): Promise<World> {
   await hide(await create(op, w, { type: "rule", summary: `${HIDDEN}-STAGE1`, tags: ["stage:1", "shared-tag"] }));
   await hide(await create(op, w, { type: "memory", summary: `${HIDDEN}-MEMORY`, tags: ["hidden-only-tag", "shared-tag", `project:${project}`] }));
   await hide(await create(op, w, { type: "issue", summary: `${HIDDEN}-ISSUE`, tags: ["hidden-only-tag"] }));
-  await sync(op, w, { ops: [put(skillDoc("D80", "hidden-skill", 1, "active", ["stage:1", "hidden-only-tag"], `${HIDDEN}-SKILLBODY`))] });
+  await sync(op, w, { ops: [put(skillDoc("D80", "hidden-skill", 1, "pending", ["stage:1", "hidden-only-tag"], `${HIDDEN}-SKILLBODY`))] });
   hiddenIds.push("D80");
   const stage0 = await sync(op, "global", { ops: [put(row(`R${500 + k}`, "VISIBLE-S0-RULE", { tags: ["stage:0", "shared-tag", `project:${project}`] })), put(skillDoc(`D${800 + k}`, "visible-skill", 1, "active", ["stage:0"], "VISIBLE-SKILLBODY"))] });
   expect(stage0.body.results.map((r: { status: string }) => r.status)).toEqual(["accepted", "accepted"]);
@@ -226,6 +226,7 @@ describe("reach: what a baseline device reads", () => {
         session_start: [{ stage: 9, full: true, wiki: w }, { client: "rest", stage: 9 }],
         focus: [{ wiki: w }, { wiki: "global" }],
         skills: [{ wiki: w }, { wiki: "global" }],
+        skill_match: [{ text: "hidden skill description", wiki: w }, { text: HIDDEN }, { text: "visible skill description" }],
         skill: [{ name: "hidden-skill", wiki: w, version: 1 }, { name: "hidden-skill", wiki: w }, { name: "visible-skill", wiki: "global" }],
         search: [{ query: HIDDEN }, { query: "hidden", k: 50 }, { query: "", tags: ["hidden-only-tag"] }, { query: "", tags: ["shared-tag"], k: 50 }],
         get: [{ id: "R1", wiki: w }, { id: "D80" }, { id: "M1" }],

@@ -14,6 +14,7 @@ import { fail, run, type Out } from "./errors.js";
 import * as focus from "./focus.js";
 import { composeInstructions, type ClientKind } from "./instructions.js";
 import * as skills from "./skills.js";
+import type { SkillMatch } from "./skillmatch.js";
 import * as ledger from "./ledger.js";
 import * as projectApi from "./projectapi.js";
 import * as tagApi from "./tagapi.js";
@@ -148,6 +149,11 @@ export class ShapaStore extends DurableObject<Env> {
 
   skill(cred: Cred, wiki: string, name: string, version?: number): Out<skills.SkillVersion> {
     return this.act(cred, (repo, d) => skills.getSkill(repo, d, wiki, name, version));
+  }
+
+  /** At most six active skills that fit a task text (BM25 over name and description). Every device. */
+  skillMatch(cred: Cred, text: string, wiki?: string): Out<SkillMatch[]> {
+    return this.act(cred, (repo, d) => skills.matchTask(repo, d, text, wiki));
   }
 
   search(cred: Cred, q: { query: string; k: number; wiki?: string; types?: string[]; tags?: string[] }): Out<ReturnType<typeof search>> {

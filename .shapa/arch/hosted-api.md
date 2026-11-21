@@ -66,7 +66,8 @@ Server `instructions`: "Call `session_start` first and follow what it returns ov
 | `project_new`, `project_add` | `key, title?, wiki?`; `key, section, text, wiki?` | create a project's file; append an item |
 | `focus` | `wiki?` (default `global`) | the northstar, the fires with their tree, the candidates |
 | `focus_set` | `wiki, northstar?, fires?` or `promote?` | set them, or promote a feature; never both forms at once |
-| `skills`, `skill` | `wiki?`; `name, wiki?, version?` | list skills; read one version (the active one by default) |
+| `skills`, `skill` | `wiki?`; `name, wiki?, version?` | list skills; read one version (the active one by default). Every device reads every active skill, a baseline one included |
+| `skill_match` | `text, wiki?` | at most 6 active skills that fit a task (BM25 over name and description), each `{name, description, wiki, reason}`; read-only, open to every device; `wiki` adds a repo wiki's skills to the global ones |
 | `search` | `query?, k?, wiki?, types?, tags?` | as REST search (`query` optional with `tags`) |
 | `get` | `id, wiki?` | full record; lists every match when the id is in several wikis |
 | `save` | `wiki, type (memory/idea/decision/human_task/agent_task/rule/issue/document/note), summary\|title, body, tags?, alias?, path?, project?, merge?` | create (a document obeys the lean gate; a `stage:0` tag becomes `stage-proposed:0`, and the answer says so) |

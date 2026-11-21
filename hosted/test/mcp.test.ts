@@ -3,7 +3,7 @@ import { BASE, call, get, mint, mintAll, rec, send, setup, wiki } from "./helper
 import { INIT, rpc, tool } from "./mcp-helpers.js";
 import { oauthLogin } from "./oauth-helpers.js";
 
-const TOOLS = ["session_start", "search", "get", "save", "update", "ledger_list", "ledger_add", "ledger_set", "wikis", "focus", "focus_set", "skills", "skill", "tags", "related", "tasks", "projects", "project", "project_new", "project_add"];
+const TOOLS = ["session_start", "search", "get", "save", "update", "ledger_list", "ledger_add", "ledger_set", "wikis", "focus", "focus_set", "skills", "skill", "skill_match", "tags", "related", "tasks", "projects", "project", "project_new", "project_add"];
 
 describe("MCP: discovery", () => {
   it("publishes the protected resource and challenges an unauthenticated caller", async () => {

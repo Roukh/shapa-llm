@@ -421,10 +421,23 @@ def tool_focus(args: dict[str, Any], cwd: str | None) -> dict[str, Any]:
         conn.close()
 
 
+def tool_skill_match(args: dict[str, Any], cwd: str | None) -> dict[str, Any]:
+    """At most 6 active skills that fit a task text (BM25 over name and description), each with a reason."""
+    from shapa import skills
+
+    text = str(args.get("text") or args.get("query") or "").strip()
+    if not text:
+        return {"error": "text is required: the task, in a sentence or two"}
+    root = args.get("root") or cwd
+    found = skills.match_skills(skills.local_candidates(root), text)
+    return {"skills": [{k: r[k] for k in ("name", "description", "scope", "reason")} for r in found]}
+
+
 def tool_skill(args: dict[str, Any], cwd: str | None) -> dict[str, Any]:
     from shapa import db, skills
 
-    action = str(args.get("action") or "list").strip()
+    # A bare {name} reads that skill, as the hosted `skill` tool does.
+    action = str(args.get("action") or ("show" if args.get("name") else "list")).strip()
     if action in ("list", "show"):
         out: list[Any] = []
         for wr in config.wiki_roots(args.get("root") or cwd):
@@ -649,6 +662,7 @@ _HANDLERS: dict[str, Callable[[dict[str, Any], str | None], dict[str, Any]]] = {
     "placement": tool_placement,
     "focus": tool_focus,
     "skill": tool_skill,
+    "skill_match": tool_skill_match,
     "partition": tool_partition,
 }
 
@@ -863,6 +877,21 @@ TOOLS: list[dict[str, Any]] = [
                 "body": {"type": "string"}, "version": {"type": "integer"},
                 "root": {"type": "string"},
             },
+        },
+    },
+    {
+        "name": "skill_match",
+        "description": (
+            "Which skills fit this task: at most 6 active skills ranked by BM25 over name and "
+            "description, each with its description and a reason (the task words it matched). "
+            "Call it before starting a task, then read the ones that fit with `skill` {action: "
+            "show, name}. Read-only; returns nothing when no word matches."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"text": {"type": "string", "description": "the task, in a sentence or two"},
+                           "root": {"type": "string"}},
+            "required": ["text"],
         },
     },
     {

@@ -127,6 +127,27 @@ export function buildServer(env: Env, cred: Cred): McpServer {
   );
 
   server.registerTool(
+    "skill_match",
+    {
+      title: "Which skills fit this task",
+      description:
+        "Call this before starting a task. Returns at most 6 of the operator's active skills, ranked by BM25 over name and description, each with its description and a reason (the task words it matched); empty when no word matches. Then read the ones that fit with `skill` {name}. `wiki` adds a repo wiki's own skills to the global ones. Available to every device.",
+      inputSchema: z.object({
+        text: z.string().min(1).max(2000).describe("The task, in a sentence or two."),
+        wiki: wikiKey.optional().describe("A repo wiki whose skills join the global ones (default: global only)."),
+      }),
+      annotations: READ,
+    },
+    ({ text: task, wiki }) =>
+      guarded(async () => {
+        const found = await unwrap(s.skillMatch(cred, task, wiki));
+        return found.length
+          ? json(found.map((m) => ({ name: m.name, description: m.description, wiki: m.wiki, reason: m.reason })))
+          : text("No skill matches this task.");
+      }),
+  );
+
+  server.registerTool(
     "search",
     {
       title: "Search memory",

@@ -53,6 +53,14 @@ def isolate_remote(monkeypatch, tmp_path):
 
 
 @pytest.fixture(autouse=True)
+def isolate_skill_library(monkeypatch, tmp_path):
+    """`shapa upgrade` and the `commit --hook` catch-up mirror the global skill library into the global
+    wiki. Point it at a directory that does not exist, so no test ever mirrors a real library into any
+    wiki; a test of the mirror sets `$SHAPA_SKILLS_DIR` itself."""
+    monkeypatch.setenv("SHAPA_SKILLS_DIR", str(tmp_path / "no-skill-library"))
+
+
+@pytest.fixture(autouse=True)
 def inline_snapshot(monkeypatch):
     """A session start stores its daily snapshot in a detached process; the suite runs it in-process."""
     monkeypatch.setenv("SHAPA_INLINE_SNAPSHOT", "1")

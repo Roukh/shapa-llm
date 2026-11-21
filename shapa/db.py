@@ -467,7 +467,21 @@ def _has_schema(conn: sqlite3.Connection) -> bool:
 @contextmanager
 def write(conn: sqlite3.Connection):
     """One immediate transaction: the write lock is taken up front, so two
-    hooks allocating IDs at once serialize instead of colliding."""
+    hooks allocating IDs at once serialize instead of colliding.
+
+    Inside a transaction the caller already holds (a bulk writer such as ``shapa skill mirror``
+    batches many writes into one commit), the block is a savepoint: it can fail alone, and the
+    outer transaction commits it."""
+    if conn.in_transaction:
+        conn.execute("SAVEPOINT shapa_write")
+        try:
+            yield conn
+        except BaseException:
+            conn.execute("ROLLBACK TO shapa_write")
+            conn.execute("RELEASE shapa_write")
+            raise
+        conn.execute("RELEASE shapa_write")
+        return
     conn.execute("BEGIN IMMEDIATE")
     try:
         yield conn
