@@ -6,13 +6,13 @@ import { describe, expect, it } from "vitest";
 import { BASELINE_BUDGET } from "../src/gates.js";
 import { NOTE_ACCESS_KEY, migrate } from "../src/schema.js";
 import { OWNER, env, freshKey, get, mint, mintAll, put, rec, row, send, setup, sync, wiki } from "./helpers.js";
-import { tool } from "./mcp-helpers.js";
+import { sessionText, tool } from "./mcp-helpers.js";
 
 const create = (token: string, w: string, body: Record<string, unknown>) => send("POST", rec(w), { token, body });
 const patch = (token: string, w: string, ref: string, body: Record<string, unknown>) => send("PATCH", rec(w, `/${encodeURIComponent(ref)}`), { token, body });
 const read = (token: string, w: string, ref: string) => get(rec(w, `/${encodeURIComponent(ref)}`), token);
 const note = (path: string, extra: Record<string, unknown> = {}) => ({ type: "note", path, body: `body of ${path}`, ...extra });
-const instructions = async (token: string, q = "") => (await get(`/v1/instructions?client=mcp${q}`, token)).body.text as string;
+const instructions = (token: string) => sessionText(token);
 
 /** A baseline-reach device token (the shape the outside agents get). */
 async function baseline(scopes = ["read", "write", "delete"], wikis: string[] | null = null): Promise<string> {

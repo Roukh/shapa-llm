@@ -2,6 +2,7 @@
 
 import { type Device, needScope, needWiki, wikiAllowed } from "./devices.js";
 import { fail } from "./errors.js";
+import { piiGate } from "./piigate.js";
 import { denyBaseline } from "./reach.js";
 import { Repo } from "./repo.js";
 
@@ -34,6 +35,7 @@ export function putWiki(
 ): { wiki: WikiInfo; created: boolean } {
   needScope(d, "write");
   needWiki(d, key);
+  piiGate([body.name, body.origin]); // a wiki's name is free text too
   if ((key === "global") !== (body.kind === "global")) fail("invalid", 'the wiki key "global" is the global wiki, and only it');
   const cur = repo.wiki(key);
   if (!cur) {

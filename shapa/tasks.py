@@ -33,11 +33,6 @@ OWNERS = ("human", "agent")
 STATUSES = ("open", "closed", "all")
 _OWNER_TAG = {v: k for k, v in db.OWNER_TAGS.items()}
 _RANK_RE = re.compile(r"[1-9][0-9]{0,2}")
-#: The sentence a session start prints after the operator's open tasks (the Worker prints the same).
-ASK_SENTENCE = ("When the operator asks what they need to do, answer from `tasks` "
-                "(GET /v1/tasks?owner=human). When they mention something they must do, save it as a "
-                "human_task.")
-
 
 def owner_of(tags) -> str:
     for t in sorted(tags):
@@ -48,7 +43,7 @@ def owner_of(tags) -> str:
 
 def add_task(conn: sqlite3.Connection, title: str, owner: str, body: str = "", *,
              project: str | None = None, tags=(), standalone_only: bool = False,
-             parent: str | None = None) -> tuple[str, bool]:
+             parent: str | None = None, privileged: bool = False) -> tuple[str, bool]:
     """File a ``T`` item for *owner* (``human``, ``agent``, or ``""`` for a plain task in a repo
     wiki). Returns ``(id, created)``: identical open text of the same owner in this wiki is stored
     once (the existing id comes back, and gains the project tag when it had none).
@@ -67,6 +62,7 @@ def add_task(conn: sqlite3.Connection, title: str, owner: str, body: str = "", *
         want.append(db.PROJECT_PREFIX + key)
     if sum(1 for t in want if t in db.OWNER_TAGS) > 1:
         raise db.LedgerError("a task is a human_task or an agent_task, not both")
+    db._pii_gate([title, body, *map(str, want)], want, privileged)  # before the masking below hides a secret
     clean_title = db.one_line(redact(title), 200)
     if not clean_title:
         raise db.LedgerError("title is required")
@@ -82,7 +78,8 @@ def add_task(conn: sqlite3.Connection, title: str, owner: str, body: str = "", *
         if key and not any(t.startswith(db.PROJECT_PREFIX) for t in db._tags_of(conn, found[0])):
             db.tag(conn, found[0], [db.PROJECT_PREFIX + key])
         return found[0], False
-    return db.add_item(conn, "T", clean_title, parent=parent, body=clean_body, tags=want), True
+    return db.add_item(conn, "T", clean_title, parent=parent, body=clean_body, tags=want,
+                       privileged=privileged), True
 
 
 def _ranks(conn: sqlite3.Connection) -> dict[str, int]:

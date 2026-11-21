@@ -4,11 +4,18 @@
 // and files a *pending* new version when a memory, rule or issue saved through REST or MCP names
 // a skill; it never activates one, and no REST or MCP edit touches a skill version (the
 // operator activates with `shapa skill activate`, which reaches the store through sync).
+//
+// Skill FILES are the source of truth (the operator's library, and a repo's `.shapa/skills/`): the
+// local `shapa skill mirror` writes them as these versions, and they reach this store as ordinary
+// record syncs. Every active version is readable by every device, a baseline one included (tags.ts
+// `baseVisible`); a pending or previous version is read only by a full device. `matchTask` is the
+// `skill_match` MCP tool.
 
-import { type Device, needScope, needWiki, randomHex } from "./devices.js";
+import { type Device, needScope, needWiki, randomHex, wikiAllowed } from "./devices.js";
 import { fail } from "./errors.js";
 import { DOC_BODY_MAX, SKILL_TAG, buildData, normTags, nowIso, oneLine, type Normalized } from "./records.js";
 import { Repo, type Stored } from "./repo.js";
+import { MATCH_MAX, matchSkills, type Candidate, type SkillMatch } from "./skillmatch.js";
 
 export const NAME_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
 export const DESCRIPTION_MAX = 1024;
@@ -106,6 +113,45 @@ export function getSkill(repo: Repo, d: Device, wiki: string, name: string, vers
   const v = version === undefined ? served(vs) : vs.find((x) => x.version === version);
   if (!v) fail("not_found", `no ${version === undefined ? "active " : ""}skill ${name}${version === undefined ? " (a pending version is read with ?version=N)" : ` version ${version}`} in ${wiki}`);
   return v;
+}
+
+// --- matching a task to skills ----------------------------------------------------------------
+
+const MATCH_HEAD = 4096;       // characters of a skill body read to find its description
+const MATCH_POOL = 2000;       // active skills of one wiki looked at
+
+/** The active skills of a wiki as match candidates, through the device's view (a baseline device sees every
+ *  active skill, never a pending or previous version). Read from the tag index and a body prefix: a skill body
+ *  may be 1 MB, and a whole library is matched at once. The highest active version of each name. */
+function activeCandidates(repo: Repo, wiki: string): Candidate[] {
+  const ids = repo.sql
+    .exec(`SELECT id FROM record_tags WHERE wiki = ? AND tag = 'status:active' AND kind = 'S'${repo.vis("vis")} ORDER BY seq LIMIT ?`, wiki, MATCH_POOL)
+    .toArray();
+  const best = new Map<string, { version: number; description: string }>();
+  for (const r of ids) {
+    const b = repo.brief(wiki, r["id"] as string, MATCH_HEAD);
+    const h = b ? headOf(b.tags) : null;
+    if (!b || !h || h.status !== "active") continue;
+    if ((best.get(h.name)?.version ?? 0) >= h.version) continue;
+    best.set(h.name, { version: h.version, description: oneLine(splitSkill(b.head).fields["description"] ?? "", DESCRIPTION_MAX) });
+  }
+  return [...best.entries()].map(([name, v]) => ({ name, description: v.description, wiki }));
+}
+
+/** The skills that best fit a task (at most MATCH_MAX): the global wiki's active skills, plus a repo wiki's when
+ *  `wiki` names one (a repo skill never shadows a global one of the same name: the global one wins). Every device may call it, a baseline one
+ *  included: it reads what `skills` lists. A wiki the device may not use is refused when named, skipped when it
+ *  is `global`. */
+export function matchTask(repo: Repo, d: Device, text: string, wiki?: string): SkillMatch[] {
+  needScope(d, "read");
+  const order = wiki !== undefined && wiki !== "global" ? ["global", wiki] : ["global"];
+  const pool = new Map<string, Candidate>();
+  for (const w of order) {
+    if (!wikiAllowed(d, w)) { if (w === wiki) needWiki(d, w); continue; }
+    if (!repo.wiki(w)) { if (w === wiki) fail("not_found", `no wiki ${w}`); continue; }
+    for (const c of activeCandidates(repo, w)) if (!pool.has(c.name)) pool.set(c.name, c);
+  }
+  return matchSkills([...pool.values()], text, MATCH_MAX);
 }
 
 // --- activation -------------------------------------------------------------------------------

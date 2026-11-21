@@ -1,0 +1,432 @@
+{
+ "version": 1,
+ "note": "ONE table for the personal-data gate. shapa/assets/pii-patterns.json is canonical; hosted/src/pii-patterns.json is a byte copy (tests/test_parity.py). Python compiles with re.ASCII, the Worker with the u flag; a (?P<name> group is spelled (?<name> for JS.",
+ "normalize": {
+  "invisible": "\\u00ad\\u034f\\u061c\\u115f\\u1160\\u17b4\\u17b5\\u180b-\\u180f\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u206f\\u3164\\ufe00-\\ufe0f\\ufeff\\uffa0\\ufff9-\\ufffb\udb40\udc00-\udb40\udc7f\udb40\udd00-\udb40\uddef",
+  "spaces": "\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000",
+  "dashes": "\\u2010-\\u2015\\u2212\\ufe58\\ufe63\\u2043",
+  "dots": "\\u2024\\u3002\\ufe52\\u00b7\\u2027",
+  "entities": {
+   "amp": "&",
+   "lt": "<",
+   "gt": ">",
+   "quot": "\"",
+   "apos": "'",
+   "nbsp": " ",
+   "commat": "@",
+   "period": ".",
+   "lpar": "(",
+   "rpar": ")",
+   "plus": "+",
+   "hyphen": "-",
+   "dash": "-",
+   "colon": ":",
+   "comma": ",",
+   "num": "#",
+   "equals": "=",
+   "lowbar": "_",
+   "sol": "/",
+   "excl": "!",
+   "percnt": "%",
+   "lsqb": "[",
+   "rsqb": "]",
+   "lbrack": "[",
+   "rbrack": "]",
+   "lcub": "{",
+   "rcub": "}",
+   "ast": "*",
+   "semi": ";",
+   "quest": "?",
+   "dollar": "$",
+   "bsol": "\\",
+   "vert": "|",
+   "grave": "`",
+   "tilde": "~",
+   "circ": "^"
+  },
+  "limits": {
+   "base64_runs": 40,
+   "base64_min": 16,
+   "decode_rounds": 2
+  }
+ },
+ "secrets": [
+  {
+   "name": "telegram-bot-token",
+   "re": "(?<!\\d)\\d{8,10}:[A-Za-z0-9_-]{35}(?![\\w-])",
+   "flags": ""
+  },
+  {
+   "name": "slack-webhook",
+   "re": "https://hooks\\.slack\\.com/services/T[A-Z0-9]+/B[A-Z0-9]+/[A-Za-z0-9]+",
+   "flags": ""
+  },
+  {
+   "name": "sendgrid-key",
+   "re": "\\bSG\\.[\\w-]{22}\\.[\\w-]{43}",
+   "flags": ""
+  },
+  {
+   "name": "cookie-header",
+   "re": "\\b(?:set-)?cookie:\\s*(?P<secret>\\S[^\\n]{8,})",
+   "flags": "i"
+  },
+  {
+   "name": "azure-account-key",
+   "re": "AccountKey=(?P<secret>[A-Za-z0-9+/=]{40,})",
+   "flags": ""
+  }
+ ],
+ "street_stop": [
+  "step",
+  "steps",
+  "phase",
+  "chapter",
+  "section",
+  "part",
+  "tier",
+  "level",
+  "version",
+  "v",
+  "day",
+  "week",
+  "month",
+  "page",
+  "pages",
+  "p",
+  "pp",
+  "item",
+  "task",
+  "issue",
+  "ticket",
+  "pr",
+  "fig",
+  "figure",
+  "table",
+  "line",
+  "lines",
+  "row",
+  "col",
+  "column",
+  "option",
+  "rule",
+  "stage",
+  "round",
+  "release",
+  "sprint",
+  "milestone",
+  "number",
+  "no",
+  "top",
+  "last",
+  "next",
+  "first",
+  "rank",
+  "grade",
+  "class",
+  "group",
+  "team",
+  "type",
+  "lesson",
+  "unit",
+  "module",
+  "slide",
+  "episode",
+  "season",
+  "scene",
+  "act",
+  "article",
+  "clause",
+  "rev",
+  "revision",
+  "test",
+  "case",
+  "example",
+  "job",
+  "feature",
+  "wave",
+  "batch",
+  "tab",
+  "window",
+  "screen",
+  "view",
+  "slot",
+  "chunk",
+  "node",
+  "pass",
+  "gen",
+  "generation",
+  "epoch",
+  "iteration",
+  "attempt",
+  "try",
+  "of",
+  "and",
+  "or",
+  "to",
+  "than",
+  "over",
+  "under",
+  "about",
+  "least",
+  "most",
+  "only",
+  "all",
+  "every",
+  "each",
+  "per",
+  "plus",
+  "minus",
+  "times",
+  "x"
+ ],
+ "categories": [
+  {
+   "name": "card",
+   "label": "a payment card number",
+   "operator": true,
+   "patterns": [
+    {
+     "re": "(?<!\\d)(?=[2-6])(?:\\d[ .\\-/_]{0,2}){12,18}\\d(?!\\d)",
+     "flags": "",
+     "check": "luhn"
+    }
+   ]
+  },
+  {
+   "name": "iban",
+   "label": "an IBAN",
+   "operator": true,
+   "patterns": [
+    {
+     "re": "\\b[A-Z]{2}\\d{2}(?:[ .-]?[A-Z0-9]{4}){2,7}(?:[ .-]?[A-Z0-9]{1,3})?\\b",
+     "flags": "",
+     "check": "iban"
+    }
+   ]
+  },
+  {
+   "name": "ssn",
+   "label": "a US social security number",
+   "operator": true,
+   "patterns": [
+    {
+     "re": "(?<!\\d)(?!000|666|9\\d\\d)\\d{3}[- .]{1,2}(?!00)\\d{2}[- .]{1,2}(?!0000)\\d{4}(?!\\d)",
+     "flags": ""
+    }
+   ]
+  },
+  {
+   "name": "private-key",
+   "label": "a private key",
+   "operator": true,
+   "patterns": [
+    {
+     "re": "-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----",
+     "flags": ""
+    }
+   ]
+  },
+  {
+   "name": "password",
+   "label": "a password or PIN",
+   "operator": false,
+   "patterns": [
+    {
+     "re": "\\b(?:password|passwd|pwd|passcode|pin)\\b\\s*(?:is|[:=])\\s*[\"']?(?P<v>\\S{4,})",
+     "flags": "i",
+     "allow": [
+      "^[\"'`]*(?:true|false|none|null|nil|undefined|required|optional|empty|hashed|stored|encrypted|set|unset|missing|invalid|incorrect|wrong|correct|reset|change|changed|manager|field|input|prompt|policy|rules?|hash|salt|file|env|variable|here|below|above|protected|based|auth|authentication|login|length|strength|prompts?|entry|only|and|the|for|from|to|in|on|of|via|with|that|this|never|always|not|too|short|long|weak|strong|stdin|keychain|vault|x+|\\*+|\\.+|-+|_+)\\W*$",
+      "^[\"'`]*(?:<[^>]*>|\\$\\{?\\w+\\}?|\\{\\{[^}]*\\}\\}|%\\w+%|\\[[^\\]]*\\])\\W*$"
+     ],
+     "allow_flags": "i"
+    }
+   ]
+  },
+  {
+   "name": "secret",
+   "label": "a secret or credential",
+   "operator": false,
+   "patterns": []
+  },
+  {
+   "name": "gov-id",
+   "label": "a government ID number",
+   "operator": true,
+   "patterns": [
+    {
+     "re": "\\b(?:passport|driver'?s? licen[cs]e|national id|id card|tax id|social security|nino|aadhaar|cpf|dni|bsn|pesel)\\b[^\\n]{0,24}?[:#=\\s]([A-Z0-9][A-Z0-9 -]{5,18}[A-Z0-9])",
+     "flags": "i",
+     "check": "gov-digits"
+    }
+   ]
+  },
+  {
+   "name": "email",
+   "label": "an email address",
+   "operator": false,
+   "patterns": [
+    {
+     "re": "[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+)*\\.[A-Za-z]{2,}",
+     "flags": "",
+     "allow": [
+      "^(?:no-?reply|do-?not-?reply|donotreply|noreply[a-z0-9._+-]*|git)@",
+      "@(?:[a-z0-9-]+\\.)*noreply\\.github\\.com$",
+      "@(?:[a-z0-9-]+\\.)*example\\.(?:com|org|net)$",
+      "@localhost$"
+     ],
+     "allow_flags": "i"
+    }
+   ]
+  },
+  {
+   "name": "phone",
+   "label": "a phone number",
+   "operator": false,
+   "patterns": [
+    {
+     "re": "(?<![\\w+])\\+[1-9](?:[ .()-]{0,2}\\d){7,14}(?!\\d)",
+     "flags": ""
+    },
+    {
+     "re": "(?<![\\w/.=#@-])\\(?[2-9]\\d{2}\\)?[ .-]{1,3}\\d{3}[ .-]{1,3}\\d{4}(?!\\d|[-.]\\d)",
+     "flags": ""
+    }
+   ]
+  },
+  {
+   "name": "address",
+   "label": "a street address",
+   "operator": false,
+   "patterns": [
+    {
+     "re": "\\b\\d{1,5}[A-Za-z]?,? (?:[A-Z][\\w'.-]*\\s+){1,3}(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Lane|Ln|Drive|Dr|Court|Ct|Way|Place|Pl|Terrace|Highway|Hwy)\\b",
+     "flags": "",
+     "check": "street"
+    },
+    {
+     "re": "[A-Z\\u00c4\\u00d6\\u00dc][a-z\\u00e4\\u00f6\\u00fc\\u00df]+(?:stra\\u00dfe|strasse|gasse|weg|allee|platz) \\d{1,4}[a-z]?\\b",
+     "flags": ""
+    },
+    {
+     "re": "\\b\\d{1,4},? ?(?:[Rr]ue|[Cc]alle) [A-Za-z][\\w' -]{2,40}",
+     "flags": ""
+    },
+    {
+     "re": "\\b\\d{1,4},? ?Via [A-Z][\\w' -]{2,40}",
+     "flags": ""
+    }
+   ]
+  },
+  {
+   "name": "dob",
+   "label": "a date of birth",
+   "operator": true,
+   "patterns": [
+    {
+     "re": "\\b(?:dob|date of birth|birth ?date|born(?: on)?)\\b[^\\n]{0,20}?(?:\\d{1,4}[/.-]\\d{1,2}[/.-]\\d{1,4}|[A-Za-z]{3,9} \\d{1,2},? \\d{4}|\\d{1,2} [A-Za-z]{3,9},? \\d{4})",
+     "flags": "i"
+    }
+   ]
+  },
+  {
+   "name": "geo",
+   "label": "exact coordinates",
+   "operator": false,
+   "patterns": [
+    {
+     "re": "(?<!\\d)-?(?:[1-8]?\\d|90)\\.\\d{4,}\\s*,\\s*-?(?:1[0-7]\\d|[1-9]?\\d|180)\\.\\d{4,}(?!\\d)",
+     "flags": "",
+     "check": "geo"
+    }
+   ]
+  },
+  {
+   "name": "health",
+   "label": "first-person health or special-category data",
+   "operator": true,
+   "pairs": [
+    {
+     "marker": "\\b(?:my|i am|i have|user(?:'s)? (?:is|has))\\b",
+     "terms": "\\b(?:diagnos(?:ed|es|is|ing)|prescrib\\w*|prescription\\w*|pregnan\\w*|cancer|hiv|depress\\w*|adhd|chemo\\w*|therapy|religio\\w*|sexual orientation|ethnicity|immigration status|visa status|asylum)\\b",
+     "flags": "i"
+    }
+   ]
+  }
+ ],
+ "warn": [
+  {
+   "name": "public-ip",
+   "label": "a public IPv4 address",
+   "patterns": [
+    {
+     "re": "(?<![\\d.])(?:\\d{1,3}\\.){3}\\d{1,3}(?![\\d]|\\.\\d)",
+     "flags": "",
+     "check": "public-ipv4"
+    }
+   ]
+  },
+  {
+   "name": "mac",
+   "label": "a MAC address",
+   "patterns": [
+    {
+     "re": "\\b[0-9A-Fa-f]{2}(?:[:-][0-9A-Fa-f]{2}){5}\\b",
+     "flags": ""
+    }
+   ]
+  },
+  {
+   "name": "crypto-address",
+   "label": "a crypto wallet address",
+   "patterns": [
+    {
+     "re": "\\bbc1[a-z0-9]{25,59}\\b",
+     "flags": ""
+    },
+    {
+     "re": "\\b[13][a-km-zA-HJ-NP-Z1-9]{25,34}\\b",
+     "flags": ""
+    },
+    {
+     "re": "\\b0x[a-fA-F0-9]{40}\\b",
+     "flags": ""
+    }
+   ]
+  },
+  {
+   "name": "postcode",
+   "label": "a postcode",
+   "patterns": [
+    {
+     "re": "\\b[A-Z]{1,2}\\d[A-Z\\d]? ?\\d[A-Z]{2}\\b",
+     "flags": ""
+    },
+    {
+     "re": "(?<!\\d)\\d{5}-\\d{4}(?!\\d)",
+     "flags": ""
+    }
+   ]
+  },
+  {
+   "name": "user-phrasing",
+   "label": "a statement about the user",
+   "patterns": [
+    {
+     "re": "\\b[Uu]ser's [\\w -]{1,30}? is\\b",
+     "flags": ""
+    }
+   ]
+  },
+  {
+   "name": "named-relation",
+   "label": "a named relative or friend",
+   "patterns": [
+    {
+     "re": "\\b[Mm]y (?:wife|husband|son|daughter|mother|father|friend|partner),? (?:is |named |called )?[A-Z][a-z]+",
+     "flags": ""
+    }
+   ]
+  }
+ ]
+}

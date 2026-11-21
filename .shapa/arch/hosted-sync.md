@@ -103,6 +103,6 @@ Note files sync only while the wiki's primary checkout is on its default branch 
 | `shapa remote login URL [--device NAME] [--scopes ...] [--token-stdin]` | owner key from `$SHAPA_OWNER_KEY` or a prompt, never argv; writes `remote.json` (`url, device, device_id`) and `remote.token` (0600) under `~/.shapa` (`$SHAPA_REMOTE_DIR` overrides) |
 | `shapa remote sync [--cwd DIR] [--all] [--key KEY] [--hook] [--if-changed] [--dry-run] [--json]` | wikis in scope (repo + global), or every registered one; `--hook` reads hook stdin, stays within 8 s, always exits 0, prints at most one line; `--if-changed` skips the network when nothing local changed |
 | `shapa remote status [--check] [--json]` | login, last sync and pending changes per wiki; `--check` exits 1 when not logged in or unreachable |
-| `shapa remote devices [--revoke ID]`, `logout`, `instructions [--client NAME]` | device admin (owner key), forget credentials, print the session defaults |
+| `shapa remote devices [--revoke ID]`, `logout` | device admin (owner key), forget credentials |
 | `shapa doc add\|edit\|rm\|list\|merge` | documents; `shapa get D<n>`; MCP `save` gains `document` and `idea`; `add` takes `--project` and `--merge` |
 | `shapa focus ...`, `shapa skill ...` | the northstar and fires, and skills (see [[hosted-documents]]); both sync as documents, with no command of their own |

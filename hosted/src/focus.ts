@@ -13,6 +13,7 @@ import {
   FIRE_TEXT_MAX, FOCUS_ALIAS, FOCUS_TAG, MAX_FIRES, NORTHSTAR_MAX, buildData, kindOfId, nowIso, oneLine,
   type Normalized,
 } from "./records.js";
+import { piiGate } from "./piigate.js";
 import { redact } from "./redact.js";
 import { Repo, type Stored } from "./repo.js";
 import { rankOf } from "./tags.js";
@@ -209,6 +210,7 @@ export function setFocus(
 ): FocusView {
   writable(repo, d, wiki);
   if (body.northstar === undefined && body.fires === undefined) fail("invalid", "give a northstar, fires, or both");
+  piiGate([body.northstar, ...(body.fires ?? []).flatMap((x) => (x ? [x.feature, x.text] : []))]);
   const f = loadFocus(repo, wiki);
   if (body.northstar !== undefined) {
     const text = lineOf(body.northstar, NORTHSTAR_MAX);

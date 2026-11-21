@@ -1,0 +1,257 @@
+{
+ "note": "expected values come from the local engine's db.several_rules; both sides run these cases",
+ "commands": [
+  "add",
+  "allow",
+  "always",
+  "answer",
+  "ask",
+  "audit",
+  "avoid",
+  "build",
+  "cache",
+  "call",
+  "catch",
+  "check",
+  "choose",
+  "clean",
+  "close",
+  "combine",
+  "commit",
+  "configure",
+  "confirm",
+  "create",
+  "default",
+  "delegate",
+  "delete",
+  "deploy",
+  "disable",
+  "do",
+  "document",
+  "don't",
+  "dont",
+  "drop",
+  "enable",
+  "ensure",
+  "explain",
+  "fail",
+  "finish",
+  "fix",
+  "follow",
+  "forbid",
+  "format",
+  "handle",
+  "hide",
+  "honor",
+  "ignore",
+  "install",
+  "keep",
+  "limit",
+  "link",
+  "lint",
+  "list",
+  "load",
+  "lock",
+  "log",
+  "make",
+  "mark",
+  "mention",
+  "merge",
+  "move",
+  "must",
+  "name",
+  "never",
+  "obey",
+  "only",
+  "open",
+  "pass",
+  "pick",
+  "pin",
+  "prefer",
+  "prefix",
+  "prompt",
+  "push",
+  "put",
+  "read",
+  "refuse",
+  "reject",
+  "remove",
+  "rename",
+  "replace",
+  "reply",
+  "report",
+  "require",
+  "respect",
+  "restrict",
+  "retry",
+  "return",
+  "reuse",
+  "review",
+  "run",
+  "save",
+  "scan",
+  "send",
+  "set",
+  "ship",
+  "should",
+  "show",
+  "skip",
+  "split",
+  "start",
+  "stick",
+  "stop",
+  "store",
+  "tag",
+  "tell",
+  "test",
+  "throw",
+  "treat",
+  "update",
+  "use",
+  "validate",
+  "verify",
+  "wait",
+  "wrap",
+  "write"
+ ],
+ "cases": [
+  {
+   "name": "one imperative sentence",
+   "summary": "Install packages with npm inside a worktree, never with pnpm.",
+   "body": "",
+   "why": null
+  },
+  {
+   "name": "one sentence with a clause",
+   "summary": "Keep the page header above the fold on mobile screens, whatever the layout.",
+   "body": "",
+   "why": null
+  },
+  {
+   "name": "numbered inline",
+   "summary": "1. Use npm in worktrees. 2. Never run pnpm there.",
+   "body": "",
+   "why": "a numbered list"
+  },
+  {
+   "name": "numbered parens on lines",
+   "summary": "1) Use npm in worktrees\n2) Never run pnpm there",
+   "body": "",
+   "why": "a numbered list"
+  },
+  {
+   "name": "bulleted lines",
+   "summary": "- Use npm in worktrees\n- Never run pnpm there",
+   "body": "",
+   "why": "a bulleted list"
+  },
+  {
+   "name": "bullet glyph lines",
+   "summary": "\u2022 Use npm in worktrees\n\u2022 Never run pnpm there",
+   "body": "",
+   "why": "a bulleted list"
+  },
+  {
+   "name": "two commands with a period",
+   "summary": "Use npm in worktrees. Never run pnpm there.",
+   "body": "",
+   "why": "several imperative sentences"
+  },
+  {
+   "name": "two commands with a semicolon",
+   "summary": "Use npm in worktrees; never run pnpm there.",
+   "body": "",
+   "why": "several imperative sentences"
+  },
+  {
+   "name": "two commands on two lines",
+   "summary": "Use npm in worktrees\nNever run pnpm there",
+   "body": "",
+   "why": "several imperative sentences"
+  },
+  {
+   "name": "one command and a reason",
+   "summary": "Use npm in worktrees. Lockfiles drift otherwise.",
+   "body": "",
+   "why": null
+  },
+  {
+   "name": "a plain statement",
+   "summary": "The staging box lives in the eu region.",
+   "body": "",
+   "why": null
+  },
+  {
+   "name": "a numbered list in the body",
+   "summary": "Use npm in worktrees.",
+   "body": "1. a thing\n2. another thing",
+   "why": "a numbered list in the body"
+  },
+  {
+   "name": "an inline numbered body",
+   "summary": "Use npm in worktrees.",
+   "body": "Steps: (1) first do this (2) then do that",
+   "why": "a numbered list in the body"
+  },
+  {
+   "name": "two imperative bullets in the body",
+   "summary": "Use npm in worktrees.",
+   "body": "Why:\n- Use the lockfile\n- Never edit it by hand",
+   "why": "several imperative bullets in the body"
+  },
+  {
+   "name": "two plain bullets in the body",
+   "summary": "Use npm in worktrees.",
+   "body": "Because:\n- lockfiles drift\n- pnpm differs",
+   "why": null
+  },
+  {
+   "name": "prose body",
+   "summary": "Use npm in worktrees.",
+   "body": "Because lockfiles drift. Do not mix managers. Always check.",
+   "why": null
+  },
+  {
+   "name": "a dont contraction",
+   "summary": "Don't push to main. Always open a pull request.",
+   "body": "",
+   "why": "several imperative sentences"
+  },
+  {
+   "name": "a curly apostrophe",
+   "summary": "Don\u2019t push to main. Always open a pull request.",
+   "body": "",
+   "why": "several imperative sentences"
+  },
+  {
+   "name": "leading digits and punctuation",
+   "summary": "(1) never push to main. 2) always rebase.",
+   "body": "",
+   "why": "a numbered list"
+  },
+  {
+   "name": "empty",
+   "summary": "",
+   "body": "",
+   "why": null
+  },
+  {
+   "name": "a single number item",
+   "summary": "1. Use npm in worktrees",
+   "body": "",
+   "why": null
+  },
+  {
+   "name": "crlf lines",
+   "summary": "- Use npm\r\n- Never pnpm",
+   "body": "",
+   "why": "a bulleted list"
+  },
+  {
+   "name": "unicode letters",
+   "summary": "\u00c9viter les secrets. Toujours relire.",
+   "body": "",
+   "why": null
+  }
+ ]
+}

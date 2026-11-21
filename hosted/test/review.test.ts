@@ -2,7 +2,7 @@ import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { Repo } from "../src/repo.js";
 import { OWNER, env, freshKey, get, mint, mintAll, put, rec, row, send, sync, wiki } from "./helpers.js";
-import { tool } from "./mcp-helpers.js";
+import { sessionText, tool } from "./mcp-helpers.js";
 
 // The review round: identical text and edits it must not make, skills a baseline device must not
 // touch, hidden records it must not detect, one stage marker, lookalike tags, the printed notes, the
@@ -10,7 +10,9 @@ import { tool } from "./mcp-helpers.js";
 
 const ZW = String.fromCharCode(0x200b);
 const create = (token: string, w: string, body: Record<string, unknown>) => send("POST", rec(w), { token, body });
-const rev = async (token: string): Promise<number> => Number(String((await get("/v1/instructions?client=rest", token)).body.version).split(".")[1]);
+/** The store's global revision: it moves with every write, so a refusal that wrote nothing leaves it alone. */
+const rev = async (_token?: string): Promise<number> =>
+  runInDurableObject(env.STORE.getByName("main"), (_i, state) => Number(state.storage.sql.exec(`SELECT value FROM meta WHERE key = 'rev'`).one()["value"]));
 
 let next = 9000;
 const uniq = (): number => ++next;
@@ -319,10 +321,12 @@ describe("the two notes printed into every session", () => {
     const op = await operator();
     await ensureNotes(op);
     const secret = "sk-ant-api03-Q7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7x";
-    const body = `First line\nsecret ${secret}\nbidi${String.fromCharCode(0x202e)}hidden${ZW}end\n\nLast line`;
+    const body = `First line\nbidi${String.fromCharCode(0x202e)}hidden${ZW}end\n\nLast line`;
+    // a secret is refused at write (the personal-data gate), so the printed text never has one to mask
+    expect((await send("PATCH", rec("global", "/session-instructions"), { token: op, body: { body: `First line\nsecret ${secret}` } })).status).toBe(400);
     expect((await send("PATCH", rec("global", "/session-instructions"), { token: op, body: { body } })).status).toBe(200);
-    expect((await send("PATCH", rec("global", "/response-style"), { token: op, body: { body: `style ${secret}\nsecond style line` } })).status).toBe(200);
-    const text = (await get("/v1/instructions?client=mcp", op)).body.text as string;
+    expect((await send("PATCH", rec("global", "/response-style"), { token: op, body: { body: `style\nsecond style line` } })).status).toBe(200);
+    const text = await sessionText(op);
     expect(text).toContain("OPERATOR'S SESSION INSTRUCTIONS\nFirst line\n");
     expect(text).toContain("\n\nLast line");
     expect(text).toContain("\nsecond style line");
@@ -345,11 +349,9 @@ describe("the baseline reaches every authenticated device", () => {
     const limited = (await mint(`lim-${freshKey()}`, ["read", "write"], [w])).token;
     const limitedBase = await baselineToken([w]);
     for (const [who, token] of [["full", limited], ["baseline", limitedBase]] as const) {
-      for (const client of ["mcp", "rest"]) {
-        const text = (await get(`/v1/instructions?client=${client}`, token)).body.text as string;
-        expect(text, `${who} ${client}`).toContain(marker);
-        expect(text, `${who} ${client}`).not.toContain(only);
-      }
+      const text = await sessionText(token);
+      expect(text, who).toContain(marker);
+      expect(text, who).not.toContain(only);
     }
     expect((await tool(limitedBase, "session_start", {})).text).toContain(marker);
   });
@@ -371,17 +373,13 @@ describe("the baseline reaches every authenticated device", () => {
     ] })).body.results.map((r: { status: string }) => r.status)).toEqual(["accepted", "accepted", "accepted", "accepted"]);
     const limited = (await mint(`lim9-${freshKey()}`, ["read"], [w])).token;
     const withGlobal = (await mint(`glob9-${freshKey()}`, ["read"], ["global", w])).token;
-    for (const client of ["mcp", "rest"]) {
-      const text = (await get(`/v1/instructions?client=${client}&stage=9`, limited)).body.text as string;
-      expect(text, client).toContain(s0);
-      for (const above of [rule5, mem3, skill4, body4]) expect(text, `${client} ${above}`).not.toContain(above);
-      // the threshold still works for a device that may read the global wiki
-      const wide = (await get(`/v1/instructions?client=${client}&stage=9`, withGlobal)).body.text as string;
-      for (const above of [rule5, mem3, skill4, body4]) expect(wide, `${client} wide ${above}`).toContain(above);
-    }
-    const mcp = (await tool(limited, "session_start", { stage: 9 })).text;
-    expect(mcp).toContain(s0);
-    for (const above of [rule5, mem3, skill4, body4]) expect(mcp, `session_start ${above}`).not.toContain(above);
+    const text = await sessionText(limited, { stage: 9 });
+    expect(text).toContain(s0);
+    for (const above of [rule5, mem3, skill4, body4]) expect(text, above).not.toContain(above);
+    // the threshold still works for a device that may read the global wiki (a skill is never in the text: the `skills` tool has it)
+    const wide = await sessionText(withGlobal, { stage: 9 });
+    for (const above of [rule5, mem3]) expect(wide, `wide ${above}`).toContain(above);
+    for (const never of [skill4, body4]) expect(wide, `wide ${never}`).not.toContain(never);
   });
 
   it("tells a baseline device nothing of tools it may not use, even when no focus is set", async () => {
@@ -390,13 +388,11 @@ describe("the baseline reaches every authenticated device", () => {
     await wiki(op, w);
     const baseline = await baselineToken([w]);
     const full = (await mint(`full-${freshKey()}`, ["read", "write"], [w])).token;
-    for (const client of ["mcp", "rest"]) {
-      const text = (await get(`/v1/instructions?client=${client}&wiki=${w}`, baseline)).body.text as string;
-      expect(text).toContain("NORTHSTAR AND FIRES\nNone are set.");
-      for (const gone of ["focus_set", "/focus", "- rule:", "- memory:", "- issue:", "feature | job", "/sync"]) expect(text, `${client} ${gone}`).not.toContain(gone);
-      const fullText = (await get(`/v1/instructions?client=${client}&wiki=${w}`, full)).body.text as string;
-      expect(fullText).toMatch(/focus_set|PUT \/v1\/wikis\/\{wiki\}\/focus/);
-    }
+    const text = await sessionText(baseline, { wiki: w });
+    expect(text).toContain("NORTHSTAR AND FIRES\nNone are set.");
+    for (const gone of ["focus_set", "/focus", "memory|rule|issue", "feature", "/sync", "/v1/"]) expect(text, gone).not.toContain(gone);
+    expect(text).toContain("type decision|idea|human_task|agent_task|document|note");
+    expect(await sessionText(full, { wiki: w })).toContain("focus_set");
     expect((await tool(baseline, "session_start", { wiki: w })).text).not.toContain("focus_set");
   });
 });

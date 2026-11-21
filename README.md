@@ -27,9 +27,16 @@ also installs the command, from the repo's `main`, and a re-run upgrades it:
 curl -fsSL https://raw.githubusercontent.com/Roukh/shapa-llm/main/bootstrap.sh | sh
 ```
 
-Flags: `--with-semantic`, `--with-mcp`, `--full`, `--harness claude|codex|opencode|all`. The
+Flags: `--with-semantic`, `--with-mcp`, `--full`, `--harness claude|codex|opencode|gemini|all`, `--prompt-mode append|replace|default|skip`. The
 header of [bootstrap.sh](https://github.com/Roukh/shapa-llm/blob/main/bootstrap.sh) lists the
 rest. Hooks exist for Claude Code only; Codex and OpenCode are registered as MCP servers.
+
+The installer also adds shapa's own system prompt to each harness (`shapa harness install`;
+Claude Code, Codex, OpenCode, Gemini CLI): one shared core plus a short adapter per harness,
+appended to the harness's own prompt. `--prompt-mode replace` (or `shapa harness install --mode
+replace`) swaps the harness's prompt for shapa's instead; `default` leaves a harness alone.
+Every config it touches is backed up once to `<file>.shapa-bak`, and `shapa harness uninstall`
+restores it. `shapa harness status` shows what each harness keeps regardless.
 
 ## Start
 
@@ -67,6 +74,9 @@ names the fix when something is missing. Then use your agent as usual.
 - **Learning loop.** A correction ("no", "not like this") becomes an issue row. A close match
   to an earlier one is a repeat. `shapa learn apply` files one principle, which you merge into
   the closest rule or skill (or add as new). It is global by default, so it holds across repos.
+  A principle is one sentence, dated, and the newer of two that conflict replaces the older
+  (`--supersedes R<n>`). Each repo wiki reflects a node into the global wiki (`shapa node sync`),
+  and a principle two repos share is offered there as a candidate.
   `shapa metrics` shows whether it works.
 - **Code partitions.** `shapa map` builds a derived graph of the checkout; `shapa partition`
   lists the files a fire touches, each with why. Local only.
@@ -104,7 +114,8 @@ names the fix when something is missing. Then use your agent as usual.
 | **Learn** | |
 | `stage` | `set`, `clear`, `list`, `pending` (records proposed for stage 0) |
 | `skill` | `list`, `show`, `add`, `update`, `activate`, `uproot` |
-| `learn` | `pending`, `apply`, `dismiss`, `merge`, `unchurn`, `principles`, `reindex` |
+| `learn` | `pending`, `apply`, `dismiss`, `merge`, `split`, `unchurn`, `principles`, `reindex` |
+| `node` | `sync`, `list`: each repo wiki's node in the global wiki; shared principles become `learn` candidates |
 | `metrics` | whether the wiki is working; `--snapshot`, `--all`, `--history DAYS` |
 | **Maintain** | |
 | `maintain` | merge duplicates, prune stale rows; use `--dry-run`, prune is operator-run |
@@ -113,7 +124,7 @@ names the fix when something is missing. Then use your agent as usual.
 | **Serve** | |
 | `mcp` | MCP stdio server (`search`, `get`, `save` and more) |
 | `serve` | optional warm per-wiki daemon, latency only |
-| `remote` | the hosted store: `login`, `sync`, `status`, `devices`, `logout`, `instructions` |
+| `remote` | the hosted store: `login`, `sync`, `status`, `devices`, `logout` |
 
 ## Hosted
 
@@ -136,9 +147,11 @@ inside a session hook within 8 seconds and never fails it. A repo with no git or
 [hosted.md](https://github.com/Roukh/shapa-llm/blob/main/.shapa/arch/hosted.md).
 
 **One brain for every agent.** `GET /` is a public card with no stored data: it names `/mcp`
-(OAuth), `/v1` (device token) and `/openapi.json`. An agent calls `session_start` (or
-`GET /v1/instructions`) and gets the same text as every other: northstar, fires, stage-0
-baseline, topics, projects, your open tasks.
+(OAuth), `/v1` (device token, for `shapa remote sync` and scripts) and `/openapi.json`. An agent
+reaches shapa through authenticated MCP only: it calls `session_start` and gets the same lean
+text as every other, the northstar, the fires and one compact JSON of principles, mistakes and
+stage-0 memories (`{"P":[[id,date,text]],"X":[...],"M":[...]}`). Tasks, notes, projects and
+skills are fetched with the `tasks`, `search`/`get`, `projects`, `skills` and `skill` tools.
 
 - **Reach.** An OAuth client (a chat app, a phone) reads the stage-0 baseline, notes, documents,
   tasks, ideas and decisions and nothing else. It cannot write rules, memories or skills, sync,

@@ -552,7 +552,8 @@ def _add_task_cmd(args) -> int:
     conn = _connect(scoped_root(scope, args.cwd), create=scope == "global")
     try:
         tid, created = tasks.add_task(conn, args.title, owner, args.body or "", project=args.project,
-                                      standalone_only=scope == "global", parent=args.parent)
+                                      standalone_only=scope == "global", parent=args.parent,
+                                      privileged=True)  # the local CLI is the operator's
     finally:
         conn.close()
     print(tid if created else f"{tid} (the same open task is already stored)")
@@ -693,7 +694,8 @@ def ledger_main(argv: list[str]) -> int:
         elif cmd == "add":
             key = db.clean_project(args.project)
             new = db.add_item(conn, args.kind, args.title, parent=args.parent, body=args.body,
-                              verify=args.verify, tags=[db.PROJECT_PREFIX + key] if key else ())
+                              verify=args.verify, tags=[db.PROJECT_PREFIX + key] if key else (),
+                              privileged=True)  # the local CLI is the operator's
             print(new)
         elif cmd in ("claim", "release"):
             for i in args.ids:
@@ -718,7 +720,7 @@ def ledger_main(argv: list[str]) -> int:
         elif cmd == "edit":
             fields = {k: v for k, v in (("title", args.title), ("body", args.body),
                                         ("verify", args.verify)) if v is not None}
-            item = db.update_item(conn, args.id, **fields)
+            item = db.update_item(conn, args.id, privileged=True, **fields)
             if args.parent is not None:
                 parent = None if args.parent.lower() == "none" else args.parent
                 item = db.set_parent(conn, args.id, parent)
@@ -817,6 +819,8 @@ def row_main(argv: list[str]) -> int:
                                "`shapa learn` file those rows")
         try:
             db.check_row_tags(args.tag)
+            if args.kind.upper() == "R":
+                db.check_atomic_rule(args.summary, args.body, what="a rule")   # one rule per object, on every door
         except db.LedgerError as exc:
             raise CommandError(str(exc))
         root = scoped_root(args.scope, args.cwd)

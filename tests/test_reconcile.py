@@ -13,7 +13,7 @@ import pytest
 
 from shapa import (bootstrap, db, dbsync, learn, ledger, mcp, projectfile, registry, relate, save, skills,
                    syncrec, tasks)
-from tests.learnkit import at, correct, lexical_only, make_repo, rows  # noqa: F401
+from tests.learnkit import at, correct, lexical_only, make_repo, mempm, rows  # noqa: F401
 
 PNPM = "No, you used pnpm to install packages in the worktree, use npm install there instead."
 PNPM_RULE = "Install packages with npm inside a worktree, never with pnpm."
@@ -69,8 +69,8 @@ def test_learned_context_is_never_a_topic_but_stays_in_the_tag_index(wikis, g):
     assert [t["tag"] for t in relate.topics(g)] == ["review"]
     assert {"principle", "evidence:1", "serves:none"} <= {e["tag"] for e in relate.tag_index(g)}
     text = bootstrap.build_context(start=wikis.repo)
-    topics = text.split("TOPICS:\n", 1)[1].splitlines()[0]
-    assert "review" in topics and not re.search(r"principle|serves|evidence|last-seen", topics)
+    assert "TOPICS" not in text                                       # topics are fetched by tag, not printed
+    assert not re.search(r"serves:|evidence:|last-seen|violations:|churn", text)    # no tag is ever printed
 
 
 @pytest.mark.parametrize("tag", ["Principle", "ｐrinciple", "principle​", "Serves:x", "ＶIOLATIONS:2",
@@ -123,7 +123,7 @@ def test_a_principle_with_its_counters_round_trips_through_sync_validation(wikis
 
 # --- 2b: session start, in the contract's order --------------------------------------------------
 
-def test_session_start_orders_the_central_parts_then_the_learned_context(wikis, g):
+def test_session_start_orders_the_focus_then_the_mempm_then_the_gate(wikis, g):
     from shapa import focus, stages
 
     focus.set_northstar(g, "One brain for every device")
@@ -138,12 +138,15 @@ def test_session_start_orders_the_central_parts_then_the_learned_context(wikis, 
     learned(wikis)
     correct(wikis.repo, HEADER, now=at(1))
     text = bootstrap.build_context(start=wikis.repo)
-    marks = ["PRECEDENCE:", "northstar [global]", "fires [global]", "BASELINE (", "BASELINE SKILLS", "TOPICS:",
-             "PROJECTS:", "The operator's open tasks: 1", f"{learn.HEAD_NOTE}:", "[global R2] ",
-             "1 correction awaits learning", "WRITE BACK"]
+    marks = ["PRECEDENCE:", "northstar [global]", "fires [global]", "MEMPM (", '{"P":', "Fetch on demand",
+             "1 correction awaits learning", "SKILL GATE", "WRITE BACK"]
     spots = [text.index(m) for m in marks]
     assert spots == sorted(spots), dict(zip(marks, spots))
     assert text.count("</shapa-memory>") == 1
+    # the stage-0 rule and the learned principle are in P, the open correction in X; nothing else of the old parts
+    assert [e[0] for e in mempm(text)["P"]] == [rid, "R2"] and mempm(text)["X"][0][0] == "I2"
+    for gone in ("SKILL BODY", "writing", "Pay the invoice", "alpha", "TOPICS", "PROJECTS", "BASELINE"):
+        assert gone not in text, gone
 
 
 def test_the_learning_switch_the_stage_and_the_budget_still_work(wikis, g, monkeypatch):
@@ -153,12 +156,12 @@ def test_the_learning_switch_the_stage_and_the_budget_still_work(wikis, g, monke
     db.add_row(g, "R", "Stage one rule", "A body.", tags=["stage:1"], privileged=True)
     learned(wikis)
     with_learning = bootstrap.build_context(start=wikis.repo)
-    assert learn.HEAD_NOTE in with_learning and "Stage one rule" not in with_learning
+    assert PNPM_RULE in with_learning and "Stage one rule" not in with_learning
     assert "Stage one rule" in bootstrap.build_context(start=wikis.repo, stage=1)
     assert "shapa session bootstrap" in bootstrap.build_context(start=wikis.repo, full=True)
     monkeypatch.setenv("SHAPA_LEARNING", "0")
     off = bootstrap.build_context(start=wikis.repo)
-    assert learn.HEAD_NOTE not in off and "PRECEDENCE:" in off and "northstar [global]" in off
+    assert PNPM_RULE not in off and "PRECEDENCE:" in off and "northstar [global]" in off
     monkeypatch.delenv("SHAPA_LEARNING")
     small = bootstrap.build_context(start=wikis.repo, budget=700)
     assert "PRECEDENCE:" in small and "northstar [global]" in small     # the fixed lines are never cut

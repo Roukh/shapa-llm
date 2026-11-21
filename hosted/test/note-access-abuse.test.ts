@@ -2,13 +2,13 @@
 
 import { describe, expect, it } from "vitest";
 import { OWNER, freshKey, get, rec, send, setup } from "./helpers.js";
-import { tool } from "./mcp-helpers.js";
+import { sessionText, tool } from "./mcp-helpers.js";
 
 const create = (token: string, w: string, body: Record<string, unknown>) => send("POST", rec(w), { token, body });
 const patch = (token: string, w: string, ref: string, body: Record<string, unknown>) => send("PATCH", rec(w, `/${encodeURIComponent(ref)}`), { token, body });
 const read = (token: string, w: string, ref: string) => get(rec(w, `/${encodeURIComponent(ref)}`), token);
 const note = (path: string, extra: Record<string, unknown> = {}) => ({ type: "note", path, body: `body of ${path}`, ...extra });
-const instructions = async (token: string) => (await get("/v1/instructions?client=mcp", token)).body.text as string;
+const instructions = (token: string) => sessionText(token);
 
 async function world() {
   const { token: op, w } = await setup();

@@ -50,3 +50,14 @@ def rows(wiki: Path, kind: str):
         return db.rows(conn, kind)
     finally:
         conn.close()
+
+
+def mempm(text: str) -> dict:
+    """The mempm object of a session start: the one line that is the compact JSON ({"P": ..., "X": ..., "M": ...}),
+    all three lists empty when the text has none."""
+    import json
+
+    for line in text.splitlines():
+        if line.startswith('{"P":'):
+            return json.loads(line)
+    return {"P": [], "X": [], "M": []}

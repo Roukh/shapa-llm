@@ -1,14 +1,14 @@
 import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
-import { BASELINE_BUDGET, BASELINE_BODY_MAX } from "../src/gates.js";
+import { BASELINE_BUDGET } from "../src/gates.js";
 import { quarantineLegacyStage, rebuildRelations } from "../src/relations.js";
 import { migrate } from "../src/schema.js";
-import { TS, TS2, env, freshKey, get, mint, mintAll, put, rec, row, send, setup, sync, uidOf, wiki } from "./helpers.js";
-import { tool } from "./mcp-helpers.js";
+import { TS, TS2, del, env, freshKey, get, mint, mintAll, put, rec, row, send, setup, sync, uidOf, wiki } from "./helpers.js";
+import { mempmIn, sessionText, tool } from "./mcp-helpers.js";
 import { oauthLogin } from "./oauth-helpers.js";
 
 const create = (token: string, w: string, body: Record<string, unknown>) => send("POST", rec(w), { token, body });
-const text = async (token: string, q = "") => (await get(`/v1/instructions?client=mcp${q}`, token)).body.text as string;
+const text = (token: string, o: { stage?: number } = {}) => sessionText(token, o);
 
 /** The global wiki is shared by the tests of this file: every record here carries its own marker. */
 async function globalWiki(token: string): Promise<void> {
@@ -122,15 +122,16 @@ describe("stages: stage 0 is the operator's", () => {
     const op = await sync(token, "global", { ops: [put(row("R50", "OPERATOR-S0 answer in plain words", { tags: ["stage:0"], data: { summary: "OPERATOR-S0 answer in plain words", body: "line one\nline two", alias: null, source: "", session: "" } }))] });
     expect(op.body.results[0].status).toBe("accepted");
     const t = await text(token);
-    expect(t).toMatch(/BASELINE \(stage 0\)\n(?:.*\n)*R50 OPERATOR-S0 answer in plain words\n  line one\n  line two/);
+    expect(mempmIn(t).P.map((e) => `${e[0]} ${e[2]}`)).toContain("R50 OPERATOR-S0 answer in plain words");
+    expect(t).not.toContain("line one"); // a row's summary prints, never its body
     expect(t).not.toContain("PLANTED-S0");
     expect(t).not.toContain("PROPOSED-DIRECT");
     // the threshold loads the next stage too
     await sync(token, "global", { ops: [put(row("R51", "STAGE-THREE rule", { tags: ["stage:3"] }))] });
     expect(await text(token)).not.toContain("STAGE-THREE");
-    expect(await text(token, "&stage=3")).toContain("R51 STAGE-THREE rule");
-    expect((await get("/v1/instructions?stage=10", token)).status).toBe(400);
-    expect((await get("/v1/instructions?stage=-1", token)).status).toBe(400);
+    expect(mempmIn(await text(token, { stage: 3 })).P.map((e) => `${e[0]} ${e[2]}`)).toContain("R51 STAGE-THREE rule");
+    expect((await tool(token, "session_start", { stage: 10 })).isError).toBe(true);
+    expect((await tool(token, "session_start", { stage: -1 })).isError).toBe(true);
     expect((await tool(token, "session_start", { stage: 3 })).text).toContain("STAGE-THREE");
   });
 
@@ -215,64 +216,99 @@ describe("stages: stage 0 is the operator's", () => {
 describe("stages: the baseline budget", () => {
   it("holds the contract's numbers", () => {
     expect(BASELINE_BUDGET).toBe(6000);
-    expect(BASELINE_BODY_MAX).toBe(1200);
   });
+
+  // Only a rule's or memory's one-line summary counts (it is all a session start prints) and a summary holds 160
+  // characters at most, so the budget is reached with many records. The global wiki is shared by the tests of this
+  // file: every helper measures what it holds now instead of assuming an empty baseline.
+  const skillWire = (id: string, status: string, description: string) => ({
+    ...row(id, id), kind: "D",
+    data: { title: `${id} v1`, body: `---\nname: ${id.toLowerCase()}\ndescription: ${description}\n---\nbody`, alias: null, mime: "text/markdown", source: "" },
+    tags: ["skill", `skill:${id.toLowerCase()}`, "v:1", `status:${status}`, "stage:0"],
+  });
+  const stageZero = (id: string, summary: string, body = "") => row(id, summary, { tags: ["stage:0"], data: { summary, body, alias: null, source: "", session: "" } });
+  let serial = 4000;
+  const added: string[] = [];
+  /** Take back everything a test put at stage 0, so the next test starts from the room it found. */
+  const clear = async (token: string, ids: string[]) => {
+    for (const id of ids.splice(0)) expect((await sync(token, "global", { ops: [del(id, TS, TS2)] })).body.results[0].status, id).toBe("accepted");
+  };
+  /** What the baseline holds, read from the refusal of an active skill whose description alone is over the budget (never stored). */
+  const holds = async (token: string): Promise<number> => {
+    const r = await sync(token, "global", { ops: [put(skillWire(`D${serial++}`, "active", "p".repeat(BASELINE_BUDGET + 1)))] });
+    return Number(/holds (\d+) of/.exec(r.body.results[0].error)![1]);
+  };
+  /** Add stage-0 rules of up to 160 characters until exactly `free` characters of the budget are left. */
+  const leaveFree = async (token: string, free: number): Promise<number> => {
+    let need = BASELINE_BUDGET - free - (await holds(token));
+    expect(need, "the baseline already holds more than the test leaves room for").toBeGreaterThanOrEqual(0);
+    while (need > 0) {
+      const n = Math.min(160, need);
+      const summary = `${serial}`.padEnd(n, "r").slice(0, n);
+      const id = `R${serial++}`;
+      expect((await sync(token, "global", { ops: [put(stageZero(id, summary))] })).body.results[0].status).toBe("accepted");
+      added.push(id);
+      need -= n;
+    }
+    expect(await holds(token)).toBe(BASELINE_BUDGET - free);
+    return BASELINE_BUDGET - free;
+  };
 
   it("refuses to put more than the budget at stage 0, naming the size", async () => {
     const { token } = await setup();
     await globalWiki(token);
-    const big = (id: string, n: number) => row(id, `BUDGET ${id}`, { tags: ["stage:0"], data: { summary: `BUDGET ${id}`, body: "x".repeat(n), alias: null, source: "", session: "" } });
-    const held = (await sync(token, "global", { ops: [put(big("R90", 10))] })).body.results[0];
-    expect(held.status).toBe("accepted");
-    // make room accounting simple: measure what the global baseline holds now through a probe that must fail
-    const probe = await sync(token, "global", { ops: [put(big("R91", 7000))] });
-    expect(probe.body.results[0].status).toBe("rejected");
-    expect(probe.body.results[0].error).toMatch(/the baseline holds \d+ of 6000 characters; this record needs \d+ more/);
-    // the same record at stage 1 is not baseline: accepted
-    expect((await sync(token, "global", { ops: [put({ ...big("R92", 7000), tags: ["stage:1"] })] })).body.results[0].status).toBe("accepted");
+    await leaveFree(token, 80); // 5,920 of 6,000, through many rules
+    const over = await sync(token, "global", { ops: [put(stageZero("R91", "s".repeat(81)))] });
+    expect(over.body.results[0].status).toBe("rejected");
+    expect(over.body.results[0].error).toMatch(/the baseline holds 5920 of 6000 characters; this record needs 81 more/);
+    // a huge body costs nothing: only its 80-character summary counts, and it fills the budget exactly
+    expect((await sync(token, "global", { ops: [put(stageZero("R93", "h".repeat(80), "x".repeat(100_000)))] })).body.results[0].status).toBe("accepted");
+    expect(await holds(token)).toBe(BASELINE_BUDGET);
+    added.push("R93");
+    await clear(token, added);
+    // the same overflowing record at stage 1 is not baseline: accepted
+    expect((await sync(token, "global", { ops: [put({ ...stageZero("R92", "s".repeat(81)), tags: ["stage:1"] })] })).body.results[0].status).toBe("accepted");
     // a repo wiki has no baseline: stage 0 is refused there, and a stage 1 record of any size is no baseline
     const w = freshKey();
     await wiki(token, w);
-    expect((await sync(token, w, { ops: [put(big("R1", 7000))] })).body.results[0].status).toBe("rejected");
-    expect((await sync(token, w, { ops: [put({ ...big("R2", 7000), tags: ["stage:1"] })] })).body.results[0].status).toBe("accepted");
+    expect((await sync(token, w, { ops: [put(stageZero("R1", "s".repeat(160)))] })).body.results[0].status).toBe("rejected");
+    expect((await sync(token, w, { ops: [put({ ...stageZero("R2", "s".repeat(160)), tags: ["stage:1"] })] })).body.results[0].status).toBe("accepted");
   });
 
   it("counts only active skill versions and the global wiki's rules and memories against the budget", async () => {
     const { token } = await setup();
     await globalWiki(token);
-    const description = "d".repeat(500);
-    const skill = (id: string, status: string) => ({
-      ...row(id, id), kind: "D",
-      data: { title: `${id} v1`, body: `---\nname: ${id.toLowerCase()}\ndescription: ${description}\n---\nbody`, alias: null, mime: "text/markdown", source: "" },
-      tags: ["skill", `skill:${id.toLowerCase()}`, "v:1", `status:${status}`, "stage:0"],
-    });
-    // what the baseline holds right now, read from the refusal of an oversized probe (it never fits, so it is never stored)
-    let probes = 0;
-    const holds = async () => {
-      const r = await sync(token, "global", { ops: [put(row(`R69${probes++}`, "PROBE", { tags: ["stage:0"], data: { summary: "PROBE", body: "b".repeat(6001), alias: null, source: "", session: "" } }))] });
-      return Number(/holds (\d+) of/.exec(r.body.results[0].error)![1]);
-    };
-    const before = await holds();
+    const before = await leaveFree(token, 100);
     // pending and previous versions are never printed: they cost nothing
     for (const [i, status] of ["pending", "previous"].entries()) {
-      expect((await sync(token, "global", { ops: [put(skill(`D70${i}`, status))] })).body.results[0].status, status).toBe("accepted");
+      expect((await sync(token, "global", { ops: [put(skillWire(`D70${i}`, status, "d".repeat(60)))] })).body.results[0].status, status).toBe("accepted");
     }
-    expect(await holds()).toBe(before);
+    expect(await holds(token)).toBe(before);
     // an active one costs its description
-    expect((await sync(token, "global", { ops: [put(skill("D710", "active"))] })).body.results[0].status).toBe("accepted");
-    expect(await holds()).toBe(before + 500);
+    expect((await sync(token, "global", { ops: [put(skillWire("D710", "active", "d".repeat(60)))] })).body.results[0].status).toBe("accepted");
+    expect(await holds(token)).toBe(before + 60);
+    // a memory costs its summary only: a 100,000-character body adds nothing
+    const memory = stageZero("M720", "m", "x".repeat(100_000));
+    expect((await sync(token, "global", { ops: [put(memory)] })).body.results[0].status).toBe("accepted");
+    expect(await holds(token)).toBe(before + 61);
+    added.push("M720", "D710");
+    await clear(token, added);
   });
 
-  it("prints a baseline record's body cut at 1,200 characters, indented and masked", async () => {
+  it("prints a baseline record's summary and never its body", async () => {
     const { token } = await setup();
     await globalWiki(token);
-    const body = `${"a".repeat(1300)}\nHEADING-FORGE\nsk-ant-api03-Q7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7x`;
+    const body = `${"a".repeat(1300)}\nHEADING-FORGE`;
     const r = row("R95", "CUT-S0 rule", { tags: ["stage:0"], data: { summary: "CUT-S0 rule", body, alias: null, source: "", session: "" } });
     expect((await sync(token, "global", { ops: [put(r)] })).body.results[0].status).toBe("accepted");
+    // a secret never enters stage 0: the put is refused, not stored masked
+    const leaky = row("R96", "LEAKY rule", { tags: ["stage:0"], data: { summary: "LEAKY rule", body: "sk-ant-api03-Q7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7xQ7x", alias: null, source: "", session: "" } });
+    const refused = (await sync(token, "global", { ops: [put(leaky)] })).body.results[0];
+    expect(refused.status).toBe("rejected");
+    expect(refused.error).toContain("a secret or credential");
     const t = await text(token);
-    const lines = t.split("\n");
-    const at = lines.findIndex((l) => l.startsWith("R95 CUT-S0 rule"));
-    expect(lines[at + 1]).toBe(`  ${"a".repeat(1200)}`);
+    expect(mempmIn(t).P.map((e) => `${e[0]} ${e[2]}`)).toContain("R95 CUT-S0 rule");
+    expect(t).not.toContain("aaaaaaaaaa");
     expect(t).not.toContain("HEADING-FORGE");
     expect(t).not.toContain("sk-ant-api03");
   });

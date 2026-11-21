@@ -4,7 +4,7 @@
 // relation index (relations.ts), the session text, the stage gate and the reach filter all read
 // from here.
 
-import { PROJECT_PREFIX, RANK_PREFIX, cmp, type Kind } from "./records.js";
+import { NODE_TAG, PROJECT_PREFIX, RANK_PREFIX, cmp, type Kind } from "./records.js";
 
 export const STAGE_MAX = 9;
 export const STAGE_PREFIX = "stage:";
@@ -20,11 +20,11 @@ const STAGE_RE = /^stage:([0-9])$/;
 
 /** The learning loop's own tags (`shapa learn` writes them on a principle and on a correction): the same list as the
  *  local engine's `db.LEARNING_TAGS` and `db.LEARNING_TAG_PREFIXES` (tests/test_parity.py keeps the two equal). */
-export const LEARNING_TAGS: readonly string[] = ["principle", "churn", "violation", "repeat", "repeat-checked", "blocked", "learned", "meta-learning", "dismissed", "soft", "fire"];
+export const LEARNING_TAGS: readonly string[] = ["principle", "churn", "violation", "repeat", "repeat-checked", "blocked", "learned", "meta-learning", "dismissed", "soft", "fire", "promote"];
 export const LEARNING_PREFIXES: readonly string[] = ["violations:", "revisions:", "repeats:", "serves:", "repeat-of:", "last-seen:", "evidence:", "learned-at:", "generalized-into:"];
 
 /** Tags that are the engine's, not topics: never listed in TOPICS or the tag index (unless asked). */
-export const SYSTEM_TAGS: readonly string[] = ["skill", "focus", "human_task", "agent_task", IDEA_TAG, DECISION_TAG, ...LEARNING_TAGS];
+export const SYSTEM_TAGS: readonly string[] = ["skill", "focus", NODE_TAG, "human_task", "agent_task", IDEA_TAG, DECISION_TAG, ...LEARNING_TAGS];
 export const SYSTEM_PREFIXES: readonly string[] = [STAGE_PREFIX, PROPOSED_PREFIX, "skill:", "v:", "status:", RANK_PREFIX, PROJECT_PREFIX, ...LEARNING_PREFIXES];
 
 export function isSystemTag(tag: string): boolean {
@@ -100,14 +100,24 @@ export const BUCKET_NAMES: Record<Bucket, string> = {
 };
 export const COUNT_NAMES = ["rule", "memory", "issue", "skill", "document", "task", "job", "feature", "note"] as const;
 
+/** An issue carrying one of these tags is not a live lesson: dismissed or soft (never applied), learned (a principle holds it now).
+ *  The local engine reads the same list (`bootstrap.NOT_A_LESSON`; tests/test_parity.py holds the two equal). */
+export const NOT_A_LESSON: readonly string[] = ["dismissed", "soft", "learned"];
+
 /** Whether a `baseline` device (an OAuth grant, or a token minted baseline) may see a record at all: rules,
- *  memories, issues and skill versions only at stage 0; notes only with the access marker `stage:0`; ideas and
- *  decisions; everything else. */
-export function baseVisible(kind: Kind, tags: readonly string[]): boolean {
+ *  memories only at stage 0; a skill version when it is the ACTIVE one (every agent may invoke the operator's
+ *  skills) or at stage 0, never a pending or previous one; notes only with the access marker `stage:0`; ideas and
+ *  decisions; an issue (a mistake) only at stage 0 or, in the global wiki, while it still carries a lesson; everything
+ *  else. An issue takes no stage tag on either side, so the global wiki's live lessons are how a baseline device
+ *  reads the operator's mistakes; a repo wiki's issues stay hidden from it. */
+export function baseVisible(kind: Kind, tags: readonly string[], wiki = ""): boolean {
   switch (kind) {
-    case "R": case "I": return hasBaseline(tags);
+    case "R": return hasBaseline(tags);
+    case "I": return hasBaseline(tags) || (wiki === "global" && !tags.some((t) => NOT_A_LESSON.includes(t)));
     case "M": return tags.includes(IDEA_TAG) || tags.includes(DECISION_TAG) || hasBaseline(tags);
-    case "D": return tags.includes("skill") ? hasBaseline(tags) : true;
+    case "D":
+      if (tags.includes(NODE_TAG)) return false; // a repo node holds a repo's principles: never a baseline device's
+      return tags.includes("skill") ? hasBaseline(tags) || tags.includes("status:active") : true;
     case "N": return hasBaseline(tags); // a note's stage:0 is the access marker
     default: return true;
   }

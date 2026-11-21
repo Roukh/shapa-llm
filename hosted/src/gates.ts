@@ -15,10 +15,8 @@ import {
   BASELINE_TAG, PROPOSED_PREFIX, PROPOSED_TAG, STAGE_MAX, STAGE_PREFIX, canonTag, hasBaseline, isLookalike, ownerOf, projectKeyOf,
 } from "./tags.js";
 
-/** The stage-0 set of the global wiki (a rule or memory: summary + body; a skill: its description) is capped here, in characters. */
+/** The stage-0 set of the global wiki (a rule or memory: its one-line summary, the only text a session start prints; a skill: its description) is capped here, in characters. */
 export const BASELINE_BUDGET = 6000;
-/** A baseline record prints at most this much of its body in the session text. */
-export const BASELINE_BODY_MAX = 1200;
 
 export const BASELINE_EDIT_REFUSAL = "a stage:0 (baseline) record changes only from a device token with the delete scope, by sync (the operator's machine: `shapa stage`)";
 
@@ -124,11 +122,11 @@ export function gateStage(g: GateIn): GateOut {
 
 const chars = (s: unknown): number => Array.from(String(s ?? "")).length;
 
-/** What a stage-0 record counts against the budget: a rule or memory its summary + body, an ACTIVE skill version its
+/** What a stage-0 record counts against the budget: a rule or memory its one-line summary (the session start never prints a body), an ACTIVE skill version its
  *  description (a pending or previous version is never printed, so it costs nothing). */
 export function baselineCost(kind: Kind, tags: readonly string[], data: Record<string, unknown>): number {
   if (kind === "D" && tags.includes("skill")) return tags.includes("status:active") ? chars(splitSkill(String(data["body"] ?? "")).fields["description"]) : 0;
-  return chars(data["summary"]) + chars(data["body"]);
+  return chars(data["summary"]);
 }
 
 /** The refusal when putting `n` at stage 0 would take the global wiki's baseline past the budget, else null. */

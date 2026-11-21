@@ -139,7 +139,7 @@ def run_doc(argv: list[str]) -> int:
             known = {d.id for d in db.documents(conn)}
             new_id = db.add_doc(conn, args.title, body, tags=args.tag, alias=args.alias,
                                 mime=args.mime, source=args.source, project=args.project,
-                                merge=args.merge)
+                                merge=args.merge, privileged=True)  # the local CLI is the operator's
             print(new_id if new_id not in known else f"{new_id} (merged as a section)")
         finally:
             conn.close()

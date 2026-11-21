@@ -25,7 +25,7 @@ def _git(*args: str, cwd: Path) -> None:
     # .githooks/pre-commit) even for a brand-new throwaway repo - use an
     # address it accepts, not a made-up one.
     subprocess.run(
-        ["git", "-c", "user.email=admin@ghobz.com", "-c", "user.name=shapa-test", *args],
+        ["git", "-c", "user.email=user@example.com", "-c", "user.name=shapa-test", *args],
         cwd=str(cwd), check=True, capture_output=True, text=True,
     )
 

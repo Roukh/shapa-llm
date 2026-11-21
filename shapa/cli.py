@@ -82,6 +82,17 @@ commands:
                  broken global wiki, this repo's git hooks not wired, or no
                  agent harness connected (a missing repo wiki is only ever
                  informational - `shapa init` creates one)
+  harness install|uninstall|status|watch [--harness NAME] [--mode append|replace|default]
+                 [--dry-run] [--json] [--force]
+                 shapa's own system prompt (one shared core plus a short
+                 adapter per harness) written to ~/.shapa/prompts/ and wired
+                 into Claude Code, Codex, OpenCode and Gemini CLI. The default
+                 mode appends it to the harness's own prompt; --mode replace
+                 swaps the harness's prompt for it, --mode default leaves the
+                 harness alone. Each touched config is backed up once
+                 (.shapa-bak) and uninstall restores it. watch stores hashes
+                 and heading lists (never text) of the harness defaults it can
+                 capture locally and reports changes
   capture        extract atomic memories from a finished session into the
                  wiki's memory log (Stop/SubagentStop hook, write path)
   save           write one note explicitly (--scope global|repo|external,
@@ -92,7 +103,8 @@ commands:
                  archives status:superseded notes (never deletes)
   heartbeat      prune orphan notes (--dry-run)
   score          rank notes by value (--use FILE to record a use)
-  validate       validate note frontmatter (FILE..., or a wiki DIR)
+  validate       validate note frontmatter (FILE..., or a wiki DIR); --pii lists stored records the
+                 personal-data gate would refuse today (id and category only)
   upgrade [PATH|--all] [--check] [--json]
                  bring wikis to the current format: apply mechanical
                  migrations, report the judgment work list (exit 1 while
@@ -133,13 +145,21 @@ commands:
                  different subject from a nearby churned principle); merge
                  SRC DST folds two principles (60 at most a wiki); unchurn
                  R<n> clears churn once enforcement exists; dismiss ISSUE
-                 drops a correction or removes a soft candidate
+                 drops a correction or removes a soft candidate; import FILE
+                 --wiki KEY [--dry-run] [--json] curates a wiki's principles,
+                 mistakes and memories from a JSON file in one transaction
+                 (operator only: validates first, global stages at stage 0
+                 within the 6,000-character baseline)
   metrics [--since DATE] [--json] [--snapshot] [--all] [--repo KEY]
                  whether the wiki is working: fetch latency, corrections and
                  repeats per session, learned vs pending, skill use, feature
                  lead time, work on the fires vs off them, frustration, with
                  a 7-day trend; --snapshot stores today's row, --all rolls
                  up every repo; `metrics record skill-use NAME --session ID`
+  node sync|list  every repo wiki reflects one node (its fires, principles, open
+                 corrections, counts) into the global wiki; a principle two repos
+                 share is filed there as a pending `learn` candidate. Runs
+                 at session end with `commit --hook`
   stage ...    which rules, memories and skills every session starts with:
                  set ID N (0 = baseline, served in full, capped at 6,000
                  characters; only this CLI sets it), clear, list, pending
@@ -168,7 +188,7 @@ commands:
                  each is there; local only, session start shows the top
   remote ...     the opt-in hosted store: login URL, sync (two-way, every wiki
                  in scope; --hook for a session hook), status, devices,
-                 logout, instructions
+                 logout
   correction     UserPromptSubmit hook: an operator correction ("no",
                  "wrong", "not like this") becomes an issue row
   serve [ROOT]   run the optional warm per-root daemon (latency only)
@@ -458,6 +478,16 @@ def main(argv: list[str] | None = None) -> None:
     if cmd == "doctor":
         importlib.import_module("shapa.status").doctor_main(rest)
         return
+    if cmd == "bootstrap":  # the hook envelope is capped under Claude Code's 10,000-character limit
+        from shapa import hookcap
+
+        hookcap.run_bootstrap(rest)
+        return
+    if cmd == "harness":
+        from shapa import harness
+
+        harness.main(rest)
+        return
     if cmd in _SUBMODULES:
         importlib.import_module(f"shapa.{cmd}").main(rest)
         return
@@ -475,6 +505,11 @@ def main(argv: list[str] | None = None) -> None:
         from shapa import skills
 
         skills.main(rest)
+        return
+    if cmd == "node":
+        from shapa import node
+
+        node.main(rest)
         return
     if cmd in ("learn", "metrics"):
         mod = importlib.import_module(f"shapa.{cmd}")

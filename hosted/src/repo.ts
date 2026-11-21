@@ -216,7 +216,7 @@ export class Repo {
     if (existing && existing.uid !== n.uid) throw new Error("a record uid is immutable");
     const before = existing ? this.indexRow(existing.seq) : null;
     const rev = this.bumpRev();
-    const vis = baseVisible(n.kind, n.tags) ? 1 : 0;
+    const vis = baseVisible(n.kind, n.tags, wiki) ? 1 : 0;
     const data = JSON.stringify(n.data);
     const tags = JSON.stringify(n.tags);
     const links = JSON.stringify(n.links);

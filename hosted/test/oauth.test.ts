@@ -90,6 +90,16 @@ describe("OAuth 2.1", () => {
     expect((await adminFrom(ip, OWNER)).status).toBe(429);
   });
 
+  it("tells the owner everything a granted app can read: skills and global mistakes, never repo nodes", async () => {
+    const clientId = await registerClient("Reader");
+    const { challenge } = await pkce();
+    const page = await openConsent(authorizeUrl(clientId, challenge));
+    expect(page.status).toBe(200);
+    expect(page.html).toContain("your active skills");
+    expect(page.html).toContain("the global mistakes that still carry a lesson");
+    expect(page.html).not.toMatch(/\bnodes?\b/i);
+  });
+
   it("defends the consent page against CSRF, framing and injection", async () => {
     const clientId = await registerClient(`<script>alert(1)</script>"><img src=x onerror=alert(2)>`);
     const { challenge } = await pkce();

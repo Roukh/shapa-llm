@@ -282,10 +282,14 @@ def tool_save(args: dict[str, Any], cwd: str | None) -> dict[str, Any]:
     from shapa import db, save as save_mod
 
     if db.exists(root):
+        supersedes, distinct = args.get("supersedes") or [], args.get("distinct_from") or []
+        for name, v in (("supersedes", supersedes), ("distinct_from", distinct)):
+            if not isinstance(v, list) or not all(isinstance(x, str) for x in v):
+                return {"error": f"{name} must be a list of rule ids"}
         return save_mod.save_row(root, scope, note_type, summary, body, tags,
                                  alias=str(args.get("id") or "").strip(),
                                  project=str(args.get("project") or "").strip() or None,
-                                 merge=bool(args.get("merge")))
+                                 merge=bool(args.get("merge")), supersedes=supersedes, distinct_from=distinct)
     if note_type in DB_ONLY_TYPES:
         return {"error": f"type {note_type!r} needs a format-4 wiki (a shapa.db) - "
                          f"run `shapa upgrade {root}` first"}
@@ -296,6 +300,10 @@ def tool_save(args: dict[str, Any], cwd: str | None) -> dict[str, Any]:
             "error": f"invalid id {note_id!r} - ids may not contain '/', '\\\\', a NUL "
                      "byte, or be exactly '.' or '..' (path-traversal guard)",
         }
+    # a format-3 wiki's note file: the same personal-data gate as a database row (the id is a path)
+    note_warnings, refused = save_mod.pii_screen(summary, body, tags, note_id)
+    if refused:
+        return {"error": refused}
     path = root / f"{note_id}.md"
     if path.exists():
         return {
@@ -343,8 +351,8 @@ def tool_save(args: dict[str, Any], cwd: str | None) -> dict[str, Any]:
         return {"error": f"note failed validation and was not saved: {errors}"}
 
     out: dict[str, Any] = {"id": note_id, "path": str(path), "scope": scope}
-    if result.warnings:
-        out["warnings"] = [v.message for v in result.warnings]
+    if result.warnings or note_warnings:
+        out["warnings"] = [*note_warnings, *(v.message for v in result.warnings)]
     return out
 
 
@@ -421,24 +429,45 @@ def tool_focus(args: dict[str, Any], cwd: str | None) -> dict[str, Any]:
         conn.close()
 
 
+def tool_skill_match(args: dict[str, Any], cwd: str | None) -> dict[str, Any]:
+    """At most 6 active skills that fit a task text (BM25 over name and description), each with a reason."""
+    from shapa import skills
+
+    text = str(args.get("text") or args.get("query") or "").strip()
+    if not text:
+        return {"error": "text is required: the task, in a sentence or two"}
+    root = args.get("root") or cwd
+    found = skills.match_skills(skills.local_candidates(root), text)
+    return {"skills": [{k: r[k] for k in ("name", "description", "scope", "reason")} for r in found]}
+
+
 def tool_skill(args: dict[str, Any], cwd: str | None) -> dict[str, Any]:
     from shapa import db, skills
 
-    action = str(args.get("action") or "list").strip()
+    # A bare {name} reads that skill, as the hosted `skill` tool does.
+    action = str(args.get("action") or ("show" if args.get("name") else "list")).strip()
     if action in ("list", "show"):
         out: list[Any] = []
-        for wr in config.wiki_roots(args.get("root") or cwd):
+        taken: set[str] = set()      # names the global wiki holds: a repo skill of that name is hidden
+        for wr in sorted(config.wiki_roots(args.get("root") or cwd), key=lambda r: r.kind != "global"):
             if wr.kind not in ("global", "repo") or not db.exists(wr.path):
                 continue
             conn = db.connect(wr.path)
             try:
                 if action == "list":
-                    out += [{**s, "scope": wr.kind} for s in skills.summaries(conn)]
+                    mine = [s for s in skills.summaries(conn) if wr.kind == "global" or s["name"] not in taken]
+                    out += [{**s, "scope": wr.kind} for s in mine]
+                    if wr.kind == "global":
+                        taken |= {s["name"] for s in mine}
                 else:
-                    v = skills.get(conn, str(args.get("name") or ""),
-                                   int(args["version"]) if args.get("version") else None)
+                    name = str(args.get("name") or "")
+                    if wr.kind == "repo" and name in taken:
+                        continue
+                    v = skills.get(conn, name, int(args["version"]) if args.get("version") else None)
                     if v is not None:
                         out.append({**skills.as_dict(v, body=True), "scope": wr.kind})
+                        if wr.kind == "global":
+                            taken.add(name)
             except (ValueError, TypeError) as exc:
                 return {"error": str(exc)}
             finally:
@@ -649,6 +678,7 @@ _HANDLERS: dict[str, Callable[[dict[str, Any], str | None], dict[str, Any]]] = {
     "placement": tool_placement,
     "focus": tool_focus,
     "skill": tool_skill,
+    "skill_match": tool_skill_match,
     "partition": tool_partition,
 }
 
@@ -807,6 +837,17 @@ TOOLS: list[dict[str, Any]] = [
                     "description": "document only: append this one as a section of the project's "
                                    "existing document instead of refusing it.",
                 },
+                "supersedes": {
+                    "type": "array", "items": {"type": "string"},
+                    "description": "refused here: superseding deletes a rule, so only the operator's local CLI "
+                                   "does it (`shapa save --type rule --supersedes R<n>`). A rule is ONE "
+                                   "imperative sentence; one near an existing rule is refused with the "
+                                   "candidates unless it names them in `distinct_from`.",
+                },
+                "distinct_from": {
+                    "type": "array", "items": {"type": "string"},
+                    "description": "rule only: ids of near rules this one is a different subject from.",
+                },
                 "root": {
                     "type": "string",
                     "description": "Directory to resolve 'repo' scope from (default: this server's cwd).",
@@ -863,6 +904,21 @@ TOOLS: list[dict[str, Any]] = [
                 "body": {"type": "string"}, "version": {"type": "integer"},
                 "root": {"type": "string"},
             },
+        },
+    },
+    {
+        "name": "skill_match",
+        "description": (
+            "Which skills fit this task: at most 6 active skills ranked by BM25 over name and "
+            "description, each with its description and a reason (the task words it matched). "
+            "Call it before starting a task, then read the ones that fit with `skill` {action: "
+            "show, name}. Read-only; returns nothing when no word matches."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"text": {"type": "string", "description": "the task, in a sentence or two"},
+                           "root": {"type": "string"}},
+            "required": ["text"],
         },
     },
     {

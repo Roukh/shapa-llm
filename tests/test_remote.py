@@ -239,20 +239,19 @@ def test_sync_all_reaches_registered_wikis(logged_in, double, wikis, capsys, tmp
     assert "other-repo" in double.wikis
 
 
-def test_devices_and_instructions(logged_in, double, capsys, monkeypatch):
+def test_devices(logged_in, double, capsys, monkeypatch):
     monkeypatch.setenv("SHAPA_OWNER_KEY", OWNER_KEY)
     code, out, _ = run(capsys, ["devices"])
     assert code == 0 and "laptop" in out and logged_in not in out
     assert run(capsys, ["devices", "--revoke", "d1"])[0] == 0
     assert double.devices["d1"]["revoked"] is True
     assert run(capsys, ["devices", "--revoke", "../etc"])[0] == 1
-    assert run(capsys, ["instructions", "--client", "rest"])[0] == 1  # that device is revoked now
-    assert run(capsys, ["instructions", "--client", "x y"])[0] == 1
 
 
-def test_instructions_print_the_servers_text(logged_in, capsys):
-    code, out, _ = run(capsys, ["instructions", "--client", "mcp"])
-    assert code == 0 and out.strip() == "Session defaults for mcp"
+def test_there_is_no_instructions_command_the_session_start_is_the_mcp_tool(logged_in, capsys):
+    with pytest.raises(SystemExit):
+        remote.run(["instructions"])
+    assert "invalid choice" in capsys.readouterr().err
 
 
 def test_the_remote_command_is_reachable_from_the_shapa_cli(logged_in, wikis, capsys):

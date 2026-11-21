@@ -17,11 +17,32 @@ const DEFAULT_SCOPES: Scope[] = ["read", "write"];
 
 export const escapeHtml = (value: string): string => value.replace(/[&<>"'`]/g, (ch) => `&#${ch.charCodeAt(0)};`);
 
-function securityHeaders(headers: Headers, nonce: string): Headers {
+const ORIGIN_RE = /^https?:\/\/[a-z0-9.-]+(:\d{1,5})?$/;
+const DEV_HOSTS = new Set(["localhost", "127.0.0.1"]);
+
+/** The CSP `form-action` sources for a consent page. Chrome applies `form-action` to the redirect
+ * that follows a form POST, so the 302 to the client's redirect URI is blocked unless its origin
+ * is listed too. Only the origin of the redirect URI the provider already validated against the
+ * registered client is added, and only an https origin (or http on localhost / 127.0.0.1); anything
+ * else, or an origin with a character outside a plain URL origin, leaves `'self'` alone. */
+export function formAction(redirectUri?: string): string {
+  if (!redirectUri) return "'self'";
+  let url: URL;
+  try {
+    url = new URL(redirectUri);
+  } catch {
+    return "'self'";
+  }
+  const origin = url.origin;
+  const ok = url.protocol === "https:" || (url.protocol === "http:" && DEV_HOSTS.has(url.hostname));
+  return ok && ORIGIN_RE.test(origin) ? `'self' ${origin}` : "'self'";
+}
+
+function securityHeaders(headers: Headers, nonce: string, redirectUri?: string): Headers {
   headers.set("Content-Type", "text/html; charset=utf-8");
   headers.set(
     "Content-Security-Policy",
-    `default-src 'none'; style-src 'nonce-${nonce}'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'`,
+    `default-src 'none'; style-src 'nonce-${nonce}'; form-action ${formAction(redirectUri)}; frame-ancestors 'none'; base-uri 'none'`,
   );
   headers.set("X-Frame-Options", "DENY");
   headers.set("X-Content-Type-Options", "nosniff");
@@ -71,7 +92,7 @@ button{padding:.5rem 1rem;font:inherit;margin-right:.5rem}.err{color:#b00020;fon
 <p>${origin} Access will be sent to <strong>${escapeHtml(view.redirectHost)}</strong>.</p>
 ${view.redirectIsLoopback ? '<p class="warn"><strong>This sends access to an app on your computer.</strong> Continue only if you just started signing in from it.</p>' : ""}
 ${error ? `<p class="err" role="alert">${escapeHtml(error)}</p>` : ""}
-<p>A chat app reads your stage-0 baseline, the notes marked stage 0, tasks, ideas and project files, and writes notes, tasks, ideas, decisions and files. It never syncs, edits rules or the focus, or deletes.</p>
+<p>A chat app reads your stage-0 baseline, your active skills, the notes marked stage 0, tasks, ideas, decisions, project files and the global mistakes that still carry a lesson, and writes notes, tasks, ideas, decisions and files. It never syncs, edits rules or the focus, or deletes.</p>
 <form method="post">
 <input type="hidden" name="handle" value="${escapeHtml(handle)}">
 <input type="hidden" name="csrf" value="${escapeHtml(csrf)}">
@@ -106,7 +127,7 @@ async function render(oauth: OAuthHelpers, request: Request, error: string, stat
   const consent = await oauth.beginConsent(authReq);
   const nonce = randomHex(16);
   const csrf = randomHex(16);
-  const headers = securityHeaders(consent.headers, nonce);
+  const headers = securityHeaders(consent.headers, nonce, details.redirectUri);
   headers.append("Set-Cookie", `${CSRF_COOKIE}=${csrf}; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=900`);
   const view: View = {
     clientName: details.clientName,

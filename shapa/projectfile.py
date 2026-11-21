@@ -196,20 +196,23 @@ def _set_body(conn: sqlite3.Connection, doc_id: str, body: str) -> None:
                      (body, db.content_hash(title, body), db.now_iso(), doc_id))
 
 
-def new_project(conn: sqlite3.Connection, key: str, title: str | None = None) -> tuple[str, bool]:
+def new_project(conn: sqlite3.Connection, key: str, title: str | None = None, *,
+                privileged: bool = False) -> tuple[str, bool]:
     """Create the project's document from the template; ``(id, created)``, idempotent."""
     key = _key(key)
     held = db.project_doc(conn, key)
     if held is not None:
         return held.id, False
     doc_id = db.add_doc(conn, (title or "").strip() or key, template(), project=key, source="project",
-                        tags=[db.PROJECT_PREFIX + key])
+                        tags=[db.PROJECT_PREFIX + key], privileged=privileged)
     _set_body(conn, doc_id, template())  # add_doc trims the text; the template is kept byte for byte
     return doc_id, True
 
 
-def add_item(conn: sqlite3.Connection, key: str, section: str, text: str) -> dict:
-    """Append *text* to *section* of project *key*; ``{id, section, changed}``."""
+def add_item(conn: sqlite3.Connection, key: str, section: str, text: str, *, privileged: bool = False) -> dict:
+    """Append *text* to *section* of project *key*; ``{id, section, changed}``. The personal-data gate
+    (:mod:`shapa.pii`) screens *text* first: every category unless *privileged* (the local CLI)."""
+    db._pii_gate([text], (), privileged)
     doc = _doc_of(conn, _key(key))
     with db.write(conn):  # read and write under one lock: two appenders never both take number 3
         body = conn.execute("SELECT body FROM docs WHERE id = ?", (doc.id,)).fetchone()[0]
@@ -427,10 +430,10 @@ def run_project(argv: list[str]) -> int:
     conn = _connect(scoped_root(getattr(args, "wiki", "global"), args.cwd), create=cmd == "new")
     try:
         if cmd == "new":
-            doc_id, created = new_project(conn, args.key, args.title)
+            doc_id, created = new_project(conn, args.key, args.title, privileged=True)
             print(doc_id if created else f"{doc_id} (the project already has its document)")
         elif cmd == "add":
-            r = add_item(conn, args.key, args.section, args.text)
+            r = add_item(conn, args.key, args.section, args.text, privileged=True)
             print(f"{r['id']} {r['section']}" + ("" if r["changed"] else " (already there)"))
         elif cmd == "show":
             from shapa import tasks

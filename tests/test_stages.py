@@ -132,14 +132,22 @@ def test_the_sweep_keeps_staged_ideas_and_decisions_for_disuse(g):
 # --- the budget ----------------------------------------------------------------------------------
 
 def test_the_baseline_is_capped_and_the_refusal_names_the_current_size(g):
-    db.add_row(g, "R", "a" * 100, "b" * 5800, tags=["stage:0"], privileged=True)
+    # only the one-line summary counts (a session start prints nothing else): 5900 characters over 37 rows
+    for i in range(36):
+        db.add_row(g, "R", f"{i:02d}" + "a" * 158, "b" * 300, tags=["stage:0"], privileged=True)
+    db.add_row(g, "R", "z" * 140, "", tags=["stage:0"], privileged=True)  # 36 * 160 + 140 = 5900
+    assert stages.baseline_size(g) == 5900
     with pytest.raises(db.LedgerError) as exc:
-        db.add_row(g, "R", "Another", "c" * 300, tags=["stage:0"], privileged=True)
+        db.add_row(g, "R", "c" * 101, "", tags=["stage:0"], privileged=True)
     assert "5900 of 6000" in str(exc.value)
-    r, _ = db.add_row(g, "R", "Tiny", "ok", tags=["stage:0"], privileged=True)  # 6 chars still fit
+    r, _ = db.add_row(g, "R", "Tiny", "ok", tags=["stage:0"], privileged=True)  # 4 chars still fit
     assert r
     with pytest.raises(db.LedgerError):
-        db.update_row(g, r, body="d" * 500, privileged=True)  # an edit may not overflow it either
+        db.update_row(g, r, summary="d" * 150, privileged=True)  # an edit may not overflow it either
+    db.update_row(g, r, body="d" * 50_000, privileged=True)  # a body, however large, costs nothing
+    assert stages.baseline_size(g) == 5904
+    big, _ = db.add_row(g, "R", "Huge body", "e" * 50_000, tags=["stage:0"], privileged=True)
+    assert big and stages.baseline_size(g) == 5913
 
 
 def test_the_budget_constant_is_one_value():

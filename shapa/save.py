@@ -37,7 +37,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from shapa import config, db
+from shapa import config, db, pii
 from shapa.validate import validate_node
 
 #: Every scope this CLI accepts. ``external`` is CLI-only (see module
@@ -87,25 +87,50 @@ def infer_scope(start: str | Path | None, applies_to: str | None) -> str:
     return "repo" if config.discover(start) is not None else "global"
 
 
+def pii_screen(summary: str, body: str, tags, alias=None, privileged: bool = False) -> tuple[list[str], str | None]:
+    """``(warnings, error)`` of the personal-data gate (:mod:`shapa.pii`) over one write's fields: the error names
+    the categories found and never the value; the warnings are allowed hits to check (counted, never echoed)."""
+    try:
+        return pii.check([summary, body, alias, *map(str, tags or [])], pii.level_for(tags, privileged)), None
+    except pii.Rejected as exc:
+        return [], str(exc)
+
+
+SUPERSEDE_REFUSAL = ("superseding deletes a rule, so only the operator's local CLI does it "
+                     "(`shapa save --type rule --supersedes R<n>`); the MCP tool never deletes")
+
+
 def save_row(root, scope: str, note_type: str, summary: str, body: str, tags, alias=None,
-             project: str | None = None, merge: bool = False, privileged: bool = False) -> dict:
+             project: str | None = None, merge: bool = False, privileged: bool = False,
+             supersedes=None, distinct_from=None) -> dict:
     """Format 4: a memory/rule/issue is a row in the wiki's database, never a
     note file. *alias* keeps a caller-supplied slug findable by ``get``. A
     document obeys the lean gate: one per *project* (see :func:`db.add_doc`).
     *privileged* is the local CLI: only it may store ``stage:0`` (anything else is
     stored as ``stage-proposed:0``). The learning loop's own tags are refused from every
-    caller (see :func:`db.check_row_tags`)."""
+    caller (see :func:`db.check_row_tags`). A rule is ONE rule (:func:`db.check_atomic_rule`); a rule near
+    an existing one is refused with the candidates (``{"error", "candidates"}``) unless it names what it
+    *supersedes* (deleted once it is written; baseline rules only from the privileged CLI) or claims it is
+    *distinct_from* it."""
     from shapa import tasks
+
+    if (supersedes or distinct_from) and note_type != "rule":
+        return {"error": "supersedes and distinct_from apply to rules only"}
+    if supersedes and not privileged:
+        return {"error": SUPERSEDE_REFUSAL}
 
     try:
         db.check_row_tags(tags)
     except db.LedgerError as exc:
         return {"error": str(exc)}
+    warns, refused = pii_screen(summary, body, tags, alias, privileged)
+    if refused:
+        return {"error": refused}
     if not privileged and any(" ".join(str(t).split()).startswith("rank:") for t in (tags or [])):
         # the order of the operator's list is the operator's: an agent cannot rank its own task first
         return {"error": "rank:N is set by the operator (`shapa row tag ID rank:N`), not on a save"}
     conn = db.connect(root)
-    created, merged = True, False
+    created, merged, superseded = True, False, []
     try:
         if note_type == "document":
             known = {d.id for d in db.documents(conn)}
@@ -114,26 +139,43 @@ def save_row(root, scope: str, note_type: str, summary: str, body: str, tags, al
             merged = rid in known
         elif note_type in TASK_TYPES:
             rid, created = tasks.add_task(conn, summary, db.OWNER_TAGS[note_type], body, project=project,
-                                          tags=tags or [], standalone_only=scope == "global")
+                                          tags=tags or [], standalone_only=scope == "global",
+                                          privileged=privileged)
         else:
             # An idea or a decision is a memory carrying that tag, never a kind of its own.
             kind = {"memory": "M", "rule": "R", "issue": "I"}.get(note_type, "M")
             key = db.clean_project(project)
             all_tags = (list(tags or []) + ([note_type] if note_type in TAG_ALIAS_TYPES else [])
                         + ([db.PROJECT_PREFIX + key] if key else []))
-            rid, created = db.add_row(conn, kind, summary, body, tags=all_tags,
-                                      alias=alias or None, source="save", privileged=privileged)
+            if kind == "R":
+                from shapa import learn
+
+                db.check_atomic_rule(summary, body, what="a rule")
+                wrote = learn.write_rule(root, scope if scope in ("global", "repo") else "repo", summary, body,
+                                         all_tags, alias=alias or None, supersedes=supersedes or (),
+                                         distinct_from=distinct_from or (), privileged=privileged)
+                rid, created, superseded = wrote["id"], wrote["created"], wrote["superseded"]
+            else:
+                rid, created = db.add_row(conn, kind, summary, body, tags=all_tags,
+                                          alias=alias or None, source="save", privileged=privileged)
     except db.DocExists as exc:
         return {"error": str(exc), "existing": exc.existing}
     except db.LedgerError as exc:
-        return {"error": str(exc)}
+        res = {"error": str(exc)}
+        if getattr(exc, "candidates", None):
+            res["candidates"] = exc.candidates
+        return res
     finally:
         conn.close()
     out = {"id": rid, "path": str(db.db_path(root)), "scope": scope}
+    if superseded:
+        out["superseded"] = superseded
     if merged:
-        out["warnings"] = [f"merged into the project's one document {rid} as a section"]
+        warns.append(f"merged into the project's one document {rid} as a section")
     elif not created:
-        out["warnings"] = [f"identical text already stored as {rid}"]
+        warns.append(f"identical text already stored as {rid}")
+    if warns:
+        out["warnings"] = warns
     return out
 
 
@@ -149,6 +191,8 @@ def save_note(
     start: str | Path | None = None,
     project: str | None = None,
     privileged: bool = False,
+    supersedes: list[str] | None = None,
+    distinct_from: list[str] | None = None,
 ) -> dict[str, Any]:
     """Write one note. Returns ``{"id", "path", "scope", ...}`` on success,
     or ``{"error": "..."}`` on any ordinary bad-input case - this function
@@ -186,6 +230,9 @@ def save_note(
     tags = tags or []
     if not isinstance(tags, list) or not all(isinstance(t, str) for t in tags):
         return {"error": "tags must be a list of strings"}
+    _, refused = pii_screen(summary, body, tags, id, privileged)  # also guards a format-3 wiki's note files
+    if refused:
+        return {"error": refused}
 
     # ---- resolve the target root, and the scope actually STORED in the
     # note (an "external" write always stores scope: repo - decision 6
@@ -221,7 +268,10 @@ def save_note(
 
     if db.exists(root):
         return save_row(root, stored_scope, note_type, summary, body, tags, alias=(id or "").strip(),
-                        project=project, privileged=privileged)
+                        project=project, privileged=privileged, supersedes=supersedes,
+                        distinct_from=distinct_from)
+    if supersedes or distinct_from:
+        return {"error": "supersedes and distinct_from need a format-4 wiki (a shapa.db)"}
     if note_type in DB_ONLY_TYPES:
         return {"error": f"type {note_type!r} needs a format-4 wiki (a shapa.db) - "
                          f"run `shapa upgrade {root}` first"}
@@ -314,6 +364,11 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--project", default=None,
                         help="the project this belongs to (the project:KEY tag, and an about link "
                              "to the project's document)")
+    parser.add_argument("--supersedes", action="append", default=[], metavar="R<n>",
+                        help="rule only: the newer rule wins, delete this older one of the same wiki once this "
+                             "is written (baseline rules too: the operator's CLI)")
+    parser.add_argument("--distinct-from", action="append", default=[], metavar="R<n>",
+                        help="rule only: a rule near this one is about a different subject")
     parser.add_argument("--tags", default=None, help="Comma-separated tags.")
     parser.add_argument("--id", default=None, help="Explicit id (default: slugified summary).")
     parser.add_argument("--root", default=None,
@@ -327,10 +382,11 @@ def main(argv: list[str] | None = None) -> None:
         note_type=args.note_type, tags=tags, id=args.id,
         applies_to=args.applies_to, start=args.root, project=args.project,
         privileged=True,  # the local CLI is the operator's (it may set stage:0)
+        supersedes=args.supersedes, distinct_from=args.distinct_from,
     )
     if "error" in result:
         print(f"shapa save: {result['error']}", file=sys.stderr)
-        sys.exit(1)
+        sys.exit(2 if result.get("candidates") else 1)
 
     print(f"saved '{result['id']}' (scope: {result['scope']}) -> {result['path']}")
     for w in result.get("warnings", []):

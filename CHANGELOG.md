@@ -7,6 +7,80 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-11-20
+
+The mempm release: a lean session start, shapa's own system prompt, and a learning loop that keeps one rule per
+object. In short:
+
+- Session start is one compact JSON (principles P, mistakes X, memories M) under the hook cap; tasks, notes,
+  projects, topics and skills are fetched on demand; agents reach the hosted store through MCP only.
+- `shapa harness` composes shapa's own core prompt for Claude Code, Codex, OpenCode and Gemini (append, replace
+  or default), with exact, edit-safe uninstall.
+- Skill files are the source of truth, mirrored into the wikis; `skill_match` everywhere; a repo skill never
+  shadows a global one.
+- One rule per object, newest principle wins (`--supersedes`, CLI only), `shapa learn import`, `shapa learn split`.
+- Personal and sensitive data never enters stage 0 or arrives from an AI app (pattern table shared by both sides).
+- Repo nodes in the global wiki (`shapa node`), hidden from baseline devices, with promotion candidates.
+- Security: a node document needs its reserved tag, source and the operator's own device; MCP cannot delete rules.
+
+### Security
+
+- Repo nodes carry the reserved tag `shapa-node` and the alias prefix `node:`, both refused to every other writer
+  (REST, MCP, local MCP, a sync from any device without the delete scope) and read by `shapa node` only when tag,
+  source and alias agree. A node holds a repo's principles and only a COUNT of its open corrections, and the
+  Worker hides it from every baseline device. A promotion candidate quotes a "repo node principle", never an
+  operator statement.
+- `supersedes` (it deletes a rule) is the operator's local CLI only; the MCP `save` refuses it.
+- The session start's X (mistakes) holds only the global wiki's issues and those the engine's own hook filed;
+  its heading says P are the operator's standing principles and X, M recorded context. P holds up to 130.
+- A repo skill whose name a global skill holds is not mirrored and never served in its place.
+- The personal-data gate also covers `git_ref`, `claimed_by` and link targets on a sync put, and an edit
+  screens the merged record. A rule is one rule on the Worker too (REST and MCP create and edit).
+- `shapa harness uninstall` never reverts the operator's edits made before a reinstall.
+- `hookcap` only guarantees the cap (it trims the mempm, never cuts a string) and the hook always exits 0.
+
+### Added
+
+- `shapa learn import FILE --wiki KEY [--scope] [--dry-run] [--json]` (local CLI only, no MCP tool): the
+  operator curates one wiki's principles, mistakes and memories from a JSON file in one transaction. It
+  validates first (one rule per principle and mistake, the personal-data gate, no id both deleted and kept,
+  at most 60 principles, never a ledger item), deletes the listed rows, writes dated principle rules,
+  mistakes (issues the session start's X list shows) and memories, is idempotent, and on the global wiki
+  stages principles then memories at stage 0 only while the 6,000-character baseline holds.
+- One rule per object: a principle (and a rule written by `shapa save` or the MCP `save`) is one
+  imperative sentence, refused on write when it holds a list or several command sentences.
+  `shapa learn split R<n> --into TEXT --into TEXT` files each part as its own principle.
+- Dated, newest-wins principles at three scopes (global, project, subproject). `learn apply
+  --supersedes R<n>`, `shapa save --supersedes R<n>` and the MCP `save` field `supersedes` delete
+  the older rule once the newer is written, keeping its text in the evidence; a new rule near an
+  existing one exits 2 with the candidates unless it supersedes or claims `--distinct-from`.
+  `shapa learn principles [--scope] [--project]` lists `id, date, scope, text`.
+- `shapa node sync` (run by `shapa commit --hook`): each repo wiki reflects one JSON node into the
+  global wiki; a principle two repos share is filed there as a pending `soft`, `promote` candidate
+  for `shapa learn`. New reserved learning tag: `promote`.
+
+### Changed
+
+- The session start text is lean and carries one compact JSON, the mempm:
+  `{"P":[[id,date,text]],"X":[...],"M":[...]}` with principles, mistakes (issues
+  that still carry a lesson) and stage-0 memories, each a masked one-line summary
+  with an id `get` opens. Tasks, notes, projects, topics and skills left the text;
+  one line names the tool that fetches each. A fixed SKILL GATE line tells the
+  agent to call `skill_match` before any build, research, reading or implementation
+  task. The local `shapa bootstrap` and the hosted `session_start` compose the same
+  parts, and `tests/test_parity.py` holds the keys, the gate sentence and the entry
+  order equal. `--full` still prints the old overview.
+- A baseline (OAuth) device reads the global wiki's live mistakes (an issue takes
+  no stage tag; dismissed, soft and learned ones, and every repo wiki's, stay
+  hidden). Reads only; baseline writes are unchanged.
+
+### Removed
+
+- Agent-facing REST session text: `GET /v1/instructions`, its openapi entry, the
+  `rest` client kind, the REST write-back text and `shapa remote instructions`.
+  Agents reach shapa through authenticated MCP only; the REST routes `shapa remote
+  sync` uses stay.
+
 ## [0.10.0] - 2026-11-13
 
 ### Added
@@ -87,7 +161,7 @@ This project follows [Semantic Versioning](https://semver.org/).
 - The central brain: the global wiki as the operator's one brain, on the
   device and on the hosted store. A stage is a tag (`stage:N`, one digit, on a
   rule, memory or skill version): `shapa stage set|clear|list|pending`, with
-  `stage:0` the baseline printed in full at every session start within 6,000
+  `stage:0` the baseline served at every session start as one-line summaries within 6,000
   characters; only the local CLI sets it, and an agent that asks leaves
   `stage-proposed:0`. Tasks stand alone in the global wiki (`shapa tasks`,
   `shapa save --type human_task|agent_task`); ideas and decisions are memories

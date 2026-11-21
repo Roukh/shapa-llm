@@ -1,7 +1,7 @@
 import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { OWNER, env, freshKey, get, mintAll, put, rec, row, send, sync, wiki } from "./helpers.js";
-import { rpc, tool } from "./mcp-helpers.js";
+import { mempmIn, rpc, sessionText, tool } from "./mcp-helpers.js";
 import { oauthLogin } from "./oauth-helpers.js";
 
 const create = (token: string, w: string, body: Record<string, unknown>) => send("POST", rec(w), { token, body });
@@ -22,6 +22,8 @@ interface World {
 
 /** The operator writes everything; two callers of baseline reach then read and write it. */
 let seeds = 0;
+let ids = 7000;
+const uniq = (): number => ++ids;
 async function seed(): Promise<World> {
   const k = ++seeds;
   const op = (await mintAll("operator")).token;
@@ -35,7 +37,7 @@ async function seed(): Promise<World> {
   await hide(await create(op, w, { type: "rule", summary: `${HIDDEN}-STAGE1`, tags: ["stage:1", "shared-tag"] }));
   await hide(await create(op, w, { type: "memory", summary: `${HIDDEN}-MEMORY`, tags: ["hidden-only-tag", "shared-tag", `project:${project}`] }));
   await hide(await create(op, w, { type: "issue", summary: `${HIDDEN}-ISSUE`, tags: ["hidden-only-tag"] }));
-  await sync(op, w, { ops: [put(skillDoc("D80", "hidden-skill", 1, "active", ["stage:1", "hidden-only-tag"], `${HIDDEN}-SKILLBODY`))] });
+  await sync(op, w, { ops: [put(skillDoc("D80", "hidden-skill", 1, "pending", ["stage:1", "hidden-only-tag"], `${HIDDEN}-SKILLBODY`))] });
   hiddenIds.push("D80");
   const stage0 = await sync(op, "global", { ops: [put(row(`R${500 + k}`, "VISIBLE-S0-RULE", { tags: ["stage:0", "shared-tag", `project:${project}`] })), put(skillDoc(`D${800 + k}`, "visible-skill", 1, "active", ["stage:0"], "VISIBLE-SKILLBODY"))] });
   expect(stage0.body.results.map((r: { status: string }) => r.status)).toEqual(["accepted", "accepted"]);
@@ -117,6 +119,50 @@ describe("reach: what a baseline device reads", () => {
     }
   });
 
+  it("reads stage-0 principles, mistakes, memories, tasks, notes and skills through the MCP tools, and nothing above stage 0", async () => {
+    const s = await seed();
+    const k = freshKey();
+    const id = (letter: string) => `${letter}${uniq()}`;
+    const [p0, p1, i0, i1, m0, m1] = [id("R"), id("R"), id("I"), id("I"), id("M"), id("M")];
+    const done = await sync(s.op, "global", { ops: [
+      put(row(p0, `S0-PRINCIPLE-${k}`, { tags: ["principle", "stage:0"] })), put(row(p1, `S1-PRINCIPLE-${k}`, { tags: ["principle", "stage:1"] })),
+      // an issue takes no stage tag: a global one is read while it still carries a lesson, and not once it is dismissed
+      put(row(i0, `S0-MISTAKE-${k}`)), put(row(i1, `S1-MISTAKE-${k}`, { tags: ["dismissed"] })),
+      put(row(m0, `S0-MEMORY-${k}`, { tags: ["stage:0"] })), put(row(m1, `S1-MEMORY-${k}`, { tags: ["stage:1"] })),
+    ] });
+    expect(done.body.results.map((r: { status: string }) => r.status)).toEqual(Array(6).fill("accepted"));
+    for (const c of await callers()) {
+      // the start text carries stage 0 of each, whatever stage it asks for
+      const got = mempmIn(await sessionText(c.token, { wiki: s.w, stage: 9 }));
+      expect(got.P.map((e) => e[2]), c.name).toContain(`S0-PRINCIPLE-${k}`);
+      expect(got.X.map((e) => e[2]), c.name).toContain(`S0-MISTAKE-${k}`);
+      expect(got.M.map((e) => e[2]), c.name).toContain(`S0-MEMORY-${k}`);
+      expect(JSON.stringify(got), c.name).not.toContain(`S1-`);
+      // search finds them, get opens them
+      for (const [word, ident] of [["PRINCIPLE", p0], ["MISTAKE", i0], ["MEMORY", m0]] as const) {
+        const found = await tool(c.token, "search", { query: `S0-${word}-${k}`, k: 20 });
+        expect(found.text, `${c.name} search ${word}`).toContain(`global/${ident} `);
+        const opened = await tool(c.token, "get", { id: ident, wiki: "global" });
+        expect(opened.isError, `${c.name} get ${ident}`).toBe(false);
+        expect(opened.text).toContain(`S0-${word}-${k}`);
+      }
+      // nothing above stage 0, found or opened
+      for (const [word, ident] of [["PRINCIPLE", p1], ["MISTAKE", i1], ["MEMORY", m1]] as const) {
+        const found = (await tool(c.token, "search", { query: `S1-${word}-${k}`, k: 50 })).text; // words are OR: the stage-0 twin may come back, the hidden one never
+        expect(found, `${c.name} search S1 ${word}`).not.toContain(`S1-${word}-${k}`);
+        expect(found, `${c.name} search S1 ${word}`).not.toContain(`global/${ident} `);
+        expect((await tool(c.token, "get", { id: ident, wiki: "global" })).text, `${c.name} get ${ident}`).toBe(`No record ${ident}.`);
+      }
+      // tasks, notes, skills
+      expect((await tool(c.token, "tasks", {})).text, c.name).toContain("VISIBLE-GLOBAL-TASK");
+      expect((await tool(c.token, "search", { query: "VISIBLE-NOTE", wiki: s.w })).text, c.name).toContain(s.visible.note);
+      expect((await tool(c.token, "get", { id: s.visible.note, wiki: s.w })).text, c.name).toContain("VISIBLE-NOTE");
+      expect(JSON.parse((await tool(c.token, "skills", { wiki: "global" })).text).map((x: { name: string }) => x.name), c.name).toContain("visible-skill");
+      expect(JSON.parse((await tool(c.token, "skill", { name: "visible-skill", wiki: "global" })).text).body, c.name).toContain("VISIBLE-SKILLBODY");
+      expect((await tool(c.token, "skill", { name: "hidden-skill", wiki: s.w })).isError, c.name).toBe(true);
+    }
+  });
+
   it("answers about a hidden record exactly as about one that does not exist", async () => {
     const s = await seed();
     for (const c of await callers()) {
@@ -168,20 +214,21 @@ describe("reach: what a baseline device reads", () => {
   it("serves only the baseline in the session text, whatever stage it asks for", async () => {
     const s = await seed();
     for (const c of await callers()) {
-      const text = (await get(`/v1/instructions?client=mcp&wiki=${s.w}&stage=9&full=1`, c.token)).body.text as string;
+      const text = await sessionText(c.token, { wiki: s.w, stage: 9, full: true });
       expect(text, c.name).not.toContain(HIDDEN);
       expect(text).not.toContain("hidden-only-tag");
       expect(text).not.toContain("hidden-skill");
-      expect(text).toContain(`${s.visible.rule} VISIBLE-S0-RULE`);
-      expect(text).toContain("visible-skill - visible-skill description");
+      expect(mempmIn(text).P.map((e) => `${e[0]} ${e[2]}`)).toContain(`${s.visible.rule} VISIBLE-S0-RULE`);
+      expect(text).not.toContain("visible-skill"); // a skill is read with the `skills` and `skill` tools, never printed
       expect(text).toContain("VISIBLE-NORTH");
-      expect(text).toContain("VISIBLE-JOB");
+      expect(text).toContain(`${s.visible.feature} VISIBLE-FEATURE`);
+      expect(text).not.toContain("VISIBLE-JOB"); // a fire is one line
       const viaMcp = (await tool(c.token, "session_start", { wiki: s.w, stage: 9, full: true })).text;
       expect(viaMcp).not.toContain(HIDDEN);
       expect(viaMcp).not.toContain("hidden-skill");
     }
     // the operator's own device sees them with the stage raised
-    const full = (await get(`/v1/instructions?client=mcp&wiki=${s.w}&stage=9&full=1`, s.op)).body.text as string;
+    const full = (await sessionText(s.op, { wiki: s.w, stage: 9, full: true }));
     expect(full).toContain(`${HIDDEN}-RULE`);
   });
 
@@ -193,7 +240,6 @@ describe("reach: what a baseline device reads", () => {
     const urls: Record<string, string[]> = {
       "/v1/whoami": ["/v1/whoami"],
       "/v1/wikis": ["/v1/wikis"],
-      "/v1/instructions": ["/v1/instructions?stage=9&full=1", `/v1/instructions?wiki=${w}&stage=9&full=1&client=rest`],
       "/v1/wikis/{wiki}/focus": [`/v1/wikis/${w}/focus`],
       "/v1/wikis/{wiki}/skills": [`/v1/wikis/${w}/skills`, "/v1/wikis/global/skills"],
       "/v1/wikis/{wiki}/skills/{name}": [`/v1/wikis/${w}/skills/hidden-skill?version=1`, `/v1/wikis/${w}/skills/hidden-skill`, "/v1/wikis/global/skills/visible-skill"],
@@ -223,9 +269,10 @@ describe("reach: what a baseline device reads", () => {
       const listed = ((await rpc(c.token, "tools/list")).json.result.tools as { name: string; annotations?: { readOnlyHint?: boolean } }[]);
       const reads = listed.filter((t) => t.annotations?.readOnlyHint).map((t) => t.name).sort();
       const calls: Record<string, Record<string, unknown>[]> = {
-        session_start: [{ stage: 9, full: true, wiki: w }, { client: "rest", stage: 9 }],
+        session_start: [{ stage: 9, full: true, wiki: w }, { stage: 9 }],
         focus: [{ wiki: w }, { wiki: "global" }],
         skills: [{ wiki: w }, { wiki: "global" }],
+        skill_match: [{ text: "hidden skill description", wiki: w }, { text: HIDDEN }, { text: "visible skill description" }],
         skill: [{ name: "hidden-skill", wiki: w, version: 1 }, { name: "hidden-skill", wiki: w }, { name: "visible-skill", wiki: "global" }],
         search: [{ query: HIDDEN }, { query: "hidden", k: 50 }, { query: "", tags: ["hidden-only-tag"] }, { query: "", tags: ["shared-tag"], k: 50 }],
         get: [{ id: "R1", wiki: w }, { id: "D80" }, { id: "M1" }],
@@ -373,7 +420,7 @@ describe("reach: what a baseline device writes", () => {
       // a repo wiki's note of that name is no printed note
       expect((await create(t, s.w, note(`session-instructions.md`))).status).toBeLessThan(500);
     }
-    const text = (await get("/v1/instructions?client=mcp", s.op)).body.text as string;
+    const text = (await sessionText(s.op));
     expect(text).toContain("OPERATOR-INSTRUCTIONS");
     expect(text).toContain("OPERATOR-STYLE");
     expect(text).not.toContain("planted");
@@ -476,16 +523,12 @@ describe("reach: what a baseline device writes", () => {
 
   it("shows a baseline device only the write-back it may use, and a full device everything", async () => {
     const s = await seed();
-    const mcpFull = (await get("/v1/instructions?client=mcp", s.op)).body.text as string;
-    expect(mcpFull).toContain("- rule:");
-    expect(mcpFull).toContain("focus_set");
+    const full = (await sessionText(s.op)).split("\n").at(-1)!;
+    expect(full).toContain("type memory|rule|issue|decision|idea|human_task|agent_task|document|note");
     for (const c of await callers()) {
-      for (const client of ["mcp", "rest"]) {
-        const t = (await get(`/v1/instructions?client=${client}`, c.token)).body.text as string;
-        const block = t.slice(t.indexOf("HOW TO WRITE BACK"));
-        for (const needle of ["decision", "idea", "human_task", "agent_task", "document", "note"]) expect(block, `${c.name} ${client} ${needle}`).toContain(needle);
-        for (const gone of ["- rule:", "- memory:", "- issue:", "focus_set", "PUT it {\"northstar\"", "rule (a standing", "issue (a mistake", "feature | job"]) expect(block, `${c.name} ${client} ${gone}`).not.toContain(gone);
-      }
+      const block = (await sessionText(c.token)).split("\n").at(-1)!;
+      expect(block, c.name).toContain("type decision|idea|human_task|agent_task|document|note");
+      for (const gone of ["memory|rule|issue", "rule", "issue", "focus_set", "feature", "/v1/"]) expect(block, `${c.name} ${gone}`).not.toContain(gone);
     }
   });
 });

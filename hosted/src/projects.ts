@@ -4,7 +4,7 @@
 
 import { fail } from "./errors.js";
 import { focusRecord } from "./focus.js";
-import { DOC_BODY_MAX, FOCUS_TAG, LIMITS, PROJECT_PREFIX, SKILL_TAG, cleanProject, projectOf, type Data, type Normalized } from "./records.js";
+import { DOC_BODY_MAX, FOCUS_TAG, LIMITS, NODE_TAG, PROJECT_PREFIX, SKILL_TAG, cleanProject, isNodeAlias, projectOf, type Data, type Normalized } from "./records.js";
 import type { Repo, Stored } from "./repo.js";
 import { NAME_RE } from "./skills.js";
 import { projectKeyOf } from "./tags.js";
@@ -116,10 +116,13 @@ export function syncGate(repo: Repo, wiki: string, n: Normalized, target: Stored
   // skill version), carry both, or change the focus record's tags.
   if (n.tags.includes(FOCUS_TAG) && n.tags.includes(SKILL_TAG)) return "a record is the focus record or a skill version, not both";
   if (target && !target.deleted && target.kind === "D") {
-    const reserved = (ts: readonly string[]) => ts.filter((t) => t === FOCUS_TAG || t === SKILL_TAG).sort().join(",");
-    if (reserved(n.tags) !== reserved(target.tags)) return "the focus and skill tags cannot be added to or removed from a stored record";
+    const reserved = (ts: readonly string[]) => ts.filter((t) => t === FOCUS_TAG || t === SKILL_TAG || t === NODE_TAG).sort().join(",");
+    if (reserved(n.tags) !== reserved(target.tags)) return "the focus, skill and shapa-node tags cannot be added to or removed from a stored record";
     if (target.tags.includes(FOCUS_TAG) && [...n.tags].sort().join("\n") !== [...target.tags].sort().join("\n")) return "the focus record's tags are fixed";
   }
+  // A repo node comes from the operator's own device (a baseline device never syncs): alias prefix, tag and source go together.
+  if (n.tags.includes(NODE_TAG) !== isNodeAlias(n.alias)) return "a repo node carries both the alias prefix node: and the shapa-node tag";
+  if (n.tags.includes(NODE_TAG) && n.data["source"] !== "node") return "a repo node's source is node";
   if (n.tags.includes(SKILL_TAG)) {
     const t = (p: string) => n.tags.find((x) => x.startsWith(p))?.slice(p.length) ?? "";
     if (!NAME_RE.test(t("skill:")) || !/^\d{1,6}$/.test(t("v:")) || !["active", "pending", "previous"].includes(t("status:"))) {

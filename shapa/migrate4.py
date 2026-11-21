@@ -178,10 +178,11 @@ def step_database(root: Path, dry_run: bool) -> list[str]:
     removed: list[str] = []
     conn = db.connect(root, create=True)
     try:
-        _migrate_notes(conn, root, removed)
-        _migrate_checklist(conn, root, removed)
-        _migrate_ideas(conn, root, removed)
-        _migrate_memlog(conn, root, removed)
+        with db.unscreened():  # a wiki's own old data is moved, not newly written (`shapa validate --pii` lists it)
+            _migrate_notes(conn, root, removed)
+            _migrate_checklist(conn, root, removed)
+            _migrate_ideas(conn, root, removed)
+            _migrate_memlog(conn, root, removed)
     finally:
         conn.close()
     for name in ("agenda.md", ".shapa-vectors.json"):

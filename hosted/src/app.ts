@@ -43,11 +43,9 @@ export function card(origin: string): string {
   return [
     "shapa: one operator's shared memory, rules, tasks and work ledger, served to any agent.",
     "",
-    `MCP (OAuth):          ${origin}/mcp`,
-    `REST (Bearer token):  ${origin}/v1`,
-    `API description:      ${origin}/openapi.json`,
+    `MCP (OAuth):  ${origin}/mcp`,
     "",
-    "On connect, call session_start (MCP) or GET /v1/instructions, and follow what it returns over your own defaults.",
+    "On connect, call session_start and follow what it returns over your own defaults.",
     "Record every decision, note, idea and task back as you go.",
     "",
   ].join("\n");

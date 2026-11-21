@@ -30,12 +30,18 @@
 # Skill: installs the shapa-upgrade skill for every harness in scope, then
 # finishes with `shapa upgrade --all --check` - which wikis need that skill.
 #
+# System prompt: `shapa harness install` writes shapa's own prompt (shared core +
+# a short adapter per harness) to ~/.shapa/prompts/ and wires it - added to the
+# harness's own prompt by default, --prompt-mode replace swaps it. Backups,
+# refusals and the exact uninstall are the CLI's (see `shapa harness --help`).
+#
 # Obsidian: scaffolds the memory dir as a vault and registers it if installed.
 #
 # Usage:
 #   ./install.sh                 # install (memory at ~/.shapa/memory)
 #   ./install.sh --memory DIR    # use a specific memory directory
-#   ./install.sh --harness claude|codex|opencode|all   # default: claude
+#   ./install.sh --harness claude|codex|opencode|gemini|all   # default: claude
+#   ./install.sh --prompt-mode append|replace|default|skip    # default: append
 #   ./install.sh --mcp | --no-mcp                      # wire/skip MCP registration
 #                                 # (unspecified: prompts on a TTY, else skips
 #                                 # and prints the exact command; --dry-run
@@ -49,6 +55,7 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 SETTINGS=""; DRY_RUN=0; UNINSTALL=0; NO_OBSIDIAN=0; NO_EMBEDDINGS=0; NO_AUTO_COMMIT=0; MEMORY=""
 HARNESS="claude"; MCP=""   # MCP: "" = auto (TTY prompt / no-TTY skip), "1"/"0" = pinned
+PROMPT_MODE="append"; SETTINGS_GIVEN=0   # PROMPT_MODE: append|replace|default|skip (see run_prompt)
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run)        DRY_RUN=1 ;;
@@ -57,19 +64,25 @@ while [ $# -gt 0 ]; do
     --no-embeddings)  NO_EMBEDDINGS=1 ;;
     --no-auto-commit) NO_AUTO_COMMIT=1 ;;
     --memory)         MEMORY="$2"; shift ;;
-    --settings)       SETTINGS="$2"; shift ;;
+    --settings)       SETTINGS="$2"; SETTINGS_GIVEN=1; shift ;;
     --harness)        HARNESS="$2"; shift ;;
+    --prompt-mode)    PROMPT_MODE="$2"; shift ;;
+    --no-prompt)      PROMPT_MODE="skip" ;;
     --mcp)            MCP=1 ;;
     --no-mcp)         MCP=0 ;;
-    -h|--help)        sed -n '2,38p' "$0"; exit 0 ;;
+    -h|--help)        sed -n '2,50p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
   shift
 done
 
 case "$HARNESS" in
-  claude|codex|opencode|all) ;;
-  *) echo "unknown --harness value: '$HARNESS' (expected claude|codex|opencode|all)" >&2; exit 2 ;;
+  claude|codex|opencode|gemini|all) ;;
+  *) echo "unknown --harness value: '$HARNESS' (expected claude|codex|opencode|gemini|all)" >&2; exit 2 ;;
+esac
+case "$PROMPT_MODE" in
+  append|replace|default|skip) ;;
+  *) echo "unknown --prompt-mode value: '$PROMPT_MODE' (expected append|replace|default|skip)" >&2; exit 2 ;;
 esac
 # True when *harness* ($1) is the one selected, or "all" was: the single
 # predicate every hook/MCP block below gates on, so --harness routes
@@ -329,6 +342,27 @@ upgrade_check() {
   return 0
 }
 
+# shapa's own system prompt (one shared core plus a short adapter per harness),
+# written to ~/.shapa/prompts/ and wired by `shapa harness` - never edited here:
+# the CLI does the backups, the symlink and malformed-config refusals and the
+# exact uninstall. Default mode: append (added to the harness's own prompt);
+# --prompt-mode replace swaps it, default leaves the harness alone, skip does
+# nothing. A failure only warns: the hooks above are already wired.
+run_prompt() {  # $1 = install|uninstall
+  [ "$PROMPT_MODE" = "skip" ] && return 0
+  local target extra=() cmd=("${INV_ARGV[@]}" harness "$1")
+  case "$HARNESS" in
+    claude) target="claude-code" ;;
+    *)      target="$HARNESS" ;;
+  esac
+  [ "$1" = "install" ] && cmd+=(--mode "$PROMPT_MODE")
+  [ "$DRY_RUN" -eq 1 ] && cmd+=(--dry-run)
+  cmd+=(--harness "$target")
+  if [ "$SETTINGS_GIVEN" -eq 1 ]; then extra=(env "CLAUDE_CONFIG_DIR=$(dirname "$SETTINGS")"); fi
+  ${extra[@]+"${extra[@]}"} "${cmd[@]}" || echo "shapa: 'harness $1' reported a problem (see above) - hooks and MCP are unaffected." >&2
+  return 0
+}
+
 run_mcp() {  # $1 = add|remove - dispatches to every harness in scope
   harness_in_scope claude   && mcp_claude   "$1"
   harness_in_scope codex    && mcp_codex    "$1"
@@ -406,6 +440,7 @@ if [ "$UNINSTALL" -eq 1 ]; then
   fi
   [ "$MCP" -eq 1 ] && run_mcp remove
   run_skill remove
+  run_prompt uninstall
   exit 0
 fi
 
@@ -433,6 +468,7 @@ fi
 
 [ "$MCP" -eq 1 ] && run_mcp add
 run_skill add
+run_prompt install
 
 [ "$DRY_RUN" -eq 1 ] && { upgrade_check; exit 0; }
 if harness_in_scope claude; then

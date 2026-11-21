@@ -218,6 +218,18 @@ def _hook_summary(results: list[dict]) -> str | None:
     return None
 
 
+def _mirror_skills(cwd) -> None:
+    """The SessionStart catch-up (and SessionEnd) mirror of skill files into the wiki database: only a
+    library whose fingerprint changed, bounded in time, quiet, and it never raises
+    (:func:`shapa.skillmirror.auto`)."""
+    try:
+        from shapa import skillmirror
+
+        skillmirror.auto(cwd)
+    except Exception:
+        pass
+
+
 def _read_hook_stdin() -> dict:
     try:
         data = json.load(sys.stdin)
@@ -248,6 +260,10 @@ def main(argv: list[str] | None = None) -> None:
             data = _read_hook_stdin()
             cwd = data.get("cwd") or args.cwd
             label = _label(data.get("session_id"))
+            _mirror_skills(cwd)  # before the commit, so a mirrored skill rides in it
+            from shapa import node
+
+            node.sync_quietly(cwd)        # this repo's node reaches the global wiki before it is committed
             results = run_commit(cwd, label=label, dry_run=False, scrub_terms=args.scrub)
             summary = _hook_summary(results)
         except Exception:

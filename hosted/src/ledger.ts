@@ -11,11 +11,14 @@ import { type Device, needScope, needWiki, randomHex } from "./devices.js";
 import { fail } from "./errors.js";
 import { onFeatureClosed } from "./focus.js";
 import { BASELINE_EDIT_REFUSAL, gateStage, kindProblem, tagProblem } from "./gates.js";
+import { checkAtomicRule } from "./atomic.js";
+import { piiGate } from "./piigate.js";
+import { isStage0 } from "./pii.js";
 import { backlinkProject, projectLinks } from "./projectapi.js";
 import { documentTags, gateNewDocument, gateProjectNote, mergedBody, projectHolder, refusal } from "./projects.js";
-import { baselineKeepsAccess, baselineKeepsEngineTags, baselineKeepsRank, baselineMayCreate, baselineMayWrite, baselineWrites, denyBaseline, guardPrinted, isBaseline, ranksChanged, storedNames, withAccessMarker } from "./reach.js";
+import { baselineKeepsAccess, baselineKeepsEngineTags, baselineKeepsRank, baselineMayCreate, baselineMayWrite, baselineWrites, denyBaseline, guardNodeAlias, guardPrinted, isBaseline, ranksChanged, storedNames, withAccessMarker } from "./reach.js";
 import {
-  CLOSE_REASONS, Invalid, LEDGER_KINDS, PARENT_KIND, PROJECT_PREFIX, RESERVED_DOC_TAGS, FOCUS_TAG, SKILL_TAG, TYPE_NAMES, buildData, contentKey, isNoteId, nowIso, normTags, projectOf,
+  CLOSE_REASONS, Invalid, LEDGER_KINDS, NODE_TAG, PARENT_KIND, PROJECT_PREFIX, RESERVED_DOC_TAGS, FOCUS_TAG, SKILL_TAG, TYPE_NAMES, buildData, contentKey, isNoteId, nowIso, normTags, projectOf,
   type CreateIn, type CreateType, type Data, type Kind, type Normalized, type PatchIn, type RecordWire,
 } from "./records.js";
 import { Repo, stampAfter, toNormalized, toWire, type Stored } from "./repo.js";
@@ -106,6 +109,8 @@ export interface Created {
   created: boolean;
   /** Set when the server stored something other than what was asked (a stage:0 tag kept out of the baseline). */
   notice?: string;
+  /** Allowed hits of the personal-data gate (a public IP address, a postcode, a named relative): categories only, never the value. */
+  warnings?: string[];
 }
 
 export function createRecord(repo: Repo, d: Device, wiki: string, body: CreateIn): Created {
@@ -125,18 +130,22 @@ export function createRecord(repo: Repo, d: Device, wiki: string, body: CreateIn
   const bad = tagProblem({ kind, tags: meant, wikiKind });
   if (bad) fail("invalid", bad);
   let tags = normTags(meant);
-  if (kind === "D" && tags.some((t) => RESERVED_DOC_TAGS.includes(t))) fail("invalid", "the tags focus and skill are reserved for the focus record and skill versions");
+  if (kind === "D" && tags.some((t) => RESERVED_DOC_TAGS.includes(t))) fail("invalid", "the tags focus, skill and shapa-node are reserved for the focus record, skill versions and repo nodes");
   const wrongKind = kindProblem(wikiKind, kind, body.parent);
   if (wrongKind) fail("invalid", wrongKind);
   baselineMayWrite(d, kind, tags);
   baselineKeepsRank(d, [], tags);
   baselineKeepsEngineTags(d, [], tags, kind);
   const text = body.title ?? body.summary ?? "";
+  if (kind === "R") checkAtomicRule(text, body.body); // one rule per object (a sync put is never refused for it)
   if (body.parent !== undefined && !isLedger(kind)) fail("invalid", "only a job or task takes a parent");
   if (body.parent !== undefined && kind === "F") fail("invalid", "a feature has no parent");
   const gated = gateStage({ stored: null, next: tags, privileged: false, kind });
   if ("error" in gated) fail("forbidden", gated.error);
   tags = withAccessMarker(d, kind, gated.tags);
+  // Personal and sensitive data never enters a wiki through an app (and never stage 0): refused with the category named.
+  const warnings = piiGate([body.title, body.summary, body.body, body.alias, body.path, body.mime, body.project], tags);
+  const warn = (c: Created): Created => (warnings.length ? { ...c, warnings } : c);
 
   let id: string;
   let raw: Data;
@@ -157,6 +166,7 @@ export function createRecord(repo: Repo, d: Device, wiki: string, body: CreateIn
   }
   const built = wrap(() => buildData(kind, id, raw));
   guardPrinted(d, wiki, [body.path, body.alias, built.alias]);
+  guardNodeAlias([body.alias, built.alias]);
 
   if (kind === "D") {
     // The lean gate: a project keeps one document. Refuse the second (409 naming the first) or merge into it.
@@ -164,20 +174,20 @@ export function createRecord(repo: Repo, d: Device, wiki: string, body: CreateIn
     if (held) {
       const merged = mergedBody(held.data, String(built.data["title"]), String(built.data["body"]));
       const n = { ...norm(held), data: { ...held.data, body: merged }, updated: stamp(held.updated) };
-      return { record: toWire(repo.save(wiki, n, d.name, held)), created: false };
+      return warn({ record: toWire(repo.save(wiki, n, d.name, held)), created: false });
     }
   }
   if (kind === "M" || kind === "R" || kind === "I") {
     // Identical text is stored once. The holder is found through the caller's view, and merged into only as far as
     // the caller could edit it directly.
     const same = repo.identicalRow(wiki, kind, String(built.data["summary"]), String(built.data["body"]));
-    if (same) return saveIntoHolder(repo, d, wiki, same, tags);
+    if (same) return warn(saveIntoHolder(repo, d, wiki, same, tags));
   }
   const owner = tags.find((t) => t in OWNER_TAGS);
   if (kind === "T" && owner && body.parent === undefined) {
     // Identical open text is stored once: the same task is the same task.
     const same = repo.identicalOpenTask(wiki, owner, String(built.data["title"]), String(built.data["body"]));
-    if (same) return saveIntoHolder(repo, d, wiki, same, tags);
+    if (same) return warn(saveIntoHolder(repo, d, wiki, same, tags));
   }
   let alias = built.alias;
   let data = built.data;
@@ -206,7 +216,7 @@ export function createRecord(repo: Repo, d: Device, wiki: string, body: CreateIn
   // A lesson is filed into a skill only from the operator's own writers: never from a baseline device.
   if ((kind === "M" || kind === "R" || kind === "I") && !isBaseline(d)) lessonFromRow(repo.raw, wiki, saved, d.name);
   if (kind === "D" && projectOf(tags)) backlinkProject(repo, wiki, saved, d.name);
-  return { record: toWire(saved), created: true, ...(gated.notice ? { notice: gated.notice } : {}) };
+  return warn({ record: toWire(saved), created: true, ...(gated.notice ? { notice: gated.notice } : {}) });
 }
 
 // --- read -----------------------------------------------------------------------------------
@@ -232,6 +242,7 @@ export function listRecords(
 export interface Patched {
   record: RecordWire;
   notice?: string;
+  warnings?: string[];
 }
 
 export function patchRecord(repo: Repo, d: Device, wiki: string, ref: string, p: PatchIn): Patched {
@@ -248,6 +259,9 @@ export function patchRecord(repo: Repo, d: Device, wiki: string, ref: string, p:
   if (hasBaseline(rec.tags) && k !== "N") fail("forbidden", BASELINE_EDIT_REFUSAL); // a note's stage:0 is access, not the baseline
   if (p.base_rev !== undefined && p.base_rev !== rec.rev) {
     fail("conflict", `${rec.id} is at rev ${rec.rev}, not ${p.base_rev}`, { current: toWire(rec) });
+  }
+  if (k === "D" && rec.tags.includes(NODE_TAG)) {
+    fail("invalid", `${rec.id} is a repo node: the operator's sync writes it, never the API or MCP`);
   }
   if (k === "D" && rec.tags.includes(SKILL_TAG)) {
     fail("invalid", `${rec.id} is a skill version: it is activated, edited or retired with \`shapa skill\` on the operator's machine, never through the API or MCP`);
@@ -266,7 +280,7 @@ export function patchRecord(repo: Repo, d: Device, wiki: string, ref: string, p:
       // The focus and skill tags make a record the engine's: no edit adds or removes one (a focus
       // record retagged `skill` would be an active skill version), and the focus record's tags are fixed.
       const reserved = (ts: readonly string[]) => ts.filter((t) => RESERVED_DOC_TAGS.includes(t)).sort().join(",");
-      if (reserved(nextTags) !== reserved(rec.tags)) fail("invalid", "the focus and skill tags are reserved for the focus record and skill versions");
+      if (reserved(nextTags) !== reserved(rec.tags)) fail("invalid", "the focus, skill and shapa-node tags are reserved");
       if (rec.tags.includes(FOCUS_TAG) && nextTags.join("\n") !== [...rec.tags].sort().join("\n")) fail("invalid", "the focus record's tags are fixed");
     }
     const gated = gateStage({ stored: rec.tags, next: nextTags, privileged: false, kind: k });
@@ -274,6 +288,22 @@ export function patchRecord(repo: Repo, d: Device, wiki: string, ref: string, p:
     nextTags = gated.tags;
     notice = gated.notice;
   }
+  // The personal-data gate over the MERGED record: every text field as it will be stored, the ones this edit leaves alone
+  // included (a value spread over an old field and a new one, or text already held that a new stage tag now covers).
+  // A tags-only edit that stays off stage 0 writes no text, so the stored text is not screened again.
+  const retitled = p.summary !== undefined || p.title !== undefined;
+  if (k === "R" && (retitled || p.body !== undefined)) {
+    checkAtomicRule(retitled ? (p.summary ?? p.title) : rec.data["summary"], p.body !== undefined ? p.body : rec.data["body"]);
+  }
+  const kept = (f: string, patched: unknown) => (patched !== undefined ? patched : rec.data[f]);
+  const writesText = retitled || [p.body, p.alias, p.git_ref, p.mime].some((v) => v !== undefined) || (isStage0(nextTags) && !isStage0(rec.tags));
+  const warnings = piiGate(
+    writesText ? [
+      retitled ? p.summary : rec.data["summary"], retitled ? p.title : rec.data["title"], kept("body", p.body), kept("alias", p.alias),
+      kept("git_ref", p.git_ref), kept("mime", p.mime), rec.data["source"], rec.data["session"], rec.data["claimed_by"],
+    ] : [],
+    p.tags === undefined ? [] : nextTags,
+  );
   const data: Data = { ...rec.data };
   const only = (field: string, ok: boolean) => {
     if (!ok) fail("invalid", `${field} does not apply to a ${TYPE_NAMES[k]}`);
@@ -296,6 +326,7 @@ export function patchRecord(repo: Repo, d: Device, wiki: string, ref: string, p:
   }
   let built = wrap(() => buildData(k, rec.id, data));
   guardPrinted(d, wiki, [built.alias]);
+  guardNodeAlias([p.alias, built.alias]);
   if (k !== "N" && built.alias && built.alias !== rec.alias) {
     // A baseline device whose alias is taken keeps the alias it had (a refusal would tell it the alias exists).
     if (!claimAlias(repo, d, wiki, built.alias, rec.id)) built = wrap(() => buildData(k, rec.id, { ...data, alias: rec.alias || null }));
@@ -306,12 +337,13 @@ export function patchRecord(repo: Repo, d: Device, wiki: string, ref: string, p:
     tags: nextTags,
   };
   if (contentKey({ ...next, updated: rec.updated }) === contentKey(norm(rec)) && alias === rec.alias) return { record: toWire(rec) };
+  const done = (r: Patched): Patched => (warnings.length ? { ...r, warnings } : r);
   if (k === "D") {
     // The lean gate also covers a retag: a document may not move into a project another one holds,
     // and the focus and skill tags are the engine's, not a way around the gate.
     const was = projectOf(rec.tags);
     const now = projectOf(next.tags);
-    if ((was === null) !== (now === null)) fail("invalid", "the focus and skill tags are reserved for the focus record and skill versions");
+    if ((was === null) !== (now === null)) fail("invalid", "the focus, skill and shapa-node tags are reserved");
     if (now !== null && now !== was) {
       const held = projectHolder(repo, wiki, now, rec.uid);
       if (held) fail("conflict", refusal(held, now), { existing: held.id });
@@ -327,7 +359,7 @@ export function patchRecord(repo: Repo, d: Device, wiki: string, ref: string, p:
   const saved = repo.save(wiki, next, d.name, rec);
   if ((k === "M" || k === "R" || k === "I") && !isBaseline(d)) lessonFromRow(repo.raw, wiki, saved, d.name);
   if (k === "D" && p.tags !== undefined && projectOf(saved.tags) && projectOf(saved.tags) !== projectOf(rec.tags)) backlinkProject(repo, wiki, saved, d.name);
-  return { record: toWire(saved), ...(notice ? { notice } : {}) };
+  return done({ record: toWire(saved), ...(notice ? { notice } : {}) });
 }
 
 // --- ledger moves ---------------------------------------------------------------------------
@@ -368,6 +400,7 @@ export function close(
   if (!(CLOSE_REASONS as readonly string[]).includes(reason)) fail("invalid", `reason must be one of ${CLOSE_REASONS.join(", ")}`);
   const rec = ledgerItem(repo, d, wiki, ref);
   if (rec.data["status"] === "closed") return { record: toWire(rec), closed: [] };
+  piiGate([gitRef]); // the one free-text field a close can write
   const ts = nowIso();
   const patch: Data = { status: "closed", closed_reason: reason, closed: ts };
   if (gitRef) patch["git_ref"] = gitRef;

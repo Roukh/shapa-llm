@@ -108,13 +108,16 @@ describe("REST: create", () => {
     expect((await get(rec(w, "/pref"), token)).body.id).toBe("M1");
   });
 
-  it("masks secrets in every text field", async () => {
+  it("refuses a secret in any text field instead of storing it masked (the gate runs before the masker)", async () => {
     const { token, w } = await setup();
     const key = ["sk-an", "t-api03-", "A1b2C3d4E5f6G7h8I9j0"].join("");
-    const r = await create(token, w, { type: "memory", summary: `use ${key} now`, body: `Bearer abcdefghij.klmnop` });
-    expect(r.body.data.summary).toBe("use [REDACTED] now");
-    expect(r.body.data.body).toBe("Bearer [REDACTED]");
-    expect(JSON.stringify((await get(rec(w, "/M1"), token)).body)).not.toContain("A1b2C3d4");
+    for (const body of [{ summary: `use ${key} now`, body: "x" }, { summary: "x", body: "Bearer abcdefghij.klmnop" }]) {
+      const r = await create(token, w, { type: "memory", ...body });
+      expect(r.status).toBe(400);
+      expect(r.body.error.message).toContain("a secret or credential");
+      expect(JSON.stringify(r.body)).not.toContain("A1b2C3d4");
+    }
+    expect((await get(rec(w, "/M1"), token)).status).toBe(404);
   });
 
   it("validates input", async () => {

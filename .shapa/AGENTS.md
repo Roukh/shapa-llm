@@ -105,14 +105,21 @@ of a new row: [[placement]].
   `shapa tasks` lists the operator's open `human_task` items (`--all` for
   every wiki); open text identical to a stored task is stored once.
 - Stages: the tag `stage:N` (one digit, one per record) on a rule, memory or
-  skill version. `stage:0` is the baseline, printed in full at every session
-  start within 6,000 characters. Only `shapa stage set|clear|list|pending` at
+  skill version. `stage:0` is the baseline, served at every session start as
+  one-line summaries within 6,000 characters. Only `shapa stage set|clear|list|pending` at
   the terminal sets it; an agent that asks for `stage:0` leaves a
   `stage-proposed:0` tag, and the operator reviews it with `shapa stage
   pending`. `shapa bootstrap --stage N` prints stages up to N.
 - A skill a repo needs everywhere moves to the global wiki with
   `shapa skill uproot NAME` (run in the repo); `shapa skill list` names where
   each skill lives and flags a repo skill that shadows a global one.
+- Skill files are the source of truth. A repo's own skills are files at
+  `<wiki>/skills/<name>/SKILL.md`, tracked in git (never notes); the global
+  library is a `skills/` folder beside the global wiki. `shapa skill mirror`
+  (run by `shapa upgrade` and the session hooks when a file changed) copies
+  them into the wiki database as versioned skills, so every device can read
+  them. Edit the file, never the stored version. `shapa skill match "TASK"`
+  names the (at most 6) skills that fit a task.
 - Stage 0 belongs to the global wiki: a repo wiki takes stages 1-9 only.
 - Tags are the relations: `shapa tags` lists them with counts,
   `shapa fetch --tag NAME` (MCP `search` with `tags`) returns what carries a

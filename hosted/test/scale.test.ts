@@ -1,7 +1,7 @@
 import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { OWNER, TS, env, get, mintAll, put, rec, row, send, sync, uidOf, wiki } from "./helpers.js";
-import { tool } from "./mcp-helpers.js";
+import { mempmIn, sessionText } from "./mcp-helpers.js";
 
 // "Same speed or faster as the data grows": the read paths an agent uses at session start and while
 // it works are measured at 1,000 and at 10,000 records (the same store, grown by 9,000 records of mixed
@@ -113,7 +113,7 @@ describe("scale: reads stay flat as the data grows", () => {
 
     // Each read as the operator's full device and as a baseline device (a different path: the reach filter).
     const reads = (t: string): Record<string, () => Promise<unknown>> => ({
-      "session start": () => get("/v1/instructions?client=mcp", t),
+      "session start": () => sessionText(t),
       "tag index": () => get("/v1/tags?limit=200", t),
       "project show": () => get("/v1/projects/scale-7", t),
       "related": () => get(rec("global", "/T6/related"), t),
@@ -124,7 +124,6 @@ describe("scale: reads stay flat as the data grows", () => {
       "list by tag": () => get(rec("global", "?tag=topic-5&limit=20"), t),
       // a tag fewer records hold than a page: without an index the listing reads every record to find them
       "list by rare tag": () => get(rec("global", "?tag=scale-rare&limit=20"), t),
-      "mcp session_start": () => tool(t, "session_start", {}),
     });
     const ops: Record<string, () => Promise<unknown>> = {};
     for (const [who, t] of [["full", token], ["baseline", baseline]] as const) {
@@ -150,9 +149,10 @@ describe("scale: reads stay flat as the data grows", () => {
       expect(v.large, `${name}: ${v.small.toFixed(1)} -> ${v.large.toFixed(1)} ms`).toBeLessThanOrEqual(limitOf(name, v.small));
     }
     // the answers are still right at the larger size
-    const text = (await get("/v1/instructions?client=mcp", token)).body.text as string;
-    expect(text).toContain("R9000 scale baseline rule");
-    expect(text).toMatch(/The operator's open tasks: [1-9]\d{2,}/);
+    const text = await sessionText(token);
+    expect(mempmIn(text).P.map((e) => `${e[0]} ${e[2]}`)).toContain("R9000 scale baseline rule");
+    expect(text).not.toContain("scale task"); // the tasks are the `tasks` tool's, however many there are
+    expect(text.length).toBeLessThan(3500);
     expect((await get("/v1/projects/scale-7", token)).body.tasks.length).toBeGreaterThan(20);
   }, 600_000);
 });

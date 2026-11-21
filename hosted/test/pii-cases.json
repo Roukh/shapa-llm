@@ -1,0 +1,1831 @@
+{
+ "cases": [
+  {
+   "name": "card spaced",
+   "fields": [
+    "pay with 4111 1111 1111 1111 today"
+   ],
+   "level": "full",
+   "blocked": [
+    "card"
+   ],
+   "warned": []
+  },
+  {
+   "name": "card dashed",
+   "fields": [
+    "4111-1111-1111-1111"
+   ],
+   "level": "full",
+   "blocked": [
+    "card"
+   ],
+   "warned": []
+  },
+  {
+   "name": "card mastercard plain",
+   "fields": [
+    "5555555555554444"
+   ],
+   "level": "full",
+   "blocked": [
+    "card"
+   ],
+   "warned": []
+  },
+  {
+   "name": "card amex",
+   "fields": [
+    "378282246310005"
+   ],
+   "level": "full",
+   "blocked": [
+    "card"
+   ],
+   "warned": []
+  },
+  {
+   "name": "card discover",
+   "fields": [
+    "6011111111111117"
+   ],
+   "level": "full",
+   "blocked": [
+    "card"
+   ],
+   "warned": []
+  },
+  {
+   "name": "card nested in prose",
+   "fields": [
+    "the number is 4012 8888 8888 1881, thanks"
+   ],
+   "level": "full",
+   "blocked": [
+    "card"
+   ],
+   "warned": []
+  },
+  {
+   "name": "card bad luhn",
+   "fields": [
+    "4111 1111 1111 1112"
+   ],
+   "level": "full",
+   "blocked": [],
+   "warned": []
+  },
+  {
+   "name": "epoch milliseconds",
+   "fields": [
+    "built at 1700000000000 ms"
+   ],
+   "level": "full",
+   "blocked": [],
+   "warned": []
+  },
+  {
+   "name": "sha1 hash",
+   "fields": [
+    "commit 3f786850e387550fdab836ed7e6dc881de23001b fixed it"
+   ],
+   "level": "full",
+   "blocked": [],
+   "warned": []
+  },
+  {
+   "name": "sha256",
+   "fields": [
+    "digest 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+   ],
+   "level": "full",
+   "blocked": [],
+   "warned": []
+  },
+  {
+   "name": "uuid",
+   "fields": [
+    "id 550e8400-e29b-41d4-a716-446655440000"
+   ],
+   "level": "full",
+   "blocked": [],
+   "warned": []
+  },
+  {
+   "name": "iso date time",
+   "fields": [
+    "ran 2026-11-20T10:20:30Z and 2026-11-20"
+   ],
+   "level": "full",
+   "blocked": [],
+   "warned": []
+  },
+  {
+   "name": "port numbers",
+   "fields": [
+    "listening on 127.0.0.1:8080 and :5432"
+   ],
+   "level": "full",
+   "blocked": [],
+   "warned": []
+  },
+  {
+   "name": "price",
+   "fields": [
+    "costs $1,234,567.89 per year"
+   ],
+   "level": "full",
+   "blocked": [],
+   "warned": []
+  },
+  {
+   "name": "version four numbers",
+   "fields": [
+    "release 1.2.3.4 and v10.11.12.13"
+   ],
+   "level": "full",
+   "blocked": [],
+   "warned": []
+  },
+  {
+   "name": "long number list",
+   "fields": [
+    "scores 12 45 78 90 12 34 56 78 90"
+   ],
+   "level": "full",
+   "blocked": [],
+   "warned": []
+  },
+  {
+   "name": "iban spaced",
+   "fields": [
+    "IBAN DE89 3704 0044 0532 0130 00"
+   ],
+   "level": "full",
+   "blocked": [
+    "iban"
+   ],
+   "warned": []
+  },
+  {
+   "name": "iban compact",
+   "fields": [
+    "GB82WEST12345698765432"
+   ],
+   "level": "full",
+   "blocked": [
+    "iban"
+   ],
+   "warned": []
+  },
+  {
+   "name": "iban bad checksum",
+   "fields": [
+    "DE88 3704 0044 0532 0130 00"
+   ],
+   "level": "full",
+   "blocked": [],
+   "warned": []
+  },
+  {
+   "name": "iban lookalike word",
+   "fields": [
+    "FR12 ABCD EFGH"
+   ],
+   "level": "full",
+   "blocked": [],
+   "warned": []
+  },
+  {
+   "name": "ssn dashed",
+   "fields": [
+    "ssn 123-45-6789"
+   ],
+   "level": "full",
+   "blocked": [
+    "ssn"
+   ],
+   "warned": []
+  },
+  {
+   "name": "ssn spaced",
+   "fields": [
+    "123 45 6789"
+   ],
+   "level": "full",
+   "blocked": [
+    "ssn"
+   ],
+   "warned": []
+  },
+  {
+   "name": "ssn area 000",
+   "fields": [
+    "000-12-3456"
+   ],
+   "level": "full",
+   "blocked": [],
+   "warned": []
+  },
+  {
+   "name": "ssn area 666",
+   "fields": [
+    "666-12-3456"
+   ],
+   "level": "full",
+   "blocked": [],
+   "warned": []
+  },
+  {
+   "name": "ssn area 9xx",
+   "fields": [
+    "912-34-5678"
+   ],
+   "level": "full",
+   "blocked": [],
+   "warned": []
+  },
+  {
+   "name": "ssn group 00",
+   "fields": [
+    "123-00-6789"
+   ],
+   "level": "full",
+   "blocked": [],
+   "warned": []
+  },
+  {
+   "name": "rsa private key",
+   "fields": [
+    "-----BEGIN RSA PRIVATE KEY-----"
+   ],
+   "level": "full",
+   "blocked": [
+    "private-key",
+    "secret"
+   ],
+   "warned": []
+  },
+  {
+   "name": "pgp private key block",
+   "fields": [
+    "-----BEGIN PGP PRIVATE KEY BLOCK-----"
+   ],
+   "level": "full",
+   "blocked": [
+    "private-key"
+   ],
+   "warned": []
+  },
+  {
+   "name": "openssh private key",
+   "fields": [
+    "-----BEGIN OPENSSH PRIVATE KEY-----\nabc"
+   ],
+   "level": "full",
+   "blocked": [
+    "private-key",
+    "secret"
+   ],
+   "warned": []
+  },
+  {
+   "name": "public key",
+   "fields": [
+    "-----BEGIN PUBLIC KEY-----"
+   ],
+   "level": "full",
+   "blocked": [],
+   "warned": []
+  },
+  {
+   "name": "certificate",
+   "fields": [
+    "-----BEGIN CERTIFICATE-----"
+   ],
+   "level": "full",
+   "blocked": [],
+   "warned": []
+  },
+  {
+   "name": "password colon",
+   "fields": [
+    "password: hunter2"
+   ],
+   "level": "full",
+   "blocked": [
+    "password"
+   ],
+   "warned": []
+  },
+  {
+   "name": "pin is",
+   "fields": [
+    "my pin is 4821"
+   ],
+   "level": "full",
+   "blocked": [
+    "password"
+   ],
+   "warned": []
+  },
+  {
+   "name": "pwd equals",
+   "fields": [
+    "pwd=Abcd1234"
+   ],
+   "level": "full",
+   "blocked": [
+    "password",
+    "secret"
+   ],
+   "warned": []
+  },
+  {
+   "name": "passcode quoted",
+   "fields": [
+    "passcode = \"letmein1\""
+   ],
+   "level": "full",
+   "blocked": [
+    "password"
+   ],
+   "warned": []
+  },
+  {
+   "name": "password required",
+   "fields": [
+    "password: required"
+   ],
+   "level": "full",
+   "blocked": [],
+   "warned": []
+  },
+  {
+   "name": "password is hashed",
+   "fields": [
+    "the password is hashed before storage"
+   ],
+   "level": "full",
+   "blocked": [],
+   "warned": []
+  },
+  {
+   "name": "password policy",
+   "fields": [
+    "set the password policy to strict"
+   ],
+   "level": "full",
+   "blocked": [],
+   "warned": []
+  },
+  {
+   "name": "pin true",
+   "fields": [
+    "pin: true"
+   ],
+   "level": "full",
+   "blocked": [],
+   "warned": []
+  },
+  {
+   "name": "password placeholder",
+   "fields": [
+    "password: ${PASSWORD}"
+   ],
+   "level": "full",
+   "blocked": [],
+   "warned": []
+  },
+  {
+   "name": "password angle placeholder is still masked",
+   "fields": [
+    "password=<your-password>"
+   ],
+   "level": "full",
+   "blocked": [
+    "secret"
+   ],
+   "warned": []
+  },
+  {
+   "name": "telegram token",
+   "fields": [
+    [
+     "123456789:AAH",
+     "abcdefghijklmnopqrstuvwxyz012345"
+    ]
+   ],
+   "level": "full",
+   "blocked": [
+    "secret"
+   ],
+   "warned": []
+  },
+  {
+   "name": "slack webhook",
+   "fields": [
+    [
+     "https://hooks.slack",
+     ".com/services/T01234ABC/B01234DEF/abcdEFGH1234ijkl"
+    ]
+   ],
+   "level": "full",
+   "blocked": [
+    "secret"
+   ],
+   "warned": []
+  },
+  {
+   "name": "sendgrid key",
+   "fields": [
+    [
+     "SG",
+     ".abcdefghij0123456789AB",
+     ".abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG"
+    ]
+   ],
+   "level": "full",
+   "blocked": [
+    "secret"
+   ],
+   "warned": []
+  },
+  {
+   "name": "cookie header",
+   "fields": [
+    "Cookie: sessionid=abc123def456ghi"
+   ],
+   "level": "full",
+   "blocked": [
+    "secret"
+   ],
+   "warned": []
+  },
+  {
+   "name": "set-cookie header",
+   "fields": [
+    "Set-Cookie: token=abcdef0123456789; Path=/"
+   ],
+   "level": "full",
+   "blocked": [
+    "secret"
+   ],
+   "warned": []
+  },
+  {
+   "name": "azure account key",
+   "fields": [
+    [
+     "DefaultEndpointsProtocol=https;AccountName=x;Account",
+     "Key=",
+     "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=="
+    ]
+   ],
+   "level": "full",
+   "blocked": [
+    "secret"
+   ],
+   "warned": []
+  },
+  {
+   "name": "github token",
+   "fields": [
+    [
+     "ghp",
+     "_",
+     "A1b2C3d4E5f6G7h8I9j0",
+     "A1b2C3d4E5f6G7h8"
+    ]
+   ],
+   "level": "full",
+   "blocked": [
+    "secret"
+   ],
+   "warned": []
+  },
+  {
+   "name": "aws access key",
+   "fields": [
+    [
+     "AKIA",
+     "ABCDEFGHIJKLMNOP"
+    ]
+   ],
+   "level": "full",
+   "blocked": [
+    "secret"
+   ],
+   "warned": []
+  },
+  {
+   "name": "bearer header",
+   "fields": [
+    [
+     "Authorization: Bearer abcdefghij",
+     ".klmnopqrst"
+    ]
+   ],
+   "level": "full",
+   "blocked": [
+    "secret"
+   ],
+   "warned": []
+  },
+  {
+   "name": "cookie word",
+   "fields": [
+    "I like cookie dough"
+   ],
+   "level": "full",
+   "blocked": [],
+   "warned": []
+  },
+  {
+   "name": "slack docs url",
+   "fields": [
+    "https://hooks.slack.com/services/ is where webhooks live"
+   ],
+   "level": "full",
+   "blocked": [],
+   "warned": []
+  },
+  {
+   "name": "passport number",
+   "fields": [
+    "passport number: A12345678"
+   ],
+   "level": "full",
+   "blocked": [
+    "gov-id"
+   ],
+   "warned": []
+  },
+  {
+   "name": "drivers license",
+   "fields": [
+    "driver's license #D1234567"
+   ],
+   "level": "full",
+   "blocked": [
+    "gov-id"
+   ],
+   "warned": []
+  },
+  {
+   "name": "tax id",
+   "fields": [
+    "tax id: 12-3456789"
+   ],
+   "level": "full",
+   "blocked": [
+    "gov-id"
+   ],
+   "warned": []
+  },
+  {
+   "name": "national id",
+   "fields": [
+    "national id 1234 5678 90"
+   ],
+   "level": "full",
+   "blocked": [
+    "gov-id"
+   ],
+   "warned": []
+  },
+  {
+   "name": "passport photo",
+   "fields": [
+    "passport photo size 35x45"
+   ],
+   "level": "full",
+   "blocked": [],
+   "warned": []
+  },
+  {
+   "name": "id card reader",
+   "fields": [
+    "ID card reader v2 is on the desk"
+   ],
+   "level": "full",
+   "blocked": [],
+   "warned": []
+  },
+  {
+   "name": "national id column",
+   "fields": [
+    "the national id column is empty"
+   ],
+   "level": "full",
+   "blocked": [],
+   "warned": []
+  },
+  {
+   "name": "email plain",
+   "fields": [
+    "write to john.doe@gmail.com"
+   ],
+   "level": "full",
+   "blocked": [
+    "email"
+   ],
+   "warned": []
+  },
+  {
+   "name": "email plus",
+   "fields": [
+    "jane+tag@sub.example-corp.co.uk"
+   ],
+   "level": "full",
+   "blocked": [
+    "email"
+   ],
+   "warned": []
+  },
+  {
+   "name": "email in angle brackets",
+   "fields": [
+    "From: Jane <jane@company.io>"
+   ],
+   "level": "full",
+   "blocked": [
+    "email"
+   ],
+   "warned": []
+  },
+  {
+   "name": "noreply trailer",
+   "fields": [
+    "Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>"
+   ],
+   "level": "full",
+   "blocked": [],
+   "warned": []
+  },
+  {
+   "name": "noreply openai",
+   "fields": [
+    "Co-authored-by: Codex <noreply@openai.com>"
+   ],
+   "level": "full",
+   "blocked": [],
+   "warned": []
+  },
+  {
+   "name": "github noreply",
+   "fields": [
+    "12345+user@users.noreply.github.com"
+   ],
+   "level": "full",
+   "blocked": [],
+   "warned": []
+  },
+  {
+   "name": "example domain",
+   "fields": [
+    "me@example.com and a@b.example.org and c@example.net"
+   ],
+   "level": "full",
+   "blocked": [],
+   "warned": []
+  },
+  {
+   "name": "git ssh remote",
+   "fields": [
+    "git remote add origin git@github.com:Roukh/shapa-llm.git"
+   ],
+   "level": "full",
+   "blocked": [],
+   "warned": []
+  },
+  {
+   "name": "scoped package",
+   "fields": [
+    "@types/node@22.15.17 and react@18.3.1 and lodash@4.17.21"
+   ],
+   "level": "full",
+   "blocked": [],
+   "warned": []
+  },
+  {
+   "name": "decorator",
+   "fields": [
+    "use @property and @staticmethod"
+   ],
+   "level": "full",
+   "blocked": [],
+   "warned": []
+  },
+  {
+   "name": "email at localhost",
+   "fields": [
+    "dev@localhost"
+   ],
+   "level": "full",
+   "blocked": [],
+   "warned": []
+  },
+  {
+   "name": "phone intl",
+   "fields": [
+    "+44 20 7946 0958"
+   ],
+   "level": "full",
+   "blocked": [
+    "phone"
+   ],
+   "warned": []
+  },
+  {
+   "name": "phone intl us",
+   "fields": [
+    "+1 (415) 555-2671"
+   ],
+   "level": "full",
+   "blocked": [
+    "phone"
+   ],
+   "warned": []
+  },
+  {
+   "name": "phone compact",
+   "fields": [
+    "+441234567890"
+   ],
+   "level": "full",
+   "blocked": [
+    "phone"
+   ],
+   "warned": []
+  },
+  {
+   "name": "phone us dashed",
+   "fields": [
+    "call 415-555-2671 now"
+   ],
+   "level": "full",
+   "blocked": [
+    "phone"
+   ],
+   "warned": []
+  },
+  {
+   "name": "phone us parens",
+   "fields": [
+    "(415) 555-2671"
+   ],
+   "level": "full",
+   "blocked": [
+    "phone"
+   ],
+   "warned": []
+  },
+  {
+   "name": "phone us dots",
+   "fields": [
+    "415.555.2671"
+   ],
+   "level": "full",
+   "blocked": [
+    "phone"
+   ],
+   "warned": []
+  },
+  {
+   "name": "phone in docs url",
+   "fields": [
+    "see https://docs.example.com/guides/415-555-2671 for details"
+   ],
+   "level": "full",
+   "blocked": [],
+   "warned": []
+  },
+  {
+   "name": "phone like id",
+   "fields": [
+    "ticket id=415-555-2671-9"
+   ],
+   "level": "full",
+   "blocked": [],
+   "warned": []
+  },
+  {
+   "name": "short local number",
+   "fields": [
+    "ticket 555-1234"
+   ],
+   "level": "full",
+   "blocked": [],
+   "warned": []
+  },
+  {
+   "name": "calver",
+   "fields": [
+    "version 2026.11.20 and build +%Y-%m-%d"
+   ],
+   "level": "full",
+   "blocked": [],
+   "warned": []
+  },
+  {
+   "name": "plus count",
+   "fields": [
+    "+12 files changed"
+   ],
+   "level": "full",
+   "blocked": [],
+   "warned": []
+  },
+  {
+   "name": "address english",
+   "fields": [
+    "221B Baker Street"
+   ],
+   "level": "full",
+   "blocked": [
+    "address"
+   ],
+   "warned": []
+  },
+  {
+   "name": "address avenue",
+   "fields": [
+    "lives at 1600 Pennsylvania Avenue"
+   ],
+   "level": "full",
+   "blocked": [
+    "address"
+   ],
+   "warned": []
+  },
+  {
+   "name": "address way",
+   "fields": [
+    "42 Wallaby Way"
+   ],
+   "level": "full",
+   "blocked": [
+    "address"
+   ],
+   "warned": []
+  },
+  {
+   "name": "address german",
+   "fields": [
+    "Hauptstra\u00dfe 12"
+   ],
+   "level": "full",
+   "blocked": [
+    "address"
+   ],
+   "warned": []
+  },
+  {
+   "name": "address german ascii",
+   "fields": [
+    "Goethestrasse 5a"
+   ],
+   "level": "full",
+   "blocked": [
+    "address"
+   ],
+   "warned": []
+  },
+  {
+   "name": "address rue",
+   "fields": [
+    "12 rue de la Paix"
+   ],
+   "level": "full",
+   "blocked": [
+    "address"
+   ],
+   "warned": []
+  },
+  {
+   "name": "address via",
+   "fields": [
+    "10 Via Roma"
+   ],
+   "level": "full",
+   "blocked": [
+    "address"
+   ],
+   "warned": []
+  },
+  {
+   "name": "address calle",
+   "fields": [
+    "7 calle Mayor"
+   ],
+   "level": "full",
+   "blocked": [
+    "address"
+   ],
+   "warned": []
+  },
+  {
+   "name": "st abbreviation prose",
+   "fields": [
+    "St. Louis and St. John are saints; Mr. Smith agreed"
+   ],
+   "level": "full",
+   "blocked": [],
+   "warned": []
+  },
+  {
+   "name": "step google drive",
+   "fields": [
+    "Step 3 Google Drive setup and Phase 2 Docker Court"
+   ],
+   "level": "full",
+   "blocked": [],
+   "warned": []
+  },
+  {
+   "name": "via lowercase",
+   "fields": [
+    "deploy in phase 1 via GitHub Actions"
+   ],
+   "level": "full",
+   "blocked": [],
+   "warned": []
+  },
+  {
+   "name": "chapter the way",
+   "fields": [
+    "Chapter 1 The Way forward"
+   ],
+   "level": "full",
+   "blocked": [],
+   "warned": []
+  },
+  {
+   "name": "dob iso",
+   "fields": [
+    "dob: 1990-05-04"
+   ],
+   "level": "full",
+   "blocked": [
+    "dob"
+   ],
+   "warned": []
+  },
+  {
+   "name": "dob words",
+   "fields": [
+    "Date of birth 4 May 1990"
+   ],
+   "level": "full",
+   "blocked": [
+    "dob"
+   ],
+   "warned": []
+  },
+  {
+   "name": "born on",
+   "fields": [
+    "born on March 3, 1985"
+   ],
+   "level": "full",
+   "blocked": [
+    "dob"
+   ],
+   "warned": []
+  },
+  {
+   "name": "birthdate slashes",
+   "fields": [
+    "birthdate: 03/04/1990"
+   ],
+   "level": "full",
+   "blocked": [
+    "dob"
+   ],
+   "warned": []
+  },
+  {
+   "name": "iso date alone",
+   "fields": [
+    "released 2026-01-15 and 1990-05-04"
+   ],
+   "level": "full",
+   "blocked": [],
+   "warned": []
+  },
+  {
+   "name": "born figurative",
+   "fields": [
+    "the project was born from a hackathon"
+   ],
+   "level": "full",
+   "blocked": [],
+   "warned": []
+  },
+  {
+   "name": "latlong london",
+   "fields": [
+    "51.5074, -0.1278"
+   ],
+   "level": "full",
+   "blocked": [
+    "geo"
+   ],
+   "warned": []
+  },
+  {
+   "name": "latlong nyc",
+   "fields": [
+    "at 40.712776,-74.005974"
+   ],
+   "level": "full",
+   "blocked": [
+    "geo"
+   ],
+   "warned": []
+  },
+  {
+   "name": "float pair",
+   "fields": [
+    "weights 0.12345, 0.67890"
+   ],
+   "level": "full",
+   "blocked": [],
+   "warned": []
+  },
+  {
+   "name": "short floats",
+   "fields": [
+    "ratio 1.5, 2.5"
+   ],
+   "level": "full",
+   "blocked": [],
+   "warned": []
+  },
+  {
+   "name": "health diagnosed",
+   "fields": [
+    "I have been diagnosed with anxiety"
+   ],
+   "level": "full",
+   "blocked": [
+    "health"
+   ],
+   "warned": []
+  },
+  {
+   "name": "health pregnant",
+   "fields": [
+    "I am pregnant"
+   ],
+   "level": "full",
+   "blocked": [
+    "health"
+   ],
+   "warned": []
+  },
+  {
+   "name": "health religion",
+   "fields": [
+    "my religion is private"
+   ],
+   "level": "full",
+   "blocked": [
+    "health"
+   ],
+   "warned": []
+  },
+  {
+   "name": "health adhd",
+   "fields": [
+    "user has ADHD"
+   ],
+   "level": "full",
+   "blocked": [
+    "health"
+   ],
+   "warned": []
+  },
+  {
+   "name": "health immigration",
+   "fields": [
+    "my immigration status is pending"
+   ],
+   "level": "full",
+   "blocked": [
+    "health"
+   ],
+   "warned": []
+  },
+  {
+   "name": "diagnostics tool",
+   "fields": [
+    "my diagnostics output is verbose"
+   ],
+   "level": "full",
+   "blocked": [],
+   "warned": []
+  },
+  {
+   "name": "prescriptive linter",
+   "fields": [
+    "I have a prescriptive linter"
+   ],
+   "level": "full",
+   "blocked": [],
+   "warned": []
+  },
+  {
+   "name": "cancer dataset",
+   "fields": [
+    "the cancer registry dataset is public"
+   ],
+   "level": "full",
+   "blocked": [],
+   "warned": []
+  },
+  {
+   "name": "therapist word",
+   "fields": [
+    "my therapist tool"
+   ],
+   "level": "full",
+   "blocked": [],
+   "warned": []
+  },
+  {
+   "name": "public ip",
+   "fields": [
+    "server at 93.184.216.34"
+   ],
+   "level": "full",
+   "blocked": [],
+   "warned": [
+    "public-ip"
+   ]
+  },
+  {
+   "name": "private ips",
+   "fields": [
+    "10.0.0.5 and 192.168.1.1 and 127.0.0.1 and 172.16.0.9 and 169.254.1.1"
+   ],
+   "level": "full",
+   "blocked": [],
+   "warned": []
+  },
+  {
+   "name": "documentation ips",
+   "fields": [
+    "203.0.113.7 and 198.51.100.1 and 192.0.2.44"
+   ],
+   "level": "full",
+   "blocked": [],
+   "warned": []
+  },
+  {
+   "name": "mac address",
+   "fields": [
+    "device aa:bb:cc:dd:ee:ff seen"
+   ],
+   "level": "full",
+   "blocked": [],
+   "warned": [
+    "mac"
+   ]
+  },
+  {
+   "name": "btc address",
+   "fields": [
+    "wallet bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq"
+   ],
+   "level": "full",
+   "blocked": [],
+   "warned": [
+    "crypto-address"
+   ]
+  },
+  {
+   "name": "eth address",
+   "fields": [
+    "addr 0xab12ab12ab12ab12ab12ab12ab12ab12ab12ab12"
+   ],
+   "level": "full",
+   "blocked": [],
+   "warned": [
+    "crypto-address"
+   ]
+  },
+  {
+   "name": "uk postcode",
+   "fields": [
+    "office at SW1A 1AA"
+   ],
+   "level": "full",
+   "blocked": [],
+   "warned": [
+    "postcode"
+   ]
+  },
+  {
+   "name": "zip plus four",
+   "fields": [
+    "zip 90210-1234"
+   ],
+   "level": "full",
+   "blocked": [],
+   "warned": [
+    "postcode"
+   ]
+  },
+  {
+   "name": "user phrasing",
+   "fields": [
+    "User's editor is vim"
+   ],
+   "level": "full",
+   "blocked": [],
+   "warned": [
+    "user-phrasing"
+   ]
+  },
+  {
+   "name": "named relation",
+   "fields": [
+    "my wife Jane"
+   ],
+   "level": "full",
+   "blocked": [],
+   "warned": [
+    "named-relation"
+   ]
+  },
+  {
+   "name": "zero width in email",
+   "fields": [
+    "j\u200bohn@gm\u200bail.com"
+   ],
+   "level": "full",
+   "blocked": [
+    "email"
+   ],
+   "warned": []
+  },
+  {
+   "name": "zero width in card",
+   "fields": [
+    "4111\u200b 1111\u2060 1111 1111"
+   ],
+   "level": "full",
+   "blocked": [
+    "card"
+   ],
+   "warned": []
+  },
+  {
+   "name": "fullwidth email",
+   "fields": [
+    "\uff4a\uff4f\uff48\uff4e\uff20gmail\uff0ecom"
+   ],
+   "level": "full",
+   "blocked": [
+    "email"
+   ],
+   "warned": []
+  },
+  {
+   "name": "fullwidth card digits",
+   "fields": [
+    "\uff14\uff11\uff11\uff11 \uff11\uff11\uff11\uff11 \uff11\uff11\uff11\uff11 \uff11\uff11\uff11\uff11"
+   ],
+   "level": "full",
+   "blocked": [
+    "card"
+   ],
+   "warned": []
+  },
+  {
+   "name": "arabic indic card digits",
+   "fields": [
+    "\u0664\u0661\u0661\u0661 \u0661\u0661\u0661\u0661 \u0661\u0661\u0661\u0661 \u0661\u0661\u0661\u0661"
+   ],
+   "level": "full",
+   "blocked": [
+    "card"
+   ],
+   "warned": []
+  },
+  {
+   "name": "html numeric entity email",
+   "fields": [
+    "john&#64;gmail&#46;com"
+   ],
+   "level": "full",
+   "blocked": [
+    "email"
+   ],
+   "warned": []
+  },
+  {
+   "name": "html named entity email",
+   "fields": [
+    "john&commat;gmail.com"
+   ],
+   "level": "full",
+   "blocked": [
+    "email"
+   ],
+   "warned": []
+  },
+  {
+   "name": "percent encoded email",
+   "fields": [
+    "john%40gmail.com"
+   ],
+   "level": "full",
+   "blocked": [
+    "email"
+   ],
+   "warned": []
+  },
+  {
+   "name": "unicode escape email",
+   "fields": [
+    "john\\u0040gmail.com"
+   ],
+   "level": "full",
+   "blocked": [
+    "email"
+   ],
+   "warned": []
+  },
+  {
+   "name": "base64 email",
+   "fields": [
+    "am9obkBnbWFpbC5jb20="
+   ],
+   "level": "full",
+   "blocked": [
+    "email"
+   ],
+   "warned": []
+  },
+  {
+   "name": "base64 card",
+   "fields": [
+    "NDExMSAxMTExIDExMTEgMTExMQ=="
+   ],
+   "level": "full",
+   "blocked": [
+    "card"
+   ],
+   "warned": []
+  },
+  {
+   "name": "at dot spelling",
+   "fields": [
+    "john (at) gmail (dot) com"
+   ],
+   "level": "full",
+   "blocked": [
+    "email"
+   ],
+   "warned": []
+  },
+  {
+   "name": "combining marks in digits",
+   "fields": [
+    "4\u0301111 1111 1111 1111"
+   ],
+   "level": "full",
+   "blocked": [
+    "card"
+   ],
+   "warned": []
+  },
+  {
+   "name": "card split across fields",
+   "fields": [
+    "4111 1111",
+    "1111 1111"
+   ],
+   "level": "full",
+   "blocked": [
+    "card"
+   ],
+   "warned": []
+  },
+  {
+   "name": "ssn split across fields",
+   "fields": [
+    "123-45",
+    "6789"
+   ],
+   "level": "full",
+   "blocked": [
+    "ssn"
+   ],
+   "warned": []
+  },
+  {
+   "name": "email in tag-like field",
+   "fields": [
+    "tags",
+    "john@gmail.com"
+   ],
+   "level": "full",
+   "blocked": [
+    "email"
+   ],
+   "warned": []
+  },
+  {
+   "name": "tag-collapsed words",
+   "fields": [
+    "long-identifier-name-with-dashes-and-more-words"
+   ],
+   "level": "full",
+   "blocked": [],
+   "warned": []
+  },
+  {
+   "name": "card with en dashes",
+   "fields": [
+    "4111\u20131111\u20131111\u20131111"
+   ],
+   "level": "full",
+   "blocked": [
+    "card"
+   ],
+   "warned": []
+  },
+  {
+   "name": "card with dots",
+   "fields": [
+    "4111.1111.1111.1111"
+   ],
+   "level": "full",
+   "blocked": [
+    "card"
+   ],
+   "warned": []
+  },
+  {
+   "name": "card with double spaces",
+   "fields": [
+    "4111  1111  1111  1111"
+   ],
+   "level": "full",
+   "blocked": [
+    "card"
+   ],
+   "warned": []
+  },
+  {
+   "name": "card with slashes",
+   "fields": [
+    "4111/1111/1111/1111"
+   ],
+   "level": "full",
+   "blocked": [
+    "card"
+   ],
+   "warned": []
+  },
+  {
+   "name": "ssn with dots",
+   "fields": [
+    "123.45.6789"
+   ],
+   "level": "full",
+   "blocked": [
+    "ssn"
+   ],
+   "warned": []
+  },
+  {
+   "name": "ssn with double spaces",
+   "fields": [
+    "123  45  6789"
+   ],
+   "level": "full",
+   "blocked": [
+    "ssn"
+   ],
+   "warned": []
+  },
+  {
+   "name": "iban with dashes",
+   "fields": [
+    "DE89-3704-0044-0532-0130-00"
+   ],
+   "level": "full",
+   "blocked": [
+    "iban"
+   ],
+   "warned": []
+  },
+  {
+   "name": "phone with spaced hyphens",
+   "fields": [
+    "415 - 555 - 2671"
+   ],
+   "level": "full",
+   "blocked": [
+    "phone"
+   ],
+   "warned": []
+  },
+  {
+   "name": "phone with double spaces",
+   "fields": [
+    "415  555  2671"
+   ],
+   "level": "full",
+   "blocked": [
+    "phone"
+   ],
+   "warned": []
+  },
+  {
+   "name": "intl phone with spaced groups",
+   "fields": [
+    "+44  20  7946  0958"
+   ],
+   "level": "full",
+   "blocked": [
+    "phone"
+   ],
+   "warned": []
+  },
+  {
+   "name": "hex encoded email",
+   "fields": [
+    "6a616e652e726f65406d61696c2e636f6d"
+   ],
+   "level": "full",
+   "blocked": [
+    "email"
+   ],
+   "warned": []
+  },
+  {
+   "name": "double encoded entity",
+   "fields": [
+    "jane.roe&amp;#64;gmail.com"
+   ],
+   "level": "full",
+   "blocked": [
+    "email"
+   ],
+   "warned": []
+  },
+  {
+   "name": "percent encoded twice",
+   "fields": [
+    "jane.roe%2540gmail.com"
+   ],
+   "level": "full",
+   "blocked": [
+    "email"
+   ],
+   "warned": []
+  },
+  {
+   "name": "email with ideographic full stop",
+   "fields": [
+    "jane.roe@gmail\u3002com"
+   ],
+   "level": "full",
+   "blocked": [
+    "email"
+   ],
+   "warned": []
+  },
+  {
+   "name": "email with tag characters",
+   "fields": [
+    "jane\udb40\udc41.roe@gmail.com"
+   ],
+   "level": "full",
+   "blocked": [
+    "email"
+   ],
+   "warned": []
+  },
+  {
+   "name": "email with bidi override",
+   "fields": [
+    "jane.roe\u202e@gmail.com"
+   ],
+   "level": "full",
+   "blocked": [
+    "email"
+   ],
+   "warned": []
+  },
+  {
+   "name": "email with soft hyphen and variation selector",
+   "fields": [
+    "ja\u00adne.roe\ufe0f@gmail.com"
+   ],
+   "level": "full",
+   "blocked": [
+    "email"
+   ],
+   "warned": []
+  },
+  {
+   "name": "email split across fields run together",
+   "fields": [
+    "jane.roe@gma",
+    "il.com"
+   ],
+   "level": "full",
+   "blocked": [
+    "email"
+   ],
+   "warned": []
+  },
+  {
+   "name": "card split across three fields",
+   "fields": [
+    "4111",
+    "1111 1111",
+    "1111"
+   ],
+   "level": "full",
+   "blocked": [
+    "card"
+   ],
+   "warned": []
+  },
+  {
+   "name": "hex sha is not text",
+   "fields": [
+    "digest 3f786850e387550fdab836ed7e6dc881de23001b"
+   ],
+   "level": "full",
+   "blocked": [],
+   "warned": []
+  },
+  {
+   "name": "ordinary decimal list",
+   "fields": [
+    "samples 3.14159 2.71828 1.41421"
+   ],
+   "level": "full",
+   "blocked": [],
+   "warned": []
+  },
+  {
+   "name": "dotted version with many parts",
+   "fields": [
+    "release 1.2.3.4.5.6.7.8.9.10"
+   ],
+   "level": "full",
+   "blocked": [],
+   "warned": []
+  },
+  {
+   "name": "middle dot prose",
+   "fields": [
+    "alpha \u00b7 beta \u00b7 gamma"
+   ],
+   "level": "full",
+   "blocked": [],
+   "warned": []
+  },
+  {
+   "name": "operator blocks card",
+   "fields": [
+    "4111 1111 1111 1111"
+   ],
+   "level": "operator",
+   "blocked": [
+    "card"
+   ],
+   "warned": []
+  },
+  {
+   "name": "operator blocks iban",
+   "fields": [
+    "DE89 3704 0044 0532 0130 00"
+   ],
+   "level": "operator",
+   "blocked": [
+    "iban"
+   ],
+   "warned": []
+  },
+  {
+   "name": "operator blocks ssn",
+   "fields": [
+    "123-45-6789"
+   ],
+   "level": "operator",
+   "blocked": [
+    "ssn"
+   ],
+   "warned": []
+  },
+  {
+   "name": "operator blocks private key",
+   "fields": [
+    "-----BEGIN PGP PRIVATE KEY BLOCK-----"
+   ],
+   "level": "operator",
+   "blocked": [
+    "private-key"
+   ],
+   "warned": []
+  },
+  {
+   "name": "operator blocks gov id",
+   "fields": [
+    "passport number: A12345678"
+   ],
+   "level": "operator",
+   "blocked": [
+    "gov-id"
+   ],
+   "warned": []
+  },
+  {
+   "name": "operator blocks dob",
+   "fields": [
+    "dob: 1990-05-04"
+   ],
+   "level": "operator",
+   "blocked": [
+    "dob"
+   ],
+   "warned": []
+  },
+  {
+   "name": "operator blocks health",
+   "fields": [
+    "I have been diagnosed with anxiety"
+   ],
+   "level": "operator",
+   "blocked": [
+    "health"
+   ],
+   "warned": []
+  },
+  {
+   "name": "operator allows email",
+   "fields": [
+    "john.doe@gmail.com"
+   ],
+   "level": "operator",
+   "blocked": [],
+   "warned": []
+  },
+  {
+   "name": "operator allows phone",
+   "fields": [
+    "+44 20 7946 0958"
+   ],
+   "level": "operator",
+   "blocked": [],
+   "warned": []
+  },
+  {
+   "name": "operator allows address",
+   "fields": [
+    "221B Baker Street"
+   ],
+   "level": "operator",
+   "blocked": [],
+   "warned": []
+  },
+  {
+   "name": "operator allows password",
+   "fields": [
+    "password: hunter2"
+   ],
+   "level": "operator",
+   "blocked": [],
+   "warned": []
+  },
+  {
+   "name": "operator allows coordinates",
+   "fields": [
+    "51.5074, -0.1278"
+   ],
+   "level": "operator",
+   "blocked": [],
+   "warned": []
+  },
+  {
+   "name": "operator allows secret (masked instead)",
+   "fields": [
+    "Cookie: sessionid=abc123def456ghi"
+   ],
+   "level": "operator",
+   "blocked": [],
+   "warned": []
+  }
+ ]
+}

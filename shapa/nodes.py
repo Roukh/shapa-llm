@@ -39,6 +39,9 @@ EXCLUDED_DIRNAMES = frozenset({"archive", "attic", ".obsidian", "temp",
                                # a tool kept inside a wiki brings its dependencies; never notes
                                "node_modules", ".venv", "__pycache__"})
 
+#: A wiki's own skill files live in ``<wiki>/skills/<name>/SKILL.md`` (``shapa skill mirror``).
+SKILLS_DIRNAME = "skills"
+
 #: Per-wiki convention files: every wiki carries its own copy by design - the
 #: schema docs shapa ships and refreshes (``AGENTS.md``, ``placement.md``)
 #: and the files the lean shape keeps at every root (``agenda.md``, the
@@ -59,7 +62,13 @@ def is_excluded_path(rel_parts: tuple) -> bool:
     wiki root, as ``Path.relative_to(root).parts`` gives them - sits under
     one of :data:`EXCLUDED_DIRNAMES` at any depth. Only the containing
     directories are checked, never the file's own (last) component, so a
-    file merely *named* ``archive.md`` at the wiki root is unaffected."""
+    file merely *named* ``archive.md`` at the wiki root is unaffected.
+
+    The wiki's own ``skills/`` folder (``skills/<name>/SKILL.md``, tracked in git and mirrored into the
+    database by ``shapa skill mirror``) is excluded at the top level only: a skill file is never a note,
+    so it is never validated, indexed, scored, pruned or synced as one."""
+    if len(rel_parts) > 1 and rel_parts[0] == SKILLS_DIRNAME:
+        return True
     return any(part in EXCLUDED_DIRNAMES for part in rel_parts[:-1])
 
 

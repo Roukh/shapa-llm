@@ -9,7 +9,6 @@
     shapa remote devices --mint NAME --env-file PATH --env-var VAR [--reach baseline|full]
                          [--wikis KEYS] [--scopes read,write]
     shapa remote logout
-    shapa remote instructions [--client NAME] [--full]
 
 The login lives in ``~/.shapa`` (``$SHAPA_REMOTE_DIR``): ``remote.json`` (url,
 device name, device id) and ``remote.token`` (mode 0600). The owner key comes
@@ -37,7 +36,6 @@ OWNER_KEY_ENV = "SHAPA_OWNER_KEY"
 SCOPES = ("read", "write", "delete")
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 _TOKEN_RE = re.compile(r"^shp_([A-Za-z0-9-]{1,64})_[A-Za-z0-9_-]{8,200}$")
-_CLIENT_RE = re.compile(r"^[a-z0-9_-]{1,32}$")
 
 #: Tests inject an in-process transport here; ``None`` means real HTTP.
 TRANSPORT = None
@@ -161,7 +159,7 @@ def cmd_sync(args) -> int:
     return 1 if any(r.status in ("error", "busy", "needs-key") for r in results) else 0
 
 
-# --- status / devices / instructions -----------------------------------------------------------
+# --- status / devices -----------------------------------------------------------
 
 def cmd_status(args) -> int:
     creds = syncstate.load_credentials()
@@ -332,16 +330,6 @@ def cmd_devices(args) -> int:
     return 0
 
 
-def cmd_instructions(args) -> int:
-    if not _CLIENT_RE.match(args.client):
-        raise UsageError("--client must be a short lowercase name such as mcp or rest")
-    text = _client(_creds()).request(
-        "GET", f"/v1/instructions?client={args.client}&budget={int(args.budget)}"
-        + ("&full=1" if getattr(args, "full", False) else ""), accept="text/plain")
-    print(text.rstrip("\n"))
-    return 0
-
-
 # --- entry point -------------------------------------------------------------------------------
 
 def build_parser() -> argparse.ArgumentParser:
@@ -382,17 +370,11 @@ def build_parser() -> argparse.ArgumentParser:
                          "not tracked by git; other lines are kept)")
     dv.add_argument("--env-var", default=None, metavar="VAR", help="with --mint: the variable name")
     sub.add_parser("logout", help="forget the stored login")
-    ins = sub.add_parser("instructions", help="print the server's session defaults")
-    ins.add_argument("--client", default="mcp")
-    ins.add_argument("--budget", type=int, default=6000)
-    ins.add_argument("--full", action="store_true",
-                     help="also the rules and the other live features (default: the northstar, "
-                          "the three fires and their tree)")
     return p
 
 
 _COMMANDS = {"login": cmd_login, "sync": cmd_sync, "status": cmd_status, "devices": cmd_devices,
-             "logout": cmd_logout, "instructions": cmd_instructions}
+             "logout": cmd_logout}
 
 
 def run(argv: list[str]) -> int:

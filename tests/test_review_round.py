@@ -7,6 +7,7 @@ from contextlib import redirect_stdout
 import pytest
 
 from shapa import bootstrap, db, docs, focus, mcp, registry, skills
+from tests.learnkit import mempm
 from tests.test_sync import Device, KEY, a, b, double  # noqa: F401  (fixtures)
 
 
@@ -159,7 +160,18 @@ def huge(wikis):
                 db.add_item(c, "T", f"Task {t} of job {n} with a title long enough to count", parent=j)
         focus.set_fire(c, i + 1, feature=fs[i])
     focus.set_northstar(c, "A repo northstar that is never cut")
+    for i in range(14):
+        db.add_row(c, "I", f"Mistake {i}: the operator corrected the way number {i} of doing the thing " + "x" * 60,
+                   source="correction")
     c.close()
+    g = wikis.conn(wikis.global_wiki)
+    for i in range(26):
+        db.add_row(g, "R", f"Standing rule {i}: always do the careful thing number {i} before work goes back " + "r" * 40,
+                   "", tags=["stage:0"], privileged=True)
+    for i in range(15):
+        db.add_row(g, "M", f"Standing memory {i}: the operator prefers the small step number {i} " + "m" * 40,
+                   "", tags=["stage:0"], privileged=True)
+    g.close()
     return wikis
 
 
@@ -169,29 +181,38 @@ def test_the_default_budget_bounds_the_focused_output(huge):
     assert "A repo northstar that is never cut" in text
     for n in (1, 2, 3):
         assert f"{n}. F" in text
-    assert "more" in text  # what was left out is said
+    assert "Job 0 of feature 0" not in text and "Task 0 of job" not in text      # a fire is one line: no tree
+    got = mempm(text)
+    assert 0 < len(got["P"]) <= bootstrap.MEMPM_MAX["P"] and 0 < len(got["X"]) <= bootstrap.MEMPM_MAX["X"]
+    assert 0 < len(got["M"]) <= bootstrap.MEMPM_MAX["M"]
 
 
-def test_a_smaller_budget_cuts_the_tree_never_the_northstar_or_fires(huge):
+def test_a_smaller_budget_cuts_the_mempm_never_the_northstar_the_fires_or_the_gate(huge):
     big = bootstrap.build_context(start=huge.repo, budget=7200)
     small = bootstrap.build_context(start=huge.repo, budget=1)
     assert len(small) < len(big)
     assert "A repo northstar that is never cut" in small
     for n in (1, 2, 3):
         assert f"{n}. F" in small
-    assert "</shapa-memory>" in small
+    assert mempm(small) == {"P": [], "X": [], "M": []} and "MEMPM" not in small
+    assert bootstrap.SKILL_GATE in small and "WRITE BACK" in small and "</shapa-memory>" in small
 
 
-def test_the_tree_is_cut_by_rank_first_jobs_of_the_first_fire(huge):
-    text = bootstrap.build_context(start=huge.repo, budget=4000)
-    assert len(text) <= 4000
-    assert "Job 0 of feature 0" in text  # the first fire's tree survives longest
-    assert "Task 5 of job 29 of" not in text
+def test_the_mempm_is_cut_from_the_longest_list_and_stays_valid_json(huge):
+    full = mempm(bootstrap.build_context(start=huge.repo))
+    text = bootstrap.build_context(start=huge.repo, budget=2400)
+    assert len(text) <= 2400
+    cut = mempm(text)
+    assert 0 < sum(map(len, cut.values())) < sum(map(len, full.values()))
+    for key in "PXM":
+        assert cut[key] == full[key][:len(cut[key])]                           # the best entries stay: cut from the end
+    assert len(cut["P"]) >= len(cut["M"])                                     # the longest lists give way first
 
 
-def test_a_bigger_budget_carries_more_of_the_tree(huge):
-    mid = bootstrap.build_context(start=huge.repo, budget=5000)
+def test_a_bigger_budget_carries_more_of_the_mempm(huge):
+    mid = bootstrap.build_context(start=huge.repo, budget=3000)
     roomy = bootstrap.build_context(start=huge.repo, budget=40000)
+    assert sum(map(len, mempm(roomy).values())) > sum(map(len, mempm(mid).values()))
     assert len(roomy) > len(mid) and len(roomy) <= 40000
 
 

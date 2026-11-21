@@ -152,7 +152,7 @@ class _Apply:
 
         d = rec["data"]
         if rec["kind"] in ("R", "M"):
-            size = len(d["summary"]) + len(d["body"])
+            size = len(d["summary"])  # the one line a session start prints; a body costs nothing
         elif rec["kind"] == db.DOC_KIND and db.SKILL_TAG in rec["tags"]:
             if "status:active" not in rec["tags"]:
                 return True  # a pending or previous version is not served: activation is what counts

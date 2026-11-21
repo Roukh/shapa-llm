@@ -16,7 +16,10 @@ hooks not wired, or no agent harness connected (Claude Code hooks/MCP,
 Codex MCP, OpenCode MCP - see ``harness_report``, which reads exactly what
 ``install.sh`` writes). ``status`` shows the same report but never exits 1;
 a missing *repo* wiki specifically is informational either way - `shapa
-init` is how you'd get one, not a fault.
+init` is how you'd get one, not a fault. The report also carries each agent
+harness's system-prompt mode and drift (``shapa.harness.summary``): broken
+wiring is a doctor problem, default-prompt drift from `shapa harness watch` is
+a line.
 
 CLI::
 
@@ -278,7 +281,19 @@ def gather(start=None, *, load_model: bool = True) -> dict:
             "wikis": [wiki_report(wr) for wr in roots],
             "repo_wiki_missing_here": repo_wiki_missing_here(start),
             "git_hooks": git_hooks_report(start),
-            "harness": harness_report(start)}
+            "harness": harness_report(start),
+            "prompts": prompts_report(start)}
+
+
+def prompts_report(start=None) -> dict:
+    """Per-harness system-prompt mode and drift (`shapa harness`), and the pending
+    default-prompt drift `shapa harness watch` stored. Never raises."""
+    try:
+        from shapa import harness, harnesswatch
+
+        return {"harnesses": harness.summary(start), "drift": harnesswatch.pending()}
+    except Exception:
+        return {"harnesses": [], "drift": []}
 
 
 def problems(report: dict) -> list[str]:
@@ -315,6 +330,9 @@ def problems(report: dict) -> list[str]:
                     "https://raw.githubusercontent.com/Roukh/shapa-llm/main/bootstrap.sh | sh")
     for kind, cmd in harness.get("broken", []):
         out.append(f"{kind} command does not resolve ({cmd!r}) - re-run the installer")
+    for p in (report.get("prompts") or {}).get("harnesses", []):
+        for problem in p["problems"]:
+            out.append(f"system prompt for {p['harness']}: {problem}")
     return out
 
 
@@ -353,6 +371,19 @@ def render(report: dict, doctor: bool = False) -> str:
         ("claude hooks", "claude_hooks"), ("claude mcp", "claude_mcp"),
         ("codex mcp", "codex_mcp"), ("opencode mcp", "opencode_mcp")) if h.get(key)]
     lines.append("agent harness: " + (", ".join(wired_harnesses) if wired_harnesses else "none connected"))
+
+    prompts = report.get("prompts") or {}
+    shown = [p for p in prompts.get("harnesses", []) if p["mode"] != "none"]
+    if shown:
+        lines.append("system prompt: " + ", ".join(
+            f"{p['harness']} {p['mode']}" + ("" if p["wired"] or p["mode"] == "default" else " (not wired)")
+            + (f" ({len(p['problems'])} problem(s))" if p["problems"] else "") for p in shown))
+    absent = [p["harness"] for p in prompts.get("harnesses", []) if p["mode"] == "none" and p["detected"]]
+    if absent:
+        lines.append("system prompt: not installed for " + ", ".join(absent) + " (shapa harness install)")
+    if prompts.get("drift"):
+        lines.append("harness default drift: " + "; ".join(prompts["drift"][:3])
+                     + " (review the adapter, then shapa harness watch --accept)")
 
     if doctor:
         probs = problems(report)

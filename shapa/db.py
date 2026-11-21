@@ -42,6 +42,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import threading
+
+from shapa import pii
 from shapa.redact import redact
 
 DB_FILENAME = "shapa.db"
@@ -72,7 +75,10 @@ DOC_BODY_MAX = 1_000_000  # the hosted contract's record limit
 #: versions. The lean gate (one document per project) never counts them.
 FOCUS_TAG = "focus"
 SKILL_TAG = "skill"
-RESERVED_DOC_TAGS = (FOCUS_TAG, SKILL_TAG)
+#: A repo node in the global wiki (``node.py``). Not plain ``node``: a wiki's own Node.js topic must not collide.
+NODE_TAG = "shapa-node"
+NODE_ALIAS_PREFIX = "node:"
+RESERVED_DOC_TAGS = (FOCUS_TAG, SKILL_TAG, NODE_TAG)
 PROJECT_PREFIX = "project:"
 _PROJECT_RE = re.compile(r"^[a-z0-9][a-z0-9._/-]{0,79}$")
 
@@ -98,10 +104,10 @@ KEPT_MEMORY_TAGS = (IDEA_TAG, DECISION_TAG)
 #: them (``shapa row add|tag``, ``save``, the local MCP). A pulled record may carry them: a principle
 #: written on one machine syncs to another.
 LEARNING_TAGS = ("principle", "churn", "violation", "repeat", "repeat-checked", "blocked", "learned",
-                 "meta-learning", "dismissed", "soft", "fire")
+                 "meta-learning", "dismissed", "soft", "fire", "promote")
 LEARNING_TAG_PREFIXES = ("violations:", "revisions:", "repeats:", "serves:", "repeat-of:", "last-seen:",
                          "evidence:", "learned-at:", "generalized-into:")
-SYSTEM_TAGS = (SKILL_TAG, FOCUS_TAG, *OWNER_TAGS, IDEA_TAG, DECISION_TAG, *LEARNING_TAGS)
+SYSTEM_TAGS = (SKILL_TAG, FOCUS_TAG, NODE_TAG, *OWNER_TAGS, IDEA_TAG, DECISION_TAG, *LEARNING_TAGS)
 SYSTEM_TAG_PREFIXES = (STAGE_PREFIX, PROPOSED_PREFIX, "skill:", "v:", "status:", "rank:", PROJECT_PREFIX,
                        *LEARNING_TAG_PREFIXES)
 #: Kept under its old names for the callers that import them.
@@ -230,6 +236,42 @@ _TRIGGERS = (
 
 class LedgerError(ValueError):
     """A ledger operation the data does not allow (unknown id, wrong kind)."""
+
+
+class PiiRejected(LedgerError):
+    """A write refused by the personal-data gate (shapa/pii.py); ``categories`` name what it found, never the value."""
+
+    def __init__(self, exc: "pii.Rejected"):
+        self.categories = list(exc.categories)
+        super().__init__(str(exc))
+
+
+_screen = threading.local()
+
+
+@contextmanager
+def unscreened():
+    """Writes inside the block skip the personal-data gate: the one-off migration of a wiki's own old data,
+    which is moved, never newly written (existing rows are not rewritten; ``shapa validate --pii`` lists them)."""
+    was = getattr(_screen, "off", False)
+    _screen.off = True
+    try:
+        yield
+    finally:
+        _screen.off = was
+
+
+def _pii_gate(texts, tags=(), privileged: bool = False, *, stored_tags=()) -> list[str]:
+    """Refuse a write that holds personal or sensitive data (see :mod:`shapa.pii`): every category for an
+    unprivileged writer and for anything that goes to stage 0, the severe ones for the operator's CLI.
+    Returns the warnings of a write it lets through."""
+    if getattr(_screen, "off", False):
+        return []
+    level = pii.level_for([*tags, *stored_tags], privileged)
+    try:
+        return pii.check([t for t in texts if t], level)
+    except pii.Rejected as exc:
+        raise PiiRejected(exc) from None
 
 
 class DocExists(LedgerError):
@@ -467,7 +509,21 @@ def _has_schema(conn: sqlite3.Connection) -> bool:
 @contextmanager
 def write(conn: sqlite3.Connection):
     """One immediate transaction: the write lock is taken up front, so two
-    hooks allocating IDs at once serialize instead of colliding."""
+    hooks allocating IDs at once serialize instead of colliding.
+
+    Inside a transaction the caller already holds (a bulk writer such as ``shapa skill mirror``
+    batches many writes into one commit), the block is a savepoint: it can fail alone, and the
+    outer transaction commits it."""
+    if conn.in_transaction:
+        conn.execute("SAVEPOINT shapa_write")
+        try:
+            yield conn
+        except BaseException:
+            conn.execute("ROLLBACK TO shapa_write")
+            conn.execute("RELEASE shapa_write")
+            raise
+        conn.execute("RELEASE shapa_write")
+        return
     conn.execute("BEGIN IMMEDIATE")
     try:
         yield conn
@@ -528,10 +584,13 @@ def _require_item(conn, item_id: str) -> Item:
 
 def add_item(conn: sqlite3.Connection, kind: str, title: str, *, parent: str | None = None,
              body: str = "", verify: str | None = None, alias: str | None = None,
-             git_ref: str | None = None, now: datetime | None = None, tags=()) -> str:
+             git_ref: str | None = None, now: datetime | None = None, tags=(),
+             privileged: bool = False) -> str:
     kind = kind.upper()
     if kind not in ITEM_KINDS:
         raise LedgerError(f"item kind must be one of {ITEM_KINDS}, got {kind!r}")
+    tags = list(tags)
+    _pii_gate([title, body, alias, git_ref, *map(str, tags)], tags, privileged)
     # The file is committed whole: no secret may enter it (redact.py).
     title = one_line(redact(title), 200)
     if not title:
@@ -561,11 +620,18 @@ def add_item(conn: sqlite3.Connection, kind: str, title: str, *, parent: str | N
     return new_id
 
 
-def update_item(conn: sqlite3.Connection, item_id: str, **fields) -> Item:
+def update_item(conn: sqlite3.Connection, item_id: str, *, privileged: bool = False, **fields) -> Item:
     allowed = {"title", "body", "verify", "git_ref", "alias"}
     bad = set(fields) - allowed
     if bad:
         raise LedgerError(f"cannot set {sorted(bad)}")
+    if fields.keys() & {"title", "body", "alias", "git_ref"}:
+        # the MERGED record: every text field as it will be stored, the ones this edit leaves alone included
+        held = conn.execute("SELECT title, body, alias, git_ref, claimed_by FROM items WHERE id = ?",
+                            (item_id,)).fetchone()
+        merged = [fields[k] if k in fields else (held[k] if held is not None else None)
+                  for k in ("title", "body", "alias", "git_ref")] + [held["claimed_by"] if held is not None else None]
+        _pii_gate(merged, (), privileged, stored_tags=_tags_of(conn, item_id))
     fields = {k: redact(v) if isinstance(v, str) and k in ("title", "body", "verify") else v
               for k, v in fields.items()}
     with write(conn):
@@ -1022,6 +1088,8 @@ def add_row(conn: sqlite3.Connection, kind: str, summary: str, body: str = "", *
     kind = kind.upper()
     if kind not in MRI_KINDS:
         raise LedgerError(f"row kind must be one of {MRI_KINDS}, got {kind!r}")
+    tags = list(tags)
+    _pii_gate([summary, body, alias, *map(str, tags)], tags, privileged)
     # The file is committed whole: no secret may enter it, whoever writes the
     # row (capture, correction, save, migration).
     summary = one_line(redact(summary))
@@ -1036,12 +1104,12 @@ def add_row(conn: sqlite3.Connection, kind: str, summary: str, body: str = "", *
         if existing:
             row_id, created = existing[0], False
             insert, drop = _guard_tags(conn, row_id, _identical_text_tags(conn, row_id, tags, privileged),
-                                       letter=kind, privileged=privileged, size=len(summary) + len(body))
+                                       letter=kind, privileged=privileged, size=len(summary))
         else:
             if alias and conn.execute("SELECT 1 FROM mri WHERE alias = ?", (alias,)).fetchone():
                 raise LedgerError(f"alias {alias!r} already names a row")
             insert, drop = _guard_tags(conn, None, tags, letter=kind, privileged=privileged,
-                                       size=len(summary) + len(body))
+                                       size=len(summary))
             row_id, created = _next_id(conn, kind), True
             conn.execute("INSERT INTO mri(id, kind, alias, summary, body, source, session, hash, "
                          "created, updated) VALUES (?,?,?,?,?,?,?,?,?,?)",
@@ -1078,6 +1146,11 @@ def update_row(conn: sqlite3.Connection, row_id: str, *, summary: str | None = N
                            (row_id, row_id)).fetchone()
         if row is None:
             raise LedgerError(f"no row {row_id!r}")
+        if summary is not None or body is not None or alias:
+            # the MERGED row: the fields this edit leaves alone are screened as well
+            _pii_gate([summary if summary is not None else row["summary"],
+                       body if body is not None else row["body"], alias or row["alias"], row["source"]],
+                      (), privileged, stored_tags=_tags_of(conn, row["id"]))
         s = one_line(redact(summary)) if summary is not None else row["summary"]
         b = redact(str(body).strip()) if body is not None else row["body"]
         if f"{STAGE_PREFIX}0" in _tags_of(conn, row["id"]) and (
@@ -1085,7 +1158,7 @@ def update_row(conn: sqlite3.Connection, row_id: str, *, summary: str | None = N
             if not privileged:
                 raise LedgerError(f"{row['id']} is baseline (stage 0): its text changes only from the "
                                   "local CLI")
-            _stage_budget_check(conn, row["id"], len(s) + len(b))
+            _stage_budget_check(conn, row["id"], len(s))
         conn.execute("UPDATE mri SET summary=?, body=?, hash=?, alias=COALESCE(?, alias), "
                      "updated=? WHERE id=?",
                      (s, b, content_hash(s, b), alias, now_iso(), row["id"]))
@@ -1196,6 +1269,11 @@ def check_project_tags(tags) -> None:
                 raise LedgerError(f"invalid project tag {t!r}: lowercase letters, digits and . _ / - only")
 
 
+def is_node_alias(alias) -> bool:
+    """Whether *alias* names a node document, however it is spelled (case, width, invisible characters)."""
+    return _plain(" ".join(str(alias or "").split())).startswith(NODE_ALIAS_PREFIX)
+
+
 def _clean_mime(mime: str | None) -> str:
     mime = (mime or DEFAULT_MIME).strip().lower()
     if not _MIME_RE.match(mime):
@@ -1214,6 +1292,8 @@ def add_doc(conn: sqlite3.Connection, title: str, body: str = "", *, tags=(), al
     :class:`DocExists` naming the first, or with ``merge`` appended to it as a
     section (its id is returned). Focus records and skill versions are not
     project documents and are never gated."""
+    tags = list(tags)
+    _pii_gate([title, body, alias, *map(str, tags)], tags, privileged)
     title = one_line(redact(title), TITLE_MAX)
     if not title:
         raise LedgerError("title is required")
@@ -1225,7 +1305,9 @@ def add_doc(conn: sqlite3.Connection, title: str, body: str = "", *, tags=(), al
     tags = [t for t in (_clean_tag(x) for x in tags) if t]
     if not system and any(t in RESERVED_DOC_TAGS for t in tags):
         raise LedgerError(f"the tags {', '.join(RESERVED_DOC_TAGS)} are reserved: "
-                          "use `shapa focus` and `shapa skill`")
+                          "use `shapa focus`, `shapa skill` and `shapa node`")
+    if not system and is_node_alias(alias):
+        raise LedgerError(f"the alias prefix {NODE_ALIAS_PREFIX!r} is reserved for `shapa node`")
     key = clean_project(project)
     if key:
         tags = [t for t in tags if not t.startswith(PROJECT_PREFIX)] + [PROJECT_PREFIX + key]
@@ -1283,7 +1365,7 @@ def merge_docs(conn: sqlite3.Connection, src_id: str, dst_id: str) -> str:
 
 def update_doc(conn: sqlite3.Connection, doc_id: str, *, title: str | None = None,
                body: str | None = None, alias: str | None = None, mime: str | None = None,
-               privileged: bool = False) -> Doc:
+               privileged: bool = False, system: bool = False) -> Doc:
     with write(conn):
         r = conn.execute("SELECT * FROM docs WHERE id = ? OR alias = ?", (doc_id, doc_id)).fetchone()
         if r is None:
@@ -1291,6 +1373,14 @@ def update_doc(conn: sqlite3.Connection, doc_id: str, *, title: str | None = Non
         have = _tags_of(conn, r["id"])
         if f"{STAGE_PREFIX}0" in have and not privileged:
             raise LedgerError(f"{r['id']} is baseline (stage 0): its text changes only from the local CLI")
+        if not system and is_node_alias(alias):
+            raise LedgerError(f"the alias prefix {NODE_ALIAS_PREFIX!r} is reserved for `shapa node`")
+        if NODE_TAG in have and not system:
+            raise LedgerError(f"{r['id']} is a node: `shapa node sync` writes it")
+        if title is not None or body is not None or alias:
+            # the MERGED document: the fields this edit leaves alone are screened as well
+            _pii_gate([title if title is not None else r["title"], body if body is not None else r["body"],
+                       alias or r["alias"], r["source"]], (), privileged, stored_tags=have)
         t = one_line(redact(title), TITLE_MAX) if title is not None else r["title"]
         if not t:
             raise LedgerError("title is required")
@@ -1365,20 +1455,92 @@ def check_row_tags(tags) -> None:
             raise LedgerError(f"the tag {str(t)[:40]!r} is the learning loop's own (`shapa learn` writes it)")
 
 
+#: One rule per object (operator, 2026-11-20): a principle, or a rule written through ``save`` or the
+#: MCP tool, is ONE imperative sentence. The check is a heuristic on the written form (a list, or
+#: several sentences that each open with a command word); it refuses on write and never rewrites.
+_LIST_LINE = re.compile(r"^\s*(?:\d{1,2}[.)]|[-*•])\s+\S")
+_NUM_LINE = re.compile(r"^\s*\d{1,2}[.)]\s+\S")
+_NUM_INLINE = re.compile(r"(?:^|[\s(])\(?\d{1,2}[.)]\s+[A-Za-z]")
+_SENTENCE_SPLIT = re.compile(r"(?<=[.!?;])\s+(?=\S)|\n+")
+COMMAND_WORDS = frozenset("""always never do dont don't avoid use prefer keep make run write add remove ensure check
+stop put set open close commit push install test read ask tell call create delete update move name pass wrap treat
+only must should stick start finish merge review verify validate document log prefix limit restrict skip fix
+rename split combine reuse replace store save load cache clean reject refuse require allow forbid disable enable
+configure deploy build ship send wait confirm report mention list show hide drop pin lock mark tag link reply
+answer explain return throw catch handle retry fail prompt format lint audit scan delegate pick choose ignore
+respect honor follow obey default""".split())
+
+
+def _first_word(sentence: str) -> str:
+    m = re.match(r"^[\W\d_]*([^\W\d_][\w'’-]*)", sentence)
+    return m.group(1).lower().replace("’", "'") if m else ""
+
+
+def _commands(text: str) -> int:
+    """How many sentences of *text* open with a command word (``Never``, ``Use``, ``Do not``...)."""
+    n = 0
+    for part in _SENTENCE_SPLIT.split(str(text or "").strip()):
+        part = re.sub(r"^\s*(?:\d{1,2}[.)]|[-*•])\s+", "", part)
+        if _first_word(part) in COMMAND_WORDS:
+            n += 1
+    return n
+
+
+def several_rules(summary: str, body: str = "") -> str | None:
+    """Why *summary* (and, more loosely, *body*) holds more than one rule, or ``None`` when it is one.
+    The summary may be neither a list nor two or more command sentences; the body may hold no numbered
+    list and no two imperative bullets (its prose may explain at will)."""
+    s = str(summary or "")
+    if sum(1 for line in s.splitlines() if _NUM_LINE.match(line)) >= 2 or len(_NUM_INLINE.findall(s)) >= 2:
+        return "a numbered list"
+    if sum(1 for line in s.splitlines() if _LIST_LINE.match(line)) >= 2:
+        return "a bulleted list"
+    if _commands(s) >= 2:
+        return "several imperative sentences"
+    b = str(body or "")
+    lines = b.splitlines()
+    if sum(1 for line in lines if _NUM_LINE.match(line)) >= 2 or len(_NUM_INLINE.findall(b)) >= 2:
+        return "a numbered list in the body"
+    if sum(1 for line in lines if _LIST_LINE.match(line) and _commands(line) >= 1) >= 2:
+        return "several imperative bullets in the body"
+    return None
+
+
+def check_atomic_rule(summary: str, body: str = "", *, what: str = "a rule") -> None:
+    """Refuse *what* when it holds several rules: one rule per object, so each can be superseded alone."""
+    why = several_rules(summary, body)
+    if why:
+        raise LedgerError(f"{what} is ONE rule, one imperative sentence; this holds {why}: split it, one rule "
+                          "per object (`shapa learn split R<n> --into TEXT --into TEXT`, or one save each)")
+
+
+def _stage0_text_gate(conn: sqlite3.Connection, target: str, tags) -> None:
+    """Personal data never enters stage 0: a record that is being moved into the baseline (or proposed for it)
+    is screened with every category, whoever moves it, on the text it already holds."""
+    if not pii.is_stage0(tags):
+        return
+    table = {"F": "items", "J": "items", "T": "items", "D": "docs"}.get(target[:1], "mri")
+    cols = "summary, body" if table == "mri" else "title, body"
+    r = conn.execute(f"SELECT {cols} FROM {table} WHERE id = ?", (target,)).fetchone()
+    if r is not None:
+        _pii_gate([r[0], r[1]], tags, False)
+
+
 def tag(conn: sqlite3.Connection, target: str, tags, *, privileged: bool = False) -> None:
+    _stage0_text_gate(conn, target, tags)
     if kind_of(target) == DOC_KIND:
         clean = [t for t in (_clean_tag(x) for x in tags) if t]
         if any(t in RESERVED_DOC_TAGS for t in clean):
             raise LedgerError(f"the tags {', '.join(RESERVED_DOC_TAGS)} are reserved: "
-                              "use `shapa focus` and `shapa skill`")
+                              "use `shapa focus`, `shapa skill` and `shapa node`")
         check_project_tags([" ".join(str(x).split()) for x in tags])  # before any truncation
         moves = sorted({t for t in clean if t.startswith(PROJECT_PREFIX)})
         if len(moves) > 1:
             raise LedgerError("a document belongs to one project")
         doc = get_doc(conn, target)
         if doc is not None and any(t in RESERVED_DOC_TAGS for t in doc.tags):
-            raise LedgerError(f"{target} is the focus record or a skill version: its tags are the engine's, "
-                              "use `shapa focus` and `shapa skill`")
+            raise LedgerError(f"{target} is the focus record, a skill version or a node: its tags are the "
+                              "engine's, use `shapa focus`, `shapa skill` and `shapa node`")
         if doc is not None and moves:
             was, new = project_of(doc.tags), moves[0][len(PROJECT_PREFIX):]
             # the lean gate also covers a retag: no moving into a project another document holds
@@ -1409,6 +1571,8 @@ def retag(conn: sqlite3.Connection, target: str, *, add=(), drop_prefix: str | N
     and each of *drop*), add *add*, and stamp the record updated so a sync
     sees the change. Used for state kept in tags (a skill's status, a
     feature's rank, a record's stage). Dropping ``stage:0`` takes *privileged*."""
+    add = list(add)
+    _stage0_text_gate(conn, target, add)
     with write(conn):
         have = set(_tags_of(conn, target))
         gone = {t for t in have if t in drop or (drop_prefix and t.startswith(drop_prefix))}
