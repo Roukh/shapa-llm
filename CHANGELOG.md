@@ -7,6 +7,20 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- One rule per object: a principle (and a rule written by `shapa save` or the MCP `save`) is one
+  imperative sentence, refused on write when it holds a list or several command sentences.
+  `shapa learn split R<n> --into TEXT --into TEXT` files each part as its own principle.
+- Dated, newest-wins principles at three scopes (global, project, subproject). `learn apply
+  --supersedes R<n>`, `shapa save --supersedes R<n>` and the MCP `save` field `supersedes` delete
+  the older rule once the newer is written, keeping its text in the evidence; a new rule near an
+  existing one exits 2 with the candidates unless it supersedes or claims `--distinct-from`.
+  `shapa learn principles [--scope] [--project]` lists `id, date, scope, text`.
+- `shapa node sync` (run by `shapa commit --hook`): each repo wiki reflects one JSON node into the
+  global wiki; a principle two repos share is filed there as a pending `soft`, `promote` candidate
+  for `shapa learn`. New reserved learning tag: `promote`.
+
 ## [0.10.0] - 2026-11-13
 
 ### Added

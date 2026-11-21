@@ -140,6 +140,10 @@ commands:
                  lead time, work on the fires vs off them, frustration, with
                  a 7-day trend; --snapshot stores today's row, --all rolls
                  up every repo; `metrics record skill-use NAME --session ID`
+  node sync|list  every repo wiki reflects one node (its fires, principles, open
+                 corrections, counts) into the global wiki; a principle two repos
+                 share is filed there as a pending `learn` candidate. Runs
+                 at session end with `commit --hook`
   stage ...    which rules, memories and skills every session starts with:
                  set ID N (0 = baseline, served in full, capped at 6,000
                  characters; only this CLI sets it), clear, list, pending
@@ -475,6 +479,11 @@ def main(argv: list[str] | None = None) -> None:
         from shapa import skills
 
         skills.main(rest)
+        return
+    if cmd == "node":
+        from shapa import node
+
+        node.main(rest)
         return
     if cmd in ("learn", "metrics"):
         mod = importlib.import_module(f"shapa.{cmd}")

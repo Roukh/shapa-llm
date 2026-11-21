@@ -67,6 +67,9 @@ names the fix when something is missing. Then use your agent as usual.
 - **Learning loop.** A correction ("no", "not like this") becomes an issue row. A close match
   to an earlier one is a repeat. `shapa learn apply` files one principle, which you merge into
   the closest rule or skill (or add as new). It is global by default, so it holds across repos.
+  A principle is one sentence, dated, and the newer of two that conflict replaces the older
+  (`--supersedes R<n>`). Each repo wiki reflects a node into the global wiki (`shapa node sync`),
+  and a principle two repos share is offered there as a candidate.
   `shapa metrics` shows whether it works.
 - **Code partitions.** `shapa map` builds a derived graph of the checkout; `shapa partition`
   lists the files a fire touches, each with why. Local only.
@@ -104,7 +107,8 @@ names the fix when something is missing. Then use your agent as usual.
 | **Learn** | |
 | `stage` | `set`, `clear`, `list`, `pending` (records proposed for stage 0) |
 | `skill` | `list`, `show`, `add`, `update`, `activate`, `uproot` |
-| `learn` | `pending`, `apply`, `dismiss`, `merge`, `unchurn`, `principles`, `reindex` |
+| `learn` | `pending`, `apply`, `dismiss`, `merge`, `split`, `unchurn`, `principles`, `reindex` |
+| `node` | `sync`, `list`: each repo wiki's node in the global wiki; shared principles become `learn` candidates |
 | `metrics` | whether the wiki is working; `--snapshot`, `--all`, `--history DAYS` |
 | **Maintain** | |
 | `maintain` | merge duplicates, prune stale rows; use `--dry-run`, prune is operator-run |

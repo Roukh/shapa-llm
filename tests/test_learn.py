@@ -217,7 +217,9 @@ def test_a_contradicting_principle_is_filed_beside_the_rule_and_linked_conflicts
     correct(wikis.repo, "No, always run the full test suite before every commit.", now=at(0))
     apply(wikis.repo, "I1", "Always run the full test suite before committing.")
     correct(wikis.repo, "No, never run the full test suite before every commit, it is too slow.", now=at(1))
-    res = apply(wikis.repo, "I2", "Never run the full test suite before committing.")
+    with pytest.raises(learn.ChooseError, match="supersedes"):         # the newer wins unless it says otherwise
+        apply(wikis.repo, "I2", "Never run the full test suite before committing.")
+    res = apply(wikis.repo, "I2", "Never run the full test suite before committing.", distinct_from=["R1"])
     assert res["action"] == "created" and res["conflicts"] == ["R1"]
     conn = wikis.conn(wikis.global_wiki)
     try:
@@ -594,20 +596,20 @@ def test_the_principle_cap_holds_until_two_are_merged(wikis, monkeypatch):
               "release notes written weekly", "the staging cache warmed daily"]
     for i, t in enumerate(topics[:4]):
         correct(wikis.repo, f"No, wrong, remember {t}.", now=at(0, minutes=i))
-        apply(wikis.repo, f"I{i + 1}", f"Always remember {t} every single time.", now=at(0, minutes=i))
+        apply(wikis.repo, f"I{i + 1}", f"Keep {t} consistent.", now=at(0, minutes=i))
     gc = wikis.conn(wikis.global_wiki)
     assert len(learn.live_principles(gc)) == 4
     gc.close()
     correct(wikis.repo, f"No, wrong, remember {topics[4]}.", now=at(1))
     with pytest.raises(db.LedgerError, match="merge two first"):
-        apply(wikis.repo, "I5", f"Always remember {topics[4]} every single time.", now=at(1))
+        apply(wikis.repo, "I5", f"Keep {topics[4]} consistent.", now=at(1))
     assert len(rows(wikis.global_wiki, "R")) == 4
     res = learn.merge(wikis.repo, "R4", "R3", wiki="global")
     assert res == {"merged": "R4", "into": "R3", "wiki": "global"}
     assert len(rows(wikis.global_wiki, "R")) == 3
     merged = [r for r in rows(wikis.global_wiki, "R") if r.id == "R3"][0]
     assert "- I3 my-repo" in merged.body and "- I4 my-repo" in merged.body      # evidence combined
-    apply(wikis.repo, "I5", f"Always remember {topics[4]} every single time.", now=at(1))
+    apply(wikis.repo, "I5", f"Keep {topics[4]} consistent.", now=at(1))
     assert len(rows(wikis.global_wiki, "R")) == 4
 
 
@@ -626,14 +628,15 @@ def test_corrections_about_the_learning_system_are_capped_per_week(wikis):
     for i, text in enumerate(meta):
         correct(wikis.repo, text, now=at(0, minutes=i))
         assert "meta-learning" in tags(wikis.wiki, f"I{i + 1}")
+    distinct = ["Pending lists stay short and sorted by age.", "Metrics snapshots run once per day only.",
+                "Hooks never block a session under any load."]
     for i in range(learn.META_PER_WEEK):
-        apply(wikis.repo, f"I{i + 1}", f"A distinct principle number {i} about how learning must be filed.",
-              now=at(0, 1, i))
+        apply(wikis.repo, f"I{i + 1}", distinct[i], now=at(0, 1, i))
     with pytest.raises(db.LedgerError, match="a week"):
-        apply(wikis.repo, "I4", "Another principle about how the learning of corrections is filed.", now=at(1))
+        apply(wikis.repo, "I4", "Bootstrap output starts with the precedence line.", now=at(1))
     assert learn.pending(wikis.repo, now=at(1))["pending"][0]["capped"]
     assert learn.awaiting_count(wikis.conn(), at(1)) == 0
-    apply(wikis.repo, "I4", "Another principle about how the learning of corrections is filed.", now=at(9))
+    apply(wikis.repo, "I4", "Bootstrap output starts with the precedence line.", now=at(9))
 
 
 def test_dismissed_corrections_leave_pending(wikis):
@@ -720,7 +723,7 @@ def test_the_cli_speaks_json_for_pending_apply_and_principles(wikis, capsys, mon
         with pytest.raises(SystemExit):
             bootstrap.main([])
     capsys.readouterr()
-    assert learn.run_learn(["principles", "--json", *cwd]) == 0
+    assert learn.run_learn(["principles", "--detail", "--json", *cwd]) == 0
     (p,) = json.loads(capsys.readouterr().out)
     assert p["summary"] == PNPM_RULE and p["evidence"] == 1 and p["served"] == 1 and p["violations"] == 0
     assert p["sources"][0].startswith("I1 my-repo 2026-10-01: No, you used pnpm") and p["serves"] == ["none"]

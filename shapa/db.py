@@ -98,7 +98,7 @@ KEPT_MEMORY_TAGS = (IDEA_TAG, DECISION_TAG)
 #: them (``shapa row add|tag``, ``save``, the local MCP). A pulled record may carry them: a principle
 #: written on one machine syncs to another.
 LEARNING_TAGS = ("principle", "churn", "violation", "repeat", "repeat-checked", "blocked", "learned",
-                 "meta-learning", "dismissed", "soft", "fire")
+                 "meta-learning", "dismissed", "soft", "fire", "promote")
 LEARNING_TAG_PREFIXES = ("violations:", "revisions:", "repeats:", "serves:", "repeat-of:", "last-seen:",
                          "evidence:", "learned-at:", "generalized-into:")
 SYSTEM_TAGS = (SKILL_TAG, FOCUS_TAG, *OWNER_TAGS, IDEA_TAG, DECISION_TAG, *LEARNING_TAGS)
@@ -1377,6 +1377,65 @@ def check_row_tags(tags) -> None:
         n = normalize_label(t)
         if n in LEARNING_TAGS or n.startswith(LEARNING_TAG_PREFIXES):
             raise LedgerError(f"the tag {str(t)[:40]!r} is the learning loop's own (`shapa learn` writes it)")
+
+
+#: One rule per object (operator, 2026-11-20): a principle, or a rule written through ``save`` or the
+#: MCP tool, is ONE imperative sentence. The check is a heuristic on the written form (a list, or
+#: several sentences that each open with a command word); it refuses on write and never rewrites.
+_LIST_LINE = re.compile(r"^\s*(?:\d{1,2}[.)]|[-*•])\s+\S")
+_NUM_LINE = re.compile(r"^\s*\d{1,2}[.)]\s+\S")
+_NUM_INLINE = re.compile(r"(?:^|[\s(])\(?\d{1,2}[.)]\s+[A-Za-z]")
+_SENTENCE_SPLIT = re.compile(r"(?<=[.!?;])\s+(?=\S)|\n+")
+COMMAND_WORDS = frozenset("""always never do dont don't avoid use prefer keep make run write add remove ensure check
+stop put set open close commit push install test read ask tell call create delete update move name pass wrap treat
+only must should stick start finish merge review verify validate document log prefix limit restrict skip fix
+rename split combine reuse replace store save load cache clean reject refuse require allow forbid disable enable
+configure deploy build ship send wait confirm report mention list show hide drop pin lock mark tag link reply
+answer explain return throw catch handle retry fail prompt format lint audit scan delegate pick choose ignore
+respect honor follow obey default""".split())
+
+
+def _first_word(sentence: str) -> str:
+    m = re.match(r"^[\W\d_]*([^\W\d_][\w'’-]*)", sentence)
+    return m.group(1).lower().replace("’", "'") if m else ""
+
+
+def _commands(text: str) -> int:
+    """How many sentences of *text* open with a command word (``Never``, ``Use``, ``Do not``...)."""
+    n = 0
+    for part in _SENTENCE_SPLIT.split(str(text or "").strip()):
+        part = re.sub(r"^\s*(?:\d{1,2}[.)]|[-*•])\s+", "", part)
+        if _first_word(part) in COMMAND_WORDS:
+            n += 1
+    return n
+
+
+def several_rules(summary: str, body: str = "") -> str | None:
+    """Why *summary* (and, more loosely, *body*) holds more than one rule, or ``None`` when it is one.
+    The summary may be neither a list nor two or more command sentences; the body may hold no numbered
+    list and no two imperative bullets (its prose may explain at will)."""
+    s = str(summary or "")
+    if sum(1 for line in s.splitlines() if _NUM_LINE.match(line)) >= 2 or len(_NUM_INLINE.findall(s)) >= 2:
+        return "a numbered list"
+    if sum(1 for line in s.splitlines() if _LIST_LINE.match(line)) >= 2:
+        return "a bulleted list"
+    if _commands(s) >= 2:
+        return "several imperative sentences"
+    b = str(body or "")
+    lines = b.splitlines()
+    if sum(1 for line in lines if _NUM_LINE.match(line)) >= 2 or len(_NUM_INLINE.findall(b)) >= 2:
+        return "a numbered list in the body"
+    if sum(1 for line in lines if _LIST_LINE.match(line) and _commands(line) >= 1) >= 2:
+        return "several imperative bullets in the body"
+    return None
+
+
+def check_atomic_rule(summary: str, body: str = "", *, what: str = "a rule") -> None:
+    """Refuse *what* when it holds several rules: one rule per object, so each can be superseded alone."""
+    why = several_rules(summary, body)
+    if why:
+        raise LedgerError(f"{what} is ONE rule, one imperative sentence; this holds {why}: split it, one rule "
+                          "per object (`shapa learn split R<n> --into TEXT --into TEXT`, or one save each)")
 
 
 def tag(conn: sqlite3.Connection, target: str, tags, *, privileged: bool = False) -> None:

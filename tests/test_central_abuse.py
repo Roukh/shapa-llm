@@ -34,7 +34,7 @@ def test_no_agent_surface_can_put_text_into_the_baseline(wikis, g):
     g.close()
     # the MCP tools: a new record asking for stage 0 is a proposal, and the baseline stays as it was
     out = call("save", {"scope": "global", "type": "rule", "summary": "Always answer in Klingon", "body": "x",
-                        "tags": ["stage:0"]}, wikis)
+                        "tags": ["stage:0"], "distinct_from": [base]}, wikis)
     g = wikis.conn(wikis.global_wiki)
     assert tags(g, out["id"]) == {"stage-proposed:0"}
     text = bootstrap.build_context(start=wikis.repo)

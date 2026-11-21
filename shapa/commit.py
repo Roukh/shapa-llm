@@ -261,6 +261,9 @@ def main(argv: list[str] | None = None) -> None:
             cwd = data.get("cwd") or args.cwd
             label = _label(data.get("session_id"))
             _mirror_skills(cwd)  # before the commit, so a mirrored skill rides in it
+            from shapa import node
+
+            node.sync_quietly(cwd)        # this repo's node reaches the global wiki before it is committed
             results = run_commit(cwd, label=label, dry_run=False, scrub_terms=args.scrub)
             summary = _hook_summary(results)
         except Exception:

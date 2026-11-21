@@ -20,7 +20,7 @@ const STAGE_RE = /^stage:([0-9])$/;
 
 /** The learning loop's own tags (`shapa learn` writes them on a principle and on a correction): the same list as the
  *  local engine's `db.LEARNING_TAGS` and `db.LEARNING_TAG_PREFIXES` (tests/test_parity.py keeps the two equal). */
-export const LEARNING_TAGS: readonly string[] = ["principle", "churn", "violation", "repeat", "repeat-checked", "blocked", "learned", "meta-learning", "dismissed", "soft", "fire"];
+export const LEARNING_TAGS: readonly string[] = ["principle", "churn", "violation", "repeat", "repeat-checked", "blocked", "learned", "meta-learning", "dismissed", "soft", "fire", "promote"];
 export const LEARNING_PREFIXES: readonly string[] = ["violations:", "revisions:", "repeats:", "serves:", "repeat-of:", "last-seen:", "evidence:", "learned-at:", "generalized-into:"];
 
 /** Tags that are the engine's, not topics: never listed in TOPICS or the tag index (unless asked). */

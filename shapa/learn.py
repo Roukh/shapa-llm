@@ -14,10 +14,17 @@ The operator's correction ("no, wrong, not like this", or, while work is claimed
    matching cannot decide meaning, so a call that chooses nothing is refused with the candidates (nearest
    rules and skills, every churned principle, principles serving the same fire). A principle is one rule row
    tagged ``principle``: the statement is its summary, the evidence (id, wiki key, date, text) its body.
-   Global by default; ``--scope repo`` needs ``--why``. A principle for a skill is a rule carrying
+   Global by default; ``--scope repo`` needs ``--why``; ``--project KEY`` makes it a subproject principle
+   (three scopes: global, project, subproject). A principle is ONE imperative sentence, refused on write
+   when it holds a list or several command sentences (:func:`shapa.db.check_atomic_rule`; :func:`split` files
+   each part of one as its own principle). It carries a date (its last revision) and the newer of two that
+   conflict wins: a new principle near an existing rule must name ``--supersedes R<n>`` (the older is
+   deleted once the new one is written, its text kept in the evidence), merge with ``--into`` or claim
+   ``--distinct-from``. A principle for a skill is a rule carrying
    ``skill:NAME``; the existing lesson mechanism files a PENDING version of the skill from it, and only
    ``shapa skill activate`` makes it live. At most :data:`MAX_PRINCIPLES` live principles per wiki
-   (:func:`merge` folds two).
+   (:func:`merge` folds two). :mod:`shapa.node` reflects each repo's principles into the global wiki and files
+   a candidate (an issue tagged ``soft`` and ``promote``) for one two repos share.
 3. **Directed**: every apply records what it serves (``northstar``, ``<wiki key>/F<n>``, or ``none``).
 4. **Loop guards**: a correction is learned once; a principle revised :data:`REVISION_LIMIT` times and
    violated again is ``churn`` (no more revisions, and no ``--new`` beside it: it needs enforcement);
@@ -36,9 +43,12 @@ Tags (ordinary row tags that sync; ``db.RESERVED_ROW_TAGS`` keeps every other wr
 CLI::
 
     shapa learn pending [--json] [--session ID] [--limit N]
-    shapa learn apply ISSUE --principle TEXT (--into R<n>|--into skill:NAME|--new) [--scope global|repo|skill:NAME]
+    shapa learn apply ISSUE --principle TEXT (--into R<n>|--into skill:NAME|--new|--supersedes R<n>)
+                      [--scope global|repo|skill:NAME] [--project KEY] [--distinct-from R<n>]
                       [--why TEXT] [--serves <key>/F<n>|northstar] [--wiki repo|global] [--session ID] [--json]
-    shapa learn dismiss ISSUE [--wiki repo|global]      shapa learn merge SRC DST      shapa learn principles
+    shapa learn dismiss ISSUE [--wiki repo|global]      shapa learn merge SRC DST
+    shapa learn split R<n> --into TEXT --into TEXT ...
+    shapa learn principles [--scope global|repo] [--project KEY] [--json] [--detail]   (id, date, scope, text)
 """
 
 from __future__ import annotations
@@ -67,6 +77,8 @@ REVISION_LIMIT = 3
 META_PER_WEEK = 3
 PRINCIPLES_SHOWN = 4
 MAX_PRINCIPLES = 60       # live principles per wiki
+MAX_SPLIT = 8             # parts one principle is split into
+MAX_SUPERSEDES = 5        # rules one write supersedes
 HOOK_BUSY_S = 1.0         # the prompt path gives up on a lock after this
 CATCHUP_ROWS = 1500       # rows the hook path indexes per call while it catches up
 CANDIDATE_POOL = 80       # candidate chunks scored per search
@@ -194,11 +206,13 @@ class ChooseError(db.LedgerError):
     """``apply`` was given neither ``--into`` nor ``--new`` while candidates exist."""
 
     def __init__(self, candidates: list[dict], message: str = ""):
-        candidates = [{k: c[k] for k in ("id", "wiki", "summary", "churn")} for c in candidates]
+        candidates = [{**{k: c[k] for k in ("id", "wiki", "summary", "churn")}, "date": c.get("date", "")}
+                      for c in candidates]
         self.candidates = candidates
         super().__init__(message or "choose where this principle goes: `--into R<n>` (or `skill:NAME`) to merge it, "
                          "or `--new` if none of these covers it:\n" + "\n".join(
-                             f"  {c['wiki']}/{c['id']}{' [CHURN: needs enforcement]' if c['churn'] else ''} {c['summary']}"
+                             f"  {c['wiki']}/{c['id']}{' [CHURN: needs enforcement]' if c['churn'] else ''}"
+                             f"{' (' + c['date'] + ')' if c['date'] else ''} {c['summary']}"
                              for c in candidates))
 
 
@@ -301,7 +315,7 @@ def _chunks_of(row: db.Row) -> list[str]:
     chunks = [row.summary]
     for line in (row.body or "").splitlines():
         line = line.strip()
-        if line == "Evidence:" or len(line) < 8:
+        if line == "Evidence:" or len(line) < 8 or line.startswith(("- supersedes ", "- split from ")):
             continue
         m = re.match(r"^- [A-Z]\d+ \S+ \d{4}-\d\d-\d\d: (.+)$", line)
         chunks.append((m.group(1) if m else re.sub(r"^(?:Also|Why):\s*", "", line))[:CHUNK_CHARS])
@@ -996,6 +1010,11 @@ def resolve_serves(conn, explicit: str | None, key: str, label: str) -> str:
     return "none"
 
 
+def date_of(row) -> str:
+    """A principle's date: the day it was last revised (written, merged into or re-tagged)."""
+    return str(row.updated or row.created or "")[:10]
+
+
 def live_principles(conn) -> list[str]:
     return [r[0] for r in conn.execute("SELECT t.id FROM tags t JOIN mri m ON m.id = t.id "
                                        "WHERE t.tag = 'principle' AND m.kind = 'R'")]
@@ -1019,15 +1038,17 @@ def _candidates(ss: list[Scope], target: Scope, principle: str, serve: str, embe
                 r = db.get_row(conn, h.rid)
                 if r is not None:
                     out[h.rid] = {"id": h.rid, "wiki": target.label, "summary": flatten(r.summary),
-                                  "churn": "churn" in _tags(conn, h.rid),
-                                  "near": h.lex >= CHURN_NEAR or (h.cos or 0.0) >= COS_MERGE}
+                                  "churn": "churn" in _tags(conn, h.rid), "date": date_of(r),
+                                  "near": h.lex >= CHURN_NEAR or (h.cos or 0.0) >= COS_MERGE,
+                                  "similar": h.merge}
         if serve != "none":
             for (rid,) in conn.execute("SELECT id FROM tags WHERE tag = ?", (f"serves:{serve}",)).fetchall():
                 tg = _tags(conn, rid)
                 r = db.get_row(conn, rid) if "principle" in tg else None
                 if r is not None:
                     out.setdefault(rid, {"id": rid, "wiki": target.label, "summary": flatten(r.summary),
-                                         "churn": "churn" in tg, "near": False})
+                                         "churn": "churn" in tg, "near": False, "similar": False,
+                                         "date": date_of(r)})
     finally:
         conn.close()
     qt = tokens(principle)
@@ -1036,7 +1057,7 @@ def _candidates(ss: list[Scope], target: Scope, principle: str, serve: str, embe
         if name not in seen and dice(qt, tokens(line)) >= 0.25:
             seen.add(name)
             out[f"skill:{name}"] = {"id": f"skill:{name}", "wiki": label, "summary": flatten(line),
-                                    "churn": False, "near": False}
+                                    "churn": False, "near": False, "similar": False, "date": ""}
     return sorted(out.values(), key=lambda c: (not c["churn"], c["id"]))
 
 
@@ -1070,7 +1091,11 @@ def _parse_into(into: str | None, ss: list[Scope]) -> tuple[str | None, str | No
 
 def apply(cwd, issue_id: str, principle: str, *, scope: str = "global", into: str | None = None,
           new: bool = False, why: str = "", serves: str | None = None, wiki: str | None = None,
-          distinct_from=(), session: str = "", now: datetime | None = None, embedder="auto") -> dict:
+          distinct_from=(), supersedes=(), project: str | None = None, session: str = "",
+          now: datetime | None = None, embedder="auto") -> dict:
+    """Record the principle correction *issue_id* implies. A principle is ONE imperative sentence (one rule
+    per object); it is dated, and the newer of two that conflict wins: *supersedes* names the rules it
+    replaces, which are deleted once it is written (their text stays in its evidence)."""
     now = now or datetime.now(timezone.utc)
     emb = _embedder(embedder)
     ss = scopes(cwd)
@@ -1078,6 +1103,13 @@ def apply(cwd, issue_id: str, principle: str, *, scope: str = "global", into: st
         raise CommandError("no wiki with a database in scope")
     if into and new:
         raise db.LedgerError("--into and --new are two answers to one question: give one")
+    if supersedes and not into:
+        new = True                                        # naming what it replaces is the choice
+    pkey = ""
+    if project:
+        pkey = str(project).strip()
+        db.check_project_tags([db.PROJECT_PREFIX + pkey])
+    db.check_atomic_rule(str(principle or ""), str(why or ""), what="a principle")
     home, row = None, None
     for s in (x for x in ss if wiki in (None, x.label)):
         c = s.conn()
@@ -1125,7 +1157,7 @@ def apply(cwd, issue_id: str, principle: str, *, scope: str = "global", into: st
         serve = resolve_serves(hconn, serves, home.key, home.label)
         text = inert(issue_text(row))
         res = _apply_rule(ss, target, home, row, principle, text, why, serve, rule_id, new, skill_name, now, emb,
-                         list(distinct_from or ()))
+                         list(distinct_from or ()), supersedes=list(supersedes or ()), project=pkey)
         res["warnings"] = warnings
         res["scope"] = f"skill:{skill_name}" if skill_name else target.label
         group = [row.id]
@@ -1162,7 +1194,8 @@ def _forget_mirrors(ss: list[Scope], home: Scope, ids: list[str]) -> None:
 
 def _apply_rule(ss, target: Scope, home: Scope, row: db.Row, principle: str, text: str, why: str, serve: str,
                 rule_id: str | None, new: bool, skill_name: str | None, now: datetime, emb,
-                distinct_from: list[str] | None = None) -> dict:
+                distinct_from: list[str] | None = None, supersedes: list[str] | None = None,
+                project: str = "") -> dict:
     """File *principle* in *target*'s wiki: merge into the rule the caller named, or add a new principle
     when the caller says so. Refuses to guess."""
     conn = target.conn()
@@ -1170,6 +1203,8 @@ def _apply_rule(ss, target: Scope, home: Scope, row: db.Row, principle: str, tex
         rules = {r.id: r for r in db.rows(conn, "R")} if rule_id is None and not new else {}
         pt = tokens(principle)
         cands = _candidates(ss, target, principle, serve, emb, skill_name)
+        olds = plan_supersede(conn, target, supersedes, principle=principle, emb=emb, into_id=rule_id)
+        sup_lines = supersede_lines(olds)
         chosen = None
         if rule_id:
             chosen = db.get_row(conn, rule_id)
@@ -1207,7 +1242,14 @@ def _apply_rule(ss, target: Scope, home: Scope, row: db.Row, principle: str, tex
                                          "beside it. If this is a different subject, say so: `--new "
                                          f"--distinct-from {c0['id']}`; otherwise ask the operator for a hook or "
                                          "a test")
-            if len(live_principles(conn)) >= MAX_PRINCIPLES:
+            sup_ids = {o.id for o in olds}
+            similar = [c for c in cands if c.get("similar") and not c["churn"] and not c["id"].startswith("skill:")
+                       and c["id"] not in claimed and f"{c['wiki']}/{c['id']}" not in claimed
+                       and c["id"] not in sup_ids]
+            if similar:
+                raise ChooseError(similar, SIMILAR_MESSAGE + "\n" + "\n".join(
+                    f"  {c['wiki']}/{c['id']} ({c['date']}) {c['summary']}" for c in similar))
+            if len(live_principles(conn)) - sum(1 for o in olds if "principle" in o.tags) >= MAX_PRINCIPLES:
                 raise db.LedgerError(f"the {target.label} wiki holds {MAX_PRINCIPLES} principles, the most it keeps: "
                                      "merge two first (`shapa learn merge SRC DST`) or file this one with --into")
         stamp = db.now_iso(now)
@@ -1222,14 +1264,18 @@ def _apply_rule(ss, target: Scope, home: Scope, row: db.Row, principle: str, tex
                 if dice(pt, tokens(r.summary)) >= LEX_TOPIC and opposite(principle, r.summary):
                     conflicts.append(r.id)
             head = [f"Why: {why}"] if why else []
-            rid, created = db.add_row(conn, "R", principle, _join_body(head, [entry_line]),
-                                      tags=["principle", f"serves:{serve}", "evidence:1", f"last-seen:{stamp}"] + extra,
+            rid, created = db.add_row(conn, "R", principle, _join_body(head, [entry_line, *sup_lines]),
+                                      tags=["principle", f"serves:{serve}", "evidence:1", f"last-seen:{stamp}"]
+                                      + extra + ([db.PROJECT_PREFIX + project] if project else []),
                                       source="learn", now=now)
             if created:
+                conflicts = [c for c in conflicts if c not in {o.id for o in olds}]
                 for c in conflicts[:3]:
                     db.link(conn, rid, c, "conflicts")
+                gone = retire(ss, target, conn, olds, rid)
                 _post_write(target, rid, now)
-                return {"action": "created", "target": rid, "wiki": target.label, "conflicts": conflicts[:3]}
+                return {"action": "created", "target": rid, "wiki": target.label, "conflicts": conflicts[:3],
+                        "superseded": gone}
             chosen = db.get_row(conn, rid)          # the identical principle is already stored
         if f"{db.STAGE_PREFIX}0" in _tags(conn, chosen.id):
             raise db.LedgerError(f"{chosen.id} is baseline (stage 0): its text and tags change only from the local "
@@ -1246,6 +1292,7 @@ def _apply_rule(ss, target: Scope, home: Scope, row: db.Row, principle: str, tex
         seen = any(l.startswith(f"- {key}:") for l in ev)
         if not seen:
             ev.append(entry_line)
+        ev.extend(l for l in sup_lines if l not in ev)
         tg = _tags(conn, chosen.id)
         n_evidence = _count(tg, "evidence:") + (0 if seen else 1)
         ev = ev[-EVIDENCE_KEEP:]
@@ -1263,14 +1310,15 @@ def _apply_rule(ss, target: Scope, home: Scope, row: db.Row, principle: str, tex
         _set_tags(conn, chosen.id, mapping, extra=["principle", f"serves:{serve}"])
         if skill_name and f"skill:{skill_name}" not in tg:
             db.tag(conn, chosen.id, [f"skill:{skill_name}"])   # files the pending version, once
+        gone = retire(ss, target, conn, olds, chosen.id)
         _post_write(target, chosen.id, now)
         return {"action": "merged", "target": chosen.id, "wiki": target.label, "conflicts": [],
-                "revision": outstanding}
+                "revision": outstanding, "superseded": gone}
     finally:
         conn.close()
 
 
-def _post_write(target: Scope, rid: str, now: datetime) -> None:
+def _post_write(target: Scope, rid: str, now: datetime, local: bool = True) -> None:
     """Keep the derived index current with a rule just written, and remember this device wrote it."""
     try:
         c = target.conn()
@@ -1283,7 +1331,227 @@ def _post_write(target: Scope, rid: str, now: datetime) -> None:
             c.close()
     except Exception:
         pass
-    _mark_local(target.root, rid, now)
+    if local:
+        _mark_local(target.root, rid, now)
+
+
+SIMILAR_MESSAGE = ("a rule this near already exists, and the newer of two that conflict wins: `--supersedes R<n>` "
+                   "(MCP: `supersedes: [\"R<n>\"]`) files this one and deletes the older, `--into R<n>` merges "
+                   "into it, or `--distinct-from R<n>` says this is a different subject:")
+
+
+def _same_subject(text: str, old: db.Row, emb) -> bool:
+    """Whether *old* is about what *text* says: a share of its words (also its ``Also:`` wordings), or a
+    near vector. An unprivileged write may delete only what it is about."""
+    qt = tokens(text)
+    heads, _ = _split_body(old.body)
+    wordings = [old.summary] + [re.sub(r"^Also:\s*", "", l) for l in heads if l.startswith("Also:")]
+    if any(dice(qt, tokens(w)) >= CHURN_NEAR for w in wordings):
+        return True
+    if emb is not None:
+        try:
+            a, b = emb([text])[0], emb([old.summary])[0]
+            return sum(float(x) * float(y) for x, y in zip(a, b)) >= COS_MERGE
+        except Exception:
+            return False
+    return False
+
+
+def plan_supersede(conn, target: Scope, refs, *, principle: str, emb=None, into_id: str | None = None,
+                   privileged: bool = False) -> list[db.Row]:
+    """The rules a write replaces, all checked before anything is written. They must be rules of the SAME
+    wiki the write goes to (``R<n>`` or ``<label>/R<n>``), at most :data:`MAX_SUPERSEDES`; a baseline (stage 0)
+    rule is the operator's (*privileged*, the local CLI, alone replaces it); a churned principle needs
+    enforcement, not a successor that sheds the mark; and an unprivileged write replaces only what it is about."""
+    refs = list(dict.fromkeys(str(r).strip() for r in (refs or ()) if str(r).strip()))
+    if not refs:
+        return []
+    if len(refs) > MAX_SUPERSEDES:
+        raise db.LedgerError(f"a write supersedes at most {MAX_SUPERSEDES} rules")
+    out = []
+    for ref in refs:
+        label, rid = ref.split("/", 1) if "/" in ref else (None, ref)
+        if label is not None and label != target.label:
+            raise db.LedgerError(f"a rule supersedes only rules of its own wiki ({target.label}), not {ref!r}")
+        if not re.fullmatch(r"R[1-9]\d*", rid):
+            raise db.LedgerError(f"--supersedes names rules as R<n>, got {ref!r}")
+        r = db.get_row(conn, rid)
+        if r is None or r.kind != "R" or r.id != rid:
+            raise db.LedgerError(f"no rule {rid!r} in the {target.label} wiki to supersede")
+        tg = set(r.tags)
+        if f"{db.STAGE_PREFIX}0" in tg and not privileged:
+            raise db.LedgerError(f"{r.id} is baseline (stage 0): only the operator's local CLI supersedes it "
+                                 f"(`shapa save --type rule --supersedes {r.id}`)")
+        if "churn" in tg:
+            raise db.LedgerError(f"{r.id} needs enforcement, not rewording: it is not superseded to shed that "
+                                 "(`shapa learn unchurn` once enforcement exists)")
+        if into_id and r.id == into_id:
+            raise db.LedgerError(f"{r.id} cannot be both the rule this merges into and the rule it supersedes: give one")
+        if not privileged and not _same_subject(principle, r, emb):
+            raise db.LedgerError(f"{r.id} is not about the same subject as this rule: a write supersedes only "
+                                 "what it conflicts with")
+        out.append(r)
+    return out
+
+
+def supersede_lines(olds: list[db.Row]) -> list[str]:
+    """The evidence a superseding principle keeps of what it replaced: ``- supersedes R3 (date): old text``."""
+    return [f"- supersedes {o.id} ({date_of(o)}): {flatten(o.summary, 140)}" for o in olds]
+
+
+def _repoint(ss: list[Scope], target: Scope, src: str, dst: str, conn=None) -> None:
+    """Corrections that became rule *src* now point at *dst* (both in *target*'s wiki)."""
+    own = conn if conn is not None else target.conn()
+    try:
+        own.execute("UPDATE OR IGNORE tags SET tag = ? WHERE tag = ?", (f"generalized-into:{dst}", f"generalized-into:{src}"))
+    finally:
+        if conn is None:
+            own.close()
+    for s in ss:
+        if s is not target:
+            c2 = s.conn()
+            try:
+                c2.execute("UPDATE OR IGNORE tags SET tag = ? WHERE tag = ?",
+                           (f"generalized-into:{target.label}:{dst}", f"generalized-into:{target.label}:{src}"))
+            finally:
+                c2.close()
+
+
+def retire(ss: list[Scope], target: Scope, conn, olds: list[db.Row], new_id: str) -> list[str]:
+    """Delete the superseded rules (tombstoned, so a hosted store learns of it), after the new one is
+    written. A rule is never retired in favour of itself. Returns the ids deleted."""
+    gone = [o.id for o in olds if o.id != new_id]
+    if not gone:
+        return []
+    db.delete(conn, gone)
+    for oid in gone:
+        _repoint(ss, target, oid, new_id, conn)
+    try:
+        with LearnIndex(target.root, timeout=5.0) as ix:
+            for oid in gone:
+                ix.drop(oid)
+            for oid in gone:
+                ix.conn.execute("DELETE FROM p_local WHERE id = ?", (oid,))
+            ix.conn.commit()
+    except Exception:
+        pass
+    return gone
+
+
+def write_rule(root, label: str, summary: str, body: str, tags, *, alias: str | None = None, supersedes=(),
+               distinct_from=(), privileged: bool = False, now: datetime | None = None, embedder="auto") -> dict:
+    """Write one rule row through ``save`` (the CLI, the MCP tool). One rule per object is checked by the
+    caller; here: a rule this near an existing one (a share of its words, or a near vector) is refused with
+    the candidates unless the write names what it ``supersedes`` (deleted once this one is written, its text
+    kept in the evidence) or claims ``distinct_from`` it. Returns ``{"id", "created", "superseded"}``."""
+    now = now or datetime.now(timezone.utc)
+    emb = _embedder(embedder)
+    target = Scope(label, Path(root), metrics.repo_key(root))
+    conn = target.conn()
+    try:
+        olds = plan_supersede(conn, target, supersedes, principle=summary, emb=emb, privileged=privileged)
+        sup_ids = {o.id for o in olds}
+        claimed = {str(x).strip() for x in (distinct_from or ())}
+        from shapa.redact import redact
+
+        flat = db.one_line(redact(summary))
+        digest = db.content_hash(flat, redact(str(body or "").strip()))
+        stored = conn.execute("SELECT 1 FROM mri WHERE hash = ? AND kind = 'R'", (digest,)).fetchone() is not None
+        similar = []
+        try:
+            with LearnIndex(root, timeout=2.0) as idx:
+                idx.sync(conn, max_rows=CATCHUP_ROWS)
+                for h in idx.search(summary, NEAREST_SHOWN, kinds=("R",), embedder=emb, wiki=label):
+                    r = db.get_row(conn, h.rid)
+                    if (r is None or not h.merge or r.id in sup_ids or r.id in claimed or f"{label}/{r.id}" in claimed
+                            or r.summary == flat):
+                        continue
+                    similar.append({"id": r.id, "wiki": label, "summary": flatten(r.summary),
+                                    "churn": "churn" in r.tags, "date": date_of(r)})
+        except sqlite3.Error:
+            similar = []
+        if similar and not stored:           # saying the same thing again is no conflict
+            raise ChooseError(similar, SIMILAR_MESSAGE + "\n" + "\n".join(
+                f"  {c['wiki']}/{c['id']} ({c['date']}) {c['summary']}" for c in similar))
+        lines = supersede_lines(olds)
+        full = _join_body([body] if body else [], lines)
+        rid, created = db.add_row(conn, "R", summary, full, tags=list(tags or []), alias=alias or None,
+                                  source="save", privileged=privileged, now=now)
+        gone = retire([target], target, conn, olds, rid)
+        _post_write(target, rid, now, local=False)
+        return {"id": rid, "created": created, "superseded": gone}
+    finally:
+        conn.close()
+
+
+def split(cwd, ref: str, parts, wiki: str | None = None, *, now: datetime | None = None) -> dict:
+    """Split principle *ref* into one principle per part, each ONE rule: same wiki, same goal, the evidence
+    copied, a ``split from`` line added; then the original is deleted (tombstoned). A part equal to the
+    original's own text keeps the original as that part. Churned and baseline principles are not split."""
+    now = now or datetime.now(timezone.utc)
+    ss = scopes(cwd)
+    label = wiki
+    if "/" in ref:
+        label, ref = ref.split("/", 1)
+    target = next((s for s in ss if s.label == (label or "global")), None)
+    if target is None:
+        raise CommandError("no such wiki in scope")
+    texts = list(dict.fromkeys(str(p) for p in (parts or ())))
+    if len(texts) < 2:
+        raise db.LedgerError("a split gives at least two parts: --into TEXT --into TEXT")
+    if len(texts) > MAX_SPLIT:
+        raise db.LedgerError(f"a principle is split into at most {MAX_SPLIT} parts")
+    cleaned = []
+    for t in texts:
+        db.check_atomic_rule(t, what="each part")
+        cleaned.append(clean_principle(t))
+    cleaned = list(dict.fromkeys(cleaned))
+    if len(cleaned) < 2:
+        raise db.LedgerError("a split gives at least two different parts")
+    conn = target.conn()
+    try:
+        src = db.get_row(conn, ref)
+        tg = set(src.tags) if src is not None else set()
+        if src is None or src.kind != "R" or "principle" not in tg:
+            raise db.LedgerError(f"{ref} is not a principle of the {target.label} wiki")
+        if "churn" in tg:
+            raise db.LedgerError(f"{src.id} needs enforcement, not rewording: it cannot be split to shed that")
+        if f"{db.STAGE_PREFIX}0" in tg:
+            raise db.LedgerError(f"{src.id} is baseline (stage 0): it changes only from the local CLI "
+                                 "(`shapa stage clear` first)")
+        if len(live_principles(conn)) - 1 + len(cleaned) > MAX_PRINCIPLES:
+            raise db.LedgerError(f"the {target.label} wiki holds at most {MAX_PRINCIPLES} principles: "
+                                 "merge two first (`shapa learn merge SRC DST`)")
+        head, ev = _split_body(src.body)
+        why = [l for l in head if l.startswith("Why:")]
+        stamp = db.now_iso(now)
+        ev = [*ev[-(EVIDENCE_KEEP - 1):], f"- split from {src.id} ({date_of(src)})"]
+        keep = [t for t in tg if t.startswith(("serves:", db.PROJECT_PREFIX, "skill:"))]
+        own = flatten(src.summary, 10 ** 6)
+        ids, kept = [], False
+        for text in cleaned:
+            if text == own:
+                ids.append(src.id)
+                kept = True
+                continue
+            rid, _ = db.add_row(conn, "R", text, _join_body(why, ev),
+                                tags=["principle", f"evidence:{len(ev)}", f"last-seen:{stamp}", *keep],
+                                source="learn", now=now)
+            ids.append(rid)
+        if not kept:
+            _repoint(ss, target, src.id, ids[0], conn)
+            db.delete(conn, [src.id])
+    finally:
+        conn.close()
+    try:
+        with LearnIndex(target.root, timeout=5.0) as ix:
+            if not kept:
+                ix.drop(src.id)
+    except Exception:
+        pass
+    for rid in ids:
+        _post_write(target, rid, now)
+    return {"split": src.id, "into": ids, "wiki": target.label}
 
 
 def merge(cwd, src: str, dst: str, wiki: str | None = None) -> dict:
@@ -1325,15 +1593,7 @@ def merge(cwd, src: str, dst: str, wiki: str | None = None) -> dict:
         db._merge_into(conn, a.id, b.id)
         db.update_row(conn, b.id, body=_join_body(bh, ev))
         _set_tags(conn, b.id, {"evidence:": max(_count(_tags(conn, b.id), "evidence:"), len(ev))})
-        conn.execute("UPDATE OR IGNORE tags SET tag = ? WHERE tag = ?", (f"generalized-into:{b.id}", f"generalized-into:{a.id}"))
-        for s in ss:
-            if s is not target:
-                c2 = s.conn()
-                try:
-                    c2.execute("UPDATE OR IGNORE tags SET tag = ? WHERE tag = ?",
-                               (f"generalized-into:{target.label}:{b.id}", f"generalized-into:{target.label}:{a.id}"))
-                finally:
-                    c2.close()
+        _repoint(ss, target, a.id, b.id, conn)
         db.delete(conn, [a.id])
     finally:
         conn.close()
@@ -1381,6 +1641,36 @@ def unchurn(cwd, ref: str, wiki: str | None = None) -> dict:
     return {"unchurned": ref, "wiki": target.label, "unblocked": lifted}
 
 
+def scope_of(label: str, tags) -> str:
+    """A principle's scope: ``global`` (the global wiki), ``project`` (a repo wiki) or ``subproject:KEY``
+    (a repo wiki, tagged ``project:KEY`` with a subproject key)."""
+    if label == "global":
+        return "global"
+    key = tag_of(set(tags), db.PROJECT_PREFIX)
+    return f"subproject:{key}" if key else "project"
+
+
+def principle_list(cwd=None, scope: str | None = None, project: str | None = None) -> list[list[str]]:
+    """The live principles as ``[id, date, scope, text]``: *scope* (``global`` or ``repo``) picks the wiki,
+    *project* only the principles tagged ``project:KEY``. Newest first."""
+    out = []
+    for s in scopes(cwd):
+        if scope and s.label != scope:
+            continue
+        conn = s.conn()
+        try:
+            for rid in live_principles(conn):
+                r = db.get_row(conn, rid)
+                if r is None:
+                    continue
+                if project and tag_of(set(r.tags), db.PROJECT_PREFIX) != project:
+                    continue
+                out.append([r.id, date_of(r), scope_of(s.label, r.tags), flatten(r.summary)])
+        finally:
+            conn.close()
+    return sorted(out, key=lambda x: (x[1], x[0]), reverse=True)
+
+
 def principles(cwd=None) -> list[dict]:
     """Every principle in scope with what it records: its source corrections (id, wiki key, date, text),
     why (a repo-scoped one), times violated and revised, last seen, the goals it serves, and, on this
@@ -1403,7 +1693,8 @@ def principles(cwd=None) -> list[dict]:
                 tg = set(r.tags)
                 head, ev = _split_body(r.body)
                 out.append({
-                    "id": r.id, "wiki": s.label, "summary": flatten(r.summary),
+                    "id": r.id, "wiki": s.label, "summary": flatten(r.summary), "date": date_of(r),
+                    "scope": scope_of(s.label, tg),
                     "why": next((l[5:].strip() for l in head if l.startswith("Why:")), ""),
                     "evidence": _count(tg, "evidence:"), "sources": [e.lstrip("- ") for e in ev],
                     "violations": _count(tg, "violations:"), "revisions": _count(tg, "revisions:"),
@@ -1562,7 +1853,13 @@ def run_learn(argv: list[str]) -> int:
     ap.add_argument("--into", default=None, help="merge into this rule (R<n>, global/R<n>, repo/R<n>) or skill:NAME")
     ap.add_argument("--new", action="store_true", help="no listed candidate covers it")
     ap.add_argument("--distinct-from", action="append", default=[], metavar="R<n>",
-                    help="with --new: a churned principle near this one is about a different subject (recorded)")
+                    help="with --new: a principle near this one (a churned one included) is about a different "
+                         "subject (recorded)")
+    ap.add_argument("--supersedes", action="append", default=[], metavar="R<n>",
+                    help="the newer principle wins: delete this older rule once this one is written (its text "
+                         "stays in the evidence)")
+    ap.add_argument("--project", default=None, metavar="KEY",
+                    help="a subproject principle: tag project:KEY (in a repo wiki)")
     ap.add_argument("--serves", default=None, help="<wiki key>/F<n> or northstar (default: the claimed fire)")
     ap.add_argument("--wiki", choices=["repo", "global"], default=None, help="the wiki holding the issue")
     ap.add_argument("--session", default="")
@@ -1577,12 +1874,34 @@ def run_learn(argv: list[str]) -> int:
     uc = add("unchurn", help="enforcement now exists for a churned principle: clear churn and its revisions")
     uc.add_argument("principle")
     uc.add_argument("--wiki", choices=["repo", "global"], default=None)
-    pr = add("principles", help="the principles, with their evidence, violations and serves")
+    pr = add("principles", help="the principles as id, date, scope (global, project, subproject:KEY), text")
     pr.add_argument("--json", action="store_true")
+    pr.add_argument("--scope", choices=["global", "repo"], default=None, help="only the global wiki or this repo's")
+    pr.add_argument("--project", default=None, metavar="KEY", help="only principles tagged project:KEY")
+    pr.add_argument("--detail", action="store_true", help="with evidence, violations, revisions and serves")
+    sp = add("split", help="split principle SRC into one principle per --into TEXT (each ONE rule)")
+    sp.add_argument("src")
+    sp.add_argument("--into", action="append", default=[], metavar="TEXT")
+    sp.add_argument("--wiki", choices=["repo", "global"], default=None)
     add("reindex", help="catch the derived similarity index up")
     args = p.parse_args(argv)
+    if args.cmd == "principles" and not args.detail:
+        rows_ = principle_list(args.cwd, args.scope, args.project)
+        if args.json:
+            print(json.dumps(rows_))
+        for x in ([] if args.json else rows_):
+            print("\t".join(x))
+        return 0
+    if args.cmd == "split":
+        res = split(args.cwd, args.src, args.into, args.wiki)
+        print(f"{res['split']} [{res['wiki']}] split into {', '.join(res['into'])}")
+        return 0
     if args.cmd == "principles":
         res = principles(args.cwd)
+        if args.scope:
+            res = [x for x in res if x["wiki"] == args.scope]
+        if args.project:
+            res = [x for x in res if x["scope"] == f"subproject:{args.project}"]
         if args.json:
             print(json.dumps(res, sort_keys=True))
         for x in ([] if args.json else res):
@@ -1594,7 +1913,7 @@ def run_learn(argv: list[str]) -> int:
         try:
             res = apply(args.cwd, args.issue, args.principle, scope=args.scope, why=args.why, into=args.into,
                         new=args.new, serves=args.serves, wiki=args.wiki, session=args.session,
-                        distinct_from=args.distinct_from)
+                        distinct_from=args.distinct_from, supersedes=args.supersedes, project=args.project)
         except ChooseError as exc:
             if args.json:
                 print(json.dumps({"error": "choose", "candidates": exc.candidates, "message": str(exc)}, sort_keys=True))
@@ -1606,7 +1925,8 @@ def run_learn(argv: list[str]) -> int:
             print(f"{res['issue']} is already learned (into {res.get('target')})")
         else:
             print(f"{res['issue']} learned: {res['action']} {res['target']} [{res['wiki']}], serves {res['serves']}"
-                  + (f"; conflicts {', '.join(res['conflicts'])}" if res.get("conflicts") else ""))
+                  + (f"; conflicts {', '.join(res['conflicts'])}" if res.get("conflicts") else "")
+                  + (f"; superseded {', '.join(res['superseded'])}" if res.get("superseded") else ""))
         return 0
     if args.cmd == "dismiss":
         res = dismiss(args.cwd, args.issue, args.wiki)

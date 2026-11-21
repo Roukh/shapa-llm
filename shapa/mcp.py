@@ -282,10 +282,14 @@ def tool_save(args: dict[str, Any], cwd: str | None) -> dict[str, Any]:
     from shapa import db, save as save_mod
 
     if db.exists(root):
+        supersedes, distinct = args.get("supersedes") or [], args.get("distinct_from") or []
+        for name, v in (("supersedes", supersedes), ("distinct_from", distinct)):
+            if not isinstance(v, list) or not all(isinstance(x, str) for x in v):
+                return {"error": f"{name} must be a list of rule ids"}
         return save_mod.save_row(root, scope, note_type, summary, body, tags,
                                  alias=str(args.get("id") or "").strip(),
                                  project=str(args.get("project") or "").strip() or None,
-                                 merge=bool(args.get("merge")))
+                                 merge=bool(args.get("merge")), supersedes=supersedes, distinct_from=distinct)
     if note_type in DB_ONLY_TYPES:
         return {"error": f"type {note_type!r} needs a format-4 wiki (a shapa.db) - "
                          f"run `shapa upgrade {root}` first"}
@@ -820,6 +824,18 @@ TOOLS: list[dict[str, Any]] = [
                     "type": "boolean",
                     "description": "document only: append this one as a section of the project's "
                                    "existing document instead of refusing it.",
+                },
+                "supersedes": {
+                    "type": "array", "items": {"type": "string"},
+                    "description": "rule only: ids (R<n>) of older rules of the SAME wiki this one replaces; "
+                                   "the newer wins and they are deleted. A rule is ONE imperative sentence; one "
+                                   "near an existing rule is refused with the candidates unless it supersedes "
+                                   "them or names them in `distinct_from`. Baseline rules cannot be superseded "
+                                   "here.",
+                },
+                "distinct_from": {
+                    "type": "array", "items": {"type": "string"},
+                    "description": "rule only: ids of near rules this one is a different subject from.",
                 },
                 "root": {
                     "type": "string",
