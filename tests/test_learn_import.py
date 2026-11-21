@@ -244,7 +244,8 @@ def test_global_principles_and_memories_are_staged_and_the_mempm_shows_their_dat
 
 def test_the_stage_budget_is_never_raised_the_newest_principles_are_staged_first(wikis, tmp_path):
     budget = db.BASELINE_BUDGET
-    many = [entry(f"Keep area number {i:02d} aligned with the written plan before any change of kind {i * 7}.",
+    pad = " and say so in the review notes before the change is merged into the shared branch for good."
+    many = [entry(f"Keep area number {i:02d} aligned with the written plan before any change of kind {i * 7}{pad}"[:150],
                   date=f"2026-11-{1 + i % 28:02d}", sources=("src/R%d" % i, "other/I%d" % i)) for i in range(55)]
     mems = [memory(f"Fact number {i:02d} about the setup of the shared tooling.") for i in range(5)]
     res = run(wikis, dump(tmp_path, "global", principles=many, memories=mems))
@@ -271,9 +272,10 @@ def test_memories_are_staged_most_recent_first_while_the_budget_holds(wikis, tmp
     p = entry("Keep each change small and reviewed before it merges.")
     c = wikis.conn(wikis.global_wiki)
     try:
-        filler = "f" * 5000
-        rid, _ = db.add_row(c, "R", "A standing rule that fills most of the baseline.", filler, tags=["stage:0"],
-                            privileged=True)
+        # the budget counts one-line summaries only: 31 standing rules of 160 characters fill most of it
+        for i in range(31):
+            db.add_row(c, "R", f"Standing rule {i:02d} " + "f" * 144, "a body that costs nothing", tags=["stage:0"],
+                       privileged=True)
     finally:
         c.close()
     res = run(wikis, dump(tmp_path, "global", principles=[p], memories=mems))

@@ -317,7 +317,7 @@ def _run(conn, root, label: str, fresh: list[Planned], present: list[str], now: 
                     p.existing_staged = f"{db.STAGE_PREFIX}0" in tags
                     p.size = 0 if p.existing_staged else stages.record_size(conn, p.existing)
                 else:
-                    p.size = len(db.one_line(redact(p.summary))) + len(redact(p.body.strip()))
+                    p.size = len(db.one_line(redact(p.summary)))
             order = sorted((p for p in fresh if p.cls == "principle"), key=lambda p: p.date, reverse=True)
             order += sorted((p for p in fresh if p.cls == "memory"), key=lambda p: p.date, reverse=True)
             free = budget - used

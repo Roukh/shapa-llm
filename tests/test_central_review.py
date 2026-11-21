@@ -168,8 +168,19 @@ def test_two_repos_with_one_name_and_no_origin_show_their_own_tasks(tmp_path):
 
 # --- blocker 4: the 6,000-character cap on every path -----------------------------------------------
 
+def _fill_baseline(add, used: int) -> None:
+    """Reach `used` characters of stage-0 summaries (a body costs nothing and a summary is one line of at
+    most db.SUMMARY_MAX characters), so with many records, never one huge summary."""
+    n = 0
+    while used > 0:
+        size = min(used, db.SUMMARY_MAX)
+        add(f"{n:04d}" + "x" * (size - 4) if size > 4 else "x" * size)
+        used -= size
+        n += 1
+
+
 def _baseline_with_room(g, used: int):
-    db.add_row(g, "R", "x" * 100, "y" * (used - 100), tags=["stage:0"], privileged=True)
+    _fill_baseline(lambda s: db.add_row(g, "R", s, "", tags=["stage:0"], privileged=True), used)
 
 
 def _skill(g, desc="short", stage=True):
@@ -189,6 +200,15 @@ def test_editing_a_staged_skill_version_cannot_pass_the_baseline_cap(g):
     ok = "---\nname: vox\ndescription: " + "d" * 300 + "\n---\nBODY"
     db.update_doc(g, doc, body=ok, privileged=True)
     assert stages.baseline_size(g) == 5200 + 300
+
+
+def test_a_huge_body_on_a_stage_zero_rule_costs_nothing_against_the_cap(g):
+    _baseline_with_room(g, db.BASELINE_BUDGET - 10)
+    rid, _ = db.add_row(g, "R", "short rule", "b" * 50_000, tags=["stage:0"], privileged=True)
+    assert stages.baseline_size(g) == db.BASELINE_BUDGET  # only the 10-character summary counted
+    with pytest.raises(db.LedgerError, match="baseline"):
+        db.add_row(g, "R", "one summary too many", "", tags=["stage:0"], privileged=True)
+    assert db.get_row(g, rid).body == "b" * 50_000
 
 
 def test_setting_a_long_skill_to_stage_zero_checks_its_description(g):
@@ -273,22 +293,26 @@ def test_a_pulled_baseline_record_goes_through_the_cap_on_the_real_apply_path(gl
     dev = global_device
     dev.sync()  # registers the wiki on the server
     c = dev.conn()
-    db.add_row(c, "R", "x" * 100, "y" * 4900, tags=["stage:0"], privileged=True)  # 5000 used
+    _fill_baseline(lambda s: db.add_row(c, "R", s, "", tags=["stage:0"], privileged=True), 5000)  # 5000 used
     c.close()
-    double.remote_put("global", skill_wire("D5", "big", "d" * 1000))                     # 6,000: exactly the cap
+    double.remote_put("global", skill_wire("D5", "big", "d" * 900))                      # 5,900: fits
     double.remote_put("global", skill_wire("D6", "huge", "e" * 1000))                    # one more: over
     double.remote_put("global", skill_wire("D7", "tiny", "short", status="pending"))     # not served: counts 0
     assert dev.sync().status == "ok"
-    double.remote_put("global", wire("R8", "s" * 100, data={"summary": "s" * 100, "body": "b" * 900,
+    double.remote_put("global", wire("R80", "s" * 101, data={"summary": "s" * 101, "body": "",
                                                           "alias": None, "source": "", "session": ""},
-                                     tags_=["stage:0"]))
+                                     tags_=["stage:0"]))                                 # 6,001: over
+    double.remote_put("global", wire("R90", "ok", data={"summary": "ok", "body": "b" * 20_000,
+                                                     "alias": None, "source": "", "session": ""},
+                                     tags_=["stage:0"]))                                 # a body costs nothing
     assert dev.sync().status == "ok"
     c = dev.conn()
     try:
         have = {r[0] for r in c.execute("SELECT id FROM docs")} | {r[0] for r in c.execute("SELECT id FROM mri")}
         assert "D5" in have and "D7" in have          # fits, and a pending version counts nothing
-        assert "D6" not in have and "R8" not in have  # would take the baseline past 6,000
-        assert stages.baseline_size(c) == db.BASELINE_BUDGET
+        assert "D6" not in have and "R80" not in have  # would take the baseline past 6,000
+        assert "R90" in have                           # its 20,000-character body counts nothing
+        assert stages.baseline_size(c) == 5900 + 2
     finally:
         c.close()
 

@@ -10,7 +10,7 @@ commands, ``shapa row add|tag``, ``shapa save``). From anything else (the MCP to
 pulled record) it is stored as ``stage-proposed:0``, which no session start ever serves, and the
 operator lists those with ``shapa stage pending`` and accepts one with ``shapa stage set ID 0``.
 The baseline of a wiki is capped at :data:`db.BASELINE_BUDGET` characters (a rule or memory counts
-its summary and body, a skill its description), so a session start cannot be flooded.
+its one-line summary, the only text a session start prints; a skill its description), so a session start cannot be flooded.
 
 CLI::
 
@@ -70,7 +70,7 @@ def record_size(conn: sqlite3.Connection, record_id: str) -> int:
     """What a record counts against the baseline budget."""
     if record_id[:1] == db.DOC_KIND:
         return _skill_size(conn, record_id)
-    r = conn.execute("SELECT length(summary) + length(body) FROM mri WHERE id = ?", (record_id,)).fetchone()
+    r = conn.execute("SELECT length(summary) FROM mri WHERE id = ?", (record_id,)).fetchone()
     return int(r[0]) if r else 0
 
 

@@ -53,8 +53,8 @@ AUTOSTART_ENV_VAR = "SHAPA_SERVE_AUTOSTART"
 #: ~1800 tokens, converted with a 4-chars/token heuristic - deliberately no
 #: tokenizer dependency (the core engine stays stdlib-only). Real tokenizers
 #: vary by model; this is a cheap budget guard, not an exact count.
-#: Raised from 1800: the baseline alone may hold 6,000 characters (db.BASELINE_BUDGET), served in
-#: full inside its share of this budget.
+#: Raised from 1800: the baseline alone may hold 6,000 characters (db.BASELINE_BUDGET) of one-line
+#: summaries, served inside its share of this budget.
 DEFAULT_TOKEN_BUDGET = 3000
 CHARS_PER_TOKEN = 4
 DEFAULT_BUDGET = DEFAULT_TOKEN_BUDGET * CHARS_PER_TOKEN

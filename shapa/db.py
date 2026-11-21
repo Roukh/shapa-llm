@@ -1096,12 +1096,12 @@ def add_row(conn: sqlite3.Connection, kind: str, summary: str, body: str = "", *
         if existing:
             row_id, created = existing[0], False
             insert, drop = _guard_tags(conn, row_id, _identical_text_tags(conn, row_id, tags, privileged),
-                                       letter=kind, privileged=privileged, size=len(summary) + len(body))
+                                       letter=kind, privileged=privileged, size=len(summary))
         else:
             if alias and conn.execute("SELECT 1 FROM mri WHERE alias = ?", (alias,)).fetchone():
                 raise LedgerError(f"alias {alias!r} already names a row")
             insert, drop = _guard_tags(conn, None, tags, letter=kind, privileged=privileged,
-                                       size=len(summary) + len(body))
+                                       size=len(summary))
             row_id, created = _next_id(conn, kind), True
             conn.execute("INSERT INTO mri(id, kind, alias, summary, body, source, session, hash, "
                          "created, updated) VALUES (?,?,?,?,?,?,?,?,?,?)",
@@ -1147,7 +1147,7 @@ def update_row(conn: sqlite3.Connection, row_id: str, *, summary: str | None = N
             if not privileged:
                 raise LedgerError(f"{row['id']} is baseline (stage 0): its text changes only from the "
                                   "local CLI")
-            _stage_budget_check(conn, row["id"], len(s) + len(b))
+            _stage_budget_check(conn, row["id"], len(s))
         conn.execute("UPDATE mri SET summary=?, body=?, hash=?, alias=COALESCE(?, alias), "
                      "updated=? WHERE id=?",
                      (s, b, content_hash(s, b), alias, now_iso(), row["id"]))
