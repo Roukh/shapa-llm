@@ -33,8 +33,8 @@ const FETCH_NOTE =
 /** The keys of the mempm object, in the order they are printed. The local engine prints the same (tests/test_parity.py). */
 export const MEMPM_KEYS = ["P", "X", "M"] as const;
 /** The most entries of each mempm list, and the share of the budget the block may take. */
-export const MEMPM_MAX = { P: 24, X: 8, M: 16 } as const;
-const MEMPM_SHARE = 0.7;
+export const MEMPM_MAX = { P: 60, X: 20, M: 30 } as const;
+const MEMPM_SHARE = 0.9;
 /** The learning loop's tag on a rule that is a principle, and its mark of a principle that needs enforcement, not rewording. */
 const PRINCIPLE = "principle";
 
@@ -209,13 +209,14 @@ export function mempmJson(m: Mempm): string {
   return JSON.stringify(ordered).replace(ESCAPED, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
 }
 
-/** The block as printed: heading line, then the JSON. Entries are cut from the end of the longest list until it fits `room`. */
+/** The block as printed: heading line, then the JSON. Entries are cut from the end until it fits `room`: memories
+ *  first, then mistakes, principles last (every agent is meant to receive every principle). */
 export function mempmBlock(m: Mempm, room: number): string {
   const lists: Mempm = { P: [...m.P], X: [...m.X], M: [...m.M] };
   const size = () => MEMPM_HEAD.length + 1 + mempmJson(lists).length;
   while (size() > room) {
-    const key = (["M", "X", "P"] as const).reduce((a, b) => (lists[b].length > lists[a].length ? b : a));
-    if (!lists[key].length) return "";
+    const key = (["M", "X", "P"] as const).find((k) => lists[k].length);
+    if (!key) return "";
     lists[key].pop();
   }
   return `${MEMPM_HEAD}\n${mempmJson(lists)}`;

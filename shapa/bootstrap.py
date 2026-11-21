@@ -290,9 +290,9 @@ MEMPM_HEAD = ("MEMPM (P principles, X mistakes, M memories; each [id, date, text
               "`get` opens one in full)")
 #: The keys of the mempm object, in the order they are printed, and the most entries of each.
 MEMPM_KEYS = ("P", "X", "M")
-MEMPM_MAX = {"P": 24, "X": 8, "M": 16}
+MEMPM_MAX = {"P": 60, "X": 20, "M": 30}
 #: The share of the session-start budget the mempm block may take.
-MEMPM_SHARE = 0.70
+MEMPM_SHARE = 0.90
 #: An issue that carries one of these tags is not a live lesson: dismissed or soft (never applied), or
 #: learned (a principle holds it now).
 NOT_A_LESSON = ("dismissed", "soft", "learned")
@@ -327,14 +327,15 @@ def mempm_json(mem: dict) -> str:
 
 
 def mempm_block(mem: dict, room: int) -> tuple[str, dict]:
-    """The block as printed: heading line, then the JSON. Entries are cut from the end of the longest list
-    until it fits *room*. Returns the block ("" when nothing fits) and how many entries of each key it kept."""
+    """The block as printed: heading line, then the JSON. Entries are cut from the end until it fits *room*:
+    memories first, then mistakes, principles last (every agent is meant to receive every principle).
+    Returns the block ("" when nothing fits) and how many entries of each key it kept."""
     lists = {k: list(mem[k]) for k in MEMPM_KEYS}
     while len(MEMPM_HEAD) + 1 + len(mempm_json(lists)) > room:
-        longest = max(("M", "X", "P"), key=lambda k: len(lists[k]))
-        if not lists[longest]:
+        key = next((k for k in ("M", "X", "P") if lists[k]), None)
+        if key is None:
             return "", {k: 0 for k in MEMPM_KEYS}
-        lists[longest].pop()
+        lists[key].pop()
     return f"{MEMPM_HEAD}\n{mempm_json(lists)}", {k: len(lists[k]) for k in MEMPM_KEYS}
 
 
@@ -420,8 +421,12 @@ def build_focused(wiki_roots: list[WikiRoot], budget: int = DEFAULT_BUDGET, stag
     skills are not in it; ``--full`` brings back the old overview.
 
     *budget* is in characters. The directive, the precedence, the northstars, the fires, the gate and the
-    write-back line are never cut. The mempm block takes at most its share of what is left, shortest list
-    last first, and the optional lines (a fire's partition, the unset-fire hints) take the rest."""
+    write-back line are never cut. The mempm block takes at most its share of what is left (memories cut
+    first, principles last), and the optional lines (a fire's partition, the unset-fire hints) take the rest.
+    The whole text stays under the SessionStart hook's cap, so the cap never has to cut it."""
+    from shapa.hookcap import HOOK_CAP
+
+    budget = min(budget, HOOK_CAP - 200)
     _SERVED.clear()
     try:
         directive = reconfigure.directive_lines([wr.path for wr in wiki_roots if wr.kind != "external"])

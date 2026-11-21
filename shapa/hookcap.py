@@ -33,7 +33,8 @@ PARTS = (
     ("principles", re.compile(r"^context learned from corrections")),
     ("pending", re.compile(r"^(\d+ corrections? awaits?|\d+ skill versions? awaits?|drift:)")),
 )
-TAIL = re.compile(r"^(WRITE BACK:|</shapa-memory>)")
+#: From the fetch note on, every line is kept: the skill gate and the write-back line are never cut.
+TAIL = re.compile(r"^(Fetch on demand|SKILL GATE:|WRITE BACK:|</shapa-memory>)")
 CUT_ORDER = ("agent", "projects", "topics", "principles", "pending", "skills", "baseline")
 
 

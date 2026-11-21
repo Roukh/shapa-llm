@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MEMPM_HEAD, SKILL_GATE } from "../src/instructions.js";
+import { MEMPM_HEAD, MEMPM_MAX, SKILL_GATE } from "../src/instructions.js";
 import { call, job, mint, put, rec, row, send, setup, sync, wiki } from "./helpers.js";
 import { INIT, mempmIn, rpc, sessionText, tool, type Mempm } from "./mcp-helpers.js";
 
@@ -142,7 +142,7 @@ describe("session text: a record can never forge a section, an instruction block
     const ops = Array.from({ length: 40 }, (_, i) => put(row(`I${900 + i}`, `Mistake ${i} ${"y".repeat(500)}`)));
     await sync(token, "global", { ops });
     const got = mempmIn(await text(token, { budget: 40_000 }));
-    expect(got.X.length).toBe(8);
+    expect(got.X.length).toBe(MEMPM_MAX.X);
     for (const e of got.X) expect(Array.from(e[2]).length).toBeLessThanOrEqual(160);
   });
 });
