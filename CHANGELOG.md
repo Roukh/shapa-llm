@@ -9,6 +9,12 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- `shapa learn import FILE --wiki KEY [--scope] [--dry-run] [--json]` (local CLI only, no MCP tool): the
+  operator curates one wiki's principles, mistakes and memories from a JSON file in one transaction. It
+  validates first (one rule per principle and mistake, the personal-data gate, no id both deleted and kept,
+  at most 60 principles, never a ledger item), deletes the listed rows, writes dated principle rules,
+  mistakes (issues the session start's X list shows) and memories, is idempotent, and on the global wiki
+  stages principles then memories at stage 0 only while the 6,000-character baseline holds.
 - One rule per object: a principle (and a rule written by `shapa save` or the MCP `save`) is one
   imperative sentence, refused on write when it holds a list or several command sentences.
   `shapa learn split R<n> --into TEXT --into TEXT` files each part as its own principle.

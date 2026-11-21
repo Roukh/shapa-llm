@@ -48,6 +48,7 @@ CLI::
                       [--why TEXT] [--serves <key>/F<n>|northstar] [--wiki repo|global] [--session ID] [--json]
     shapa learn dismiss ISSUE [--wiki repo|global]      shapa learn merge SRC DST
     shapa learn split R<n> --into TEXT --into TEXT ...
+    shapa learn import FILE --wiki KEY [--scope global|repo] [--dry-run] [--json]   (operator: shapa/learnimport.py)
     shapa learn principles [--scope global|repo] [--project KEY] [--json] [--detail]   (id, date, scope, text)
 """
 
@@ -1884,7 +1885,31 @@ def run_learn(argv: list[str]) -> int:
     sp.add_argument("--into", action="append", default=[], metavar="TEXT")
     sp.add_argument("--wiki", choices=["repo", "global"], default=None)
     add("reindex", help="catch the derived similarity index up")
+    im = add("import", help="operator: curate a wiki's principles, mistakes and memories from a JSON file, "
+                            "in one transaction (the local CLI only)")
+    im.add_argument("file")
+    im.add_argument("--wiki", required=True, metavar="KEY", help="`global`, or a repo wiki's key")
+    im.add_argument("--scope", choices=["global", "repo"], default=None,
+                    help="the wiki's kind (default: global for KEY global, else repo)")
+    im.add_argument("--dry-run", action="store_true", help="report what would change and write nothing")
+    im.add_argument("--json", action="store_true")
     args = p.parse_args(argv)
+    if args.cmd == "import":
+        from shapa import learnimport
+
+        try:
+            res = learnimport.import_curated(args.file, args.wiki, cwd=args.cwd, scope=args.scope,
+                                             dry_run=args.dry_run)
+        except learnimport.ImportRefused as exc:
+            if args.json:
+                print(json.dumps({"error": "invalid", "problems": exc.problems}, sort_keys=True))
+                return 2
+            raise
+        if args.json:
+            print(json.dumps(res, sort_keys=True))
+        else:
+            print(learnimport.summary_line(res))
+        return 0
     if args.cmd == "principles" and not args.detail:
         rows_ = principle_list(args.cwd, args.scope, args.project)
         if args.json:

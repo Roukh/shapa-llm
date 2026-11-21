@@ -145,7 +145,11 @@ commands:
                  different subject from a nearby churned principle); merge
                  SRC DST folds two principles (60 at most a wiki); unchurn
                  R<n> clears churn once enforcement exists; dismiss ISSUE
-                 drops a correction or removes a soft candidate
+                 drops a correction or removes a soft candidate; import FILE
+                 --wiki KEY [--dry-run] [--json] curates a wiki's principles,
+                 mistakes and memories from a JSON file in one transaction
+                 (operator only: validates first, global stages at stage 0
+                 within the 6,000-character baseline)
   metrics [--since DATE] [--json] [--snapshot] [--all] [--repo KEY]
                  whether the wiki is working: fetch latency, corrections and
                  repeats per session, learned vs pending, skill use, feature
