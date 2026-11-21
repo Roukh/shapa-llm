@@ -61,6 +61,12 @@ def isolate_skill_library(monkeypatch, tmp_path):
 
 
 @pytest.fixture(autouse=True)
+def isolate_harness_home(monkeypatch, tmp_path):
+    """`shapa harness` keeps prompts, state and watch data under $SHAPA_HOME; never the real ~/.shapa."""
+    monkeypatch.setenv("SHAPA_HOME", str(tmp_path / "shapa-home"))
+
+
+@pytest.fixture(autouse=True)
 def inline_snapshot(monkeypatch):
     """A session start stores its daily snapshot in a detached process; the suite runs it in-process."""
     monkeypatch.setenv("SHAPA_INLINE_SNAPSHOT", "1")

@@ -101,7 +101,7 @@ class InstallShTestCase(unittest.TestCase):
             "PATH": f"{self.bin}:/usr/bin:/bin",
             "SHAPA_STUB_LOG": str(self.stub_log),
             "SHAPA_STUB_HOME": str(self.home),
-            "SHAPA_MEMORY": str(self.tmp / "wiki"),
+            "SHAPA_MEMORY": str(self.tmp / "wiki"), "TMPDIR": str(self.tmp),
         }
         # Deliberately no XDG_CONFIG_HOME/CODEX_HOME here: unset in the child
         # means install.sh's own `${VAR:-$HOME/...}` fallbacks kick in and

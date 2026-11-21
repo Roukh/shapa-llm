@@ -82,6 +82,17 @@ commands:
                  broken global wiki, this repo's git hooks not wired, or no
                  agent harness connected (a missing repo wiki is only ever
                  informational - `shapa init` creates one)
+  harness install|uninstall|status|watch [--harness NAME] [--mode append|replace|default]
+                 [--dry-run] [--json] [--force]
+                 shapa's own system prompt (one shared core plus a short
+                 adapter per harness) written to ~/.shapa/prompts/ and wired
+                 into Claude Code, Codex, OpenCode and Gemini CLI. The default
+                 mode appends it to the harness's own prompt; --mode replace
+                 swaps the harness's prompt for it, --mode default leaves the
+                 harness alone. Each touched config is backed up once
+                 (.shapa-bak) and uninstall restores it. watch stores hashes
+                 and heading lists (never text) of the harness defaults it can
+                 capture locally and reports changes
   capture        extract atomic memories from a finished session into the
                  wiki's memory log (Stop/SubagentStop hook, write path)
   save           write one note explicitly (--scope global|repo|external,
@@ -462,6 +473,16 @@ def main(argv: list[str] | None = None) -> None:
         return
     if cmd == "doctor":
         importlib.import_module("shapa.status").doctor_main(rest)
+        return
+    if cmd == "bootstrap":  # the hook envelope is capped under Claude Code's 10,000-character limit
+        from shapa import hookcap
+
+        hookcap.run_bootstrap(rest)
+        return
+    if cmd == "harness":
+        from shapa import harness
+
+        harness.main(rest)
         return
     if cmd in _SUBMODULES:
         importlib.import_module(f"shapa.{cmd}").main(rest)

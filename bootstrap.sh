@@ -28,6 +28,10 @@
 #
 #   curl -fsSL .../bootstrap.sh | sh -s -- --with-mcp --harness codex
 #
+# shapa's own system prompt is added to each harness by install.sh (`shapa
+# harness install`, mode append). --prompt-mode replace|default|skip is forwarded
+# to it; replace swaps the harness's own prompt for shapa's.
+#
 # Env overrides:
 #   SHAPA_REF=main            git ref to install from
 #   SHAPA_MEMORY=~/.shapa/memory   default (global) wiki location
@@ -59,6 +63,7 @@ WITH_MCP=0
 PROMPTED_OR_SKIPPED=0
 MCP_WIRE=""     # "" = defer to install.sh's own auto logic; "--mcp"/"--no-mcp" pins it
 HARNESS_ARG=""  # forwarded as install.sh's --harness (its own default: claude)
+PROMPT_ARG=""   # forwarded as install.sh's --prompt-mode (its own default: append)
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -68,7 +73,8 @@ while [ $# -gt 0 ]; do
     --mcp)           MCP_WIRE="--mcp" ;;
     --no-mcp)        MCP_WIRE="--no-mcp" ;;
     --harness)       HARNESS_ARG="$2"; shift ;;
-    *) die "unknown argument: $1 (expected --with-semantic / --with-mcp / --full / --mcp / --no-mcp / --harness claude|codex|opencode|all)" ;;
+    --prompt-mode)   PROMPT_ARG="$2"; shift ;;
+    *) die "unknown argument: $1 (expected --with-semantic / --with-mcp / --full / --mcp / --no-mcp / --harness claude|codex|opencode|gemini|all / --prompt-mode append|replace|default|skip)" ;;
   esac
   shift
 done
@@ -177,6 +183,7 @@ set --
 [ -n "${SHAPA_MEMORY:-}" ] && set -- --memory "$SHAPA_MEMORY"
 [ -n "$MCP_WIRE" ] && set -- "$@" "$MCP_WIRE"
 [ -n "$HARNESS_ARG" ] && set -- "$@" --harness "$HARNESS_ARG"
+[ -n "$PROMPT_ARG" ] && set -- "$@" --prompt-mode "$PROMPT_ARG"
 # install.sh finds the pipx-installed `shapa` on PATH; no clone needed. This
 # unconditionally connects/inits the GLOBAL default wiki (§3) even when cwd
 # has its own repo-local wiki, closing the "resolves to a wiki that doesn't

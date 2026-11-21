@@ -27,9 +27,16 @@ also installs the command, from the repo's `main`, and a re-run upgrades it:
 curl -fsSL https://raw.githubusercontent.com/Roukh/shapa-llm/main/bootstrap.sh | sh
 ```
 
-Flags: `--with-semantic`, `--with-mcp`, `--full`, `--harness claude|codex|opencode|all`. The
+Flags: `--with-semantic`, `--with-mcp`, `--full`, `--harness claude|codex|opencode|gemini|all`, `--prompt-mode append|replace|default|skip`. The
 header of [bootstrap.sh](https://github.com/Roukh/shapa-llm/blob/main/bootstrap.sh) lists the
 rest. Hooks exist for Claude Code only; Codex and OpenCode are registered as MCP servers.
+
+The installer also adds shapa's own system prompt to each harness (`shapa harness install`;
+Claude Code, Codex, OpenCode, Gemini CLI): one shared core plus a short adapter per harness,
+appended to the harness's own prompt. `--prompt-mode replace` (or `shapa harness install --mode
+replace`) swaps the harness's prompt for shapa's instead; `default` leaves a harness alone.
+Every config it touches is backed up once to `<file>.shapa-bak`, and `shapa harness uninstall`
+restores it. `shapa harness status` shows what each harness keeps regardless.
 
 ## Start
 
