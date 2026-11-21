@@ -17,8 +17,6 @@ import {
 
 /** The stage-0 set of the global wiki (a rule or memory: summary + body; a skill: its description) is capped here, in characters. */
 export const BASELINE_BUDGET = 6000;
-/** A baseline record prints at most this much of its body in the session text. */
-export const BASELINE_BODY_MAX = 1200;
 
 export const BASELINE_EDIT_REFUSAL = "a stage:0 (baseline) record changes only from a device token with the delete scope, by sync (the operator's machine: `shapa stage`)";
 

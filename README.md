@@ -147,9 +147,11 @@ inside a session hook within 8 seconds and never fails it. A repo with no git or
 [hosted.md](https://github.com/Roukh/shapa-llm/blob/main/.shapa/arch/hosted.md).
 
 **One brain for every agent.** `GET /` is a public card with no stored data: it names `/mcp`
-(OAuth), `/v1` (device token) and `/openapi.json`. An agent calls `session_start` (or
-`GET /v1/instructions`) and gets the same text as every other: northstar, fires, stage-0
-baseline, topics, projects, your open tasks.
+(OAuth), `/v1` (device token, for `shapa remote sync` and scripts) and `/openapi.json`. An agent
+reaches shapa through authenticated MCP only: it calls `session_start` and gets the same lean
+text as every other, the northstar, the fires and one compact JSON of principles, mistakes and
+stage-0 memories (`{"P":[[id,date,text]],"X":[...],"M":[...]}`). Tasks, notes, projects and
+skills are fetched with the `tasks`, `search`/`get`, `projects`, `skills` and `skill` tools.
 
 - **Reach.** An OAuth client (a chat app, a phone) reads the stage-0 baseline, notes, documents,
   tasks, ideas and decisions and nothing else. It cannot write rules, memories or skills, sync,

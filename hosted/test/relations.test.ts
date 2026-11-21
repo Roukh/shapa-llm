@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { freshKey, get, mint, put, rec, row, send, setup, sync, wiki } from "./helpers.js";
-import { tool } from "./mcp-helpers.js";
+import { sessionText, tool } from "./mcp-helpers.js";
 
 const create = (token: string, w: string, body: Record<string, unknown>) => send("POST", rec(w), { token, body });
 const tagsOf = async (token: string, q = "") => (await get(`/v1/tags${q}`, token)).body.tags as { tag: string; total: number; counts: Record<string, number> }[];
@@ -55,9 +55,9 @@ describe("tags are the relations: the tag index", () => {
     const r = await get(`/v1/tags?wiki=${w}&limit=1000`, token);
     expect(r.status).toBe(200);
     expect(r.body.tags).toHaveLength(1000);
-    const session = await get(`/v1/instructions?wiki=${w}`, token);
-    expect(session.status).toBe(200);
-    expect(session.body.text.split("\n").filter((l: string) => l.startsWith("  wide-")).length).toBeLessThanOrEqual(40);
+    const session = await sessionText(token, { wiki: w });
+    expect(session).not.toContain("wide-"); // the start text lists no topic: the tag index is the `tags` tool's
+    expect(session.length).toBeLessThan(6000);
     expect(Date.now() - started).toBeLessThan(3000);
     // and removing the records takes their tags out
     await send("DELETE", rec(w, "/R1"), { token });
@@ -141,6 +141,6 @@ describe("tags, tasks, projects and related honor the device's wiki list", () =>
     expect(JSON.stringify((await tool(lim.token, "tags", { system: true })).text)).not.toContain(secret);
     expect((await tool(lim.token, "tasks", {})).text).not.toContain(secret);
     expect((await tool(lim.token, "related", { id: "R1", wiki: b.w })).isError).toBe(true);
-    expect((await get("/v1/instructions?full=1", lim.token)).body.text).not.toContain(secret);
+    expect((await sessionText(lim.token, { full: true }))).not.toContain(secret);
   });
 });

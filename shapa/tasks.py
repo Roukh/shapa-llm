@@ -33,11 +33,6 @@ OWNERS = ("human", "agent")
 STATUSES = ("open", "closed", "all")
 _OWNER_TAG = {v: k for k, v in db.OWNER_TAGS.items()}
 _RANK_RE = re.compile(r"[1-9][0-9]{0,2}")
-#: The sentence a session start prints after the operator's open tasks (the Worker prints the same).
-ASK_SENTENCE = ("When the operator asks what they need to do, answer from `tasks` "
-                "(GET /v1/tasks?owner=human). When they mention something they must do, save it as a "
-                "human_task.")
-
 
 def owner_of(tags) -> str:
     for t in sorted(tags):

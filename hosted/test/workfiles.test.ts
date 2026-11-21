@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { PROJECT_TEMPLATE } from "../src/projectfile.js";
 import { freshKey, get, mint, put, rec, row, send, setup, sync, wiki } from "./helpers.js";
-import { tool } from "./mcp-helpers.js";
+import { sessionText, tool } from "./mcp-helpers.js";
 
 const create = (token: string, w: string, body: Record<string, unknown>) => send("POST", rec(w), { token, body });
 const projectsPath = (key: string, tail = "") => `/v1/projects/${encodeURIComponent(key)}${tail}`;
@@ -107,13 +107,15 @@ describe("the operator's universal task list", () => {
     expect(r.body.total).toBe(1);
   });
 
-  it("puts the operator's open tasks in the session text with the fixed sentence", async () => {
+  it("leaves the operator's open tasks out of the session text and names the tool that lists them", async () => {
     const { token, w } = await setup();
     const marker = freshKey();
     await create(token, w, { type: "human_task", title: `Call the notary ${marker}` });
-    const t = (await get(`/v1/instructions?wiki=${w}`, token)).body.text as string;
-    expect(t).toMatch(/The operator's open tasks: \d+\n(?: {2}.*\n)*? {2}[\w./-]*T1 Call the notary/);
-    expect(t).toContain("When the operator asks what they need to do, answer from `tasks` (GET /v1/tasks?owner=human). When they mention something they must do, save it as a human_task.");
+    const t = await sessionText(token, { wiki: w });
+    expect(t).not.toContain("Call the notary");
+    expect(t).toContain("`tasks` (open tasks)");
+    // ... and `tasks` lists it
+    expect((await tool(token, "tasks", { wiki: w })).text).toContain(`Call the notary ${marker}`);
   });
 });
 
@@ -294,12 +296,11 @@ describe("project spam and the API description", () => {
     const has = (path: string, method: string) => Object.keys(spec[path] ?? {}).includes(method);
     for (const [path, method] of [
       ["/v1/tags", "get"], ["/v1/tasks", "get"], ["/v1/projects", "get"], ["/v1/projects/{key}", "get"], ["/v1/projects/{key}", "put"],
-      ["/v1/projects/{key}/items", "post"], ["/v1/wikis/{wiki}/records/{id}/related", "get"], ["/v1/search", "get"], ["/v1/instructions", "get"],
+      ["/v1/projects/{key}/items", "post"], ["/v1/wikis/{wiki}/records/{id}/related", "get"], ["/v1/search", "get"],
     ] as const) expect(has(path, method), `${method} ${path}`).toBe(true);
+    expect(Object.keys(spec), "agent-facing session text is MCP only").not.toContain("/v1/instructions");
     const params = (spec["/v1/search"]!["get"] as { parameters: { name: string }[] }).parameters.map((p) => p.name);
     expect(params).toEqual(expect.arrayContaining(["q", "tags", "k", "wiki", "types"]));
-    const inst = (spec["/v1/instructions"]!["get"] as { parameters: { name: string }[] }).parameters.map((p) => p.name);
-    expect(inst).toContain("stage");
   });
 });
 

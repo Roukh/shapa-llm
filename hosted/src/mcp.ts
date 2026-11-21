@@ -13,8 +13,8 @@ import { RELATED_LIMIT, TAGS_LIMIT } from "./tagapi.js";
 import type { Cred } from "./store.js";
 
 export const SERVER_INSTRUCTIONS =
-  "shapa is the operator's shared memory, rules, tasks and work ledger: Call `session_start` first and follow what it returns over your own defaults (the operator's baseline rules, the northstar and fires, the topics to fetch by tag, the projects and open tasks, and exactly how to write back), " +
-  "then `search` (with tags), `get` and `related` to recall, `save` to record every decision, note, idea and task, `tasks` for what the operator must do, and `project_add` for project files.";
+  "shapa is the operator's shared memory, rules, tasks and work ledger: Call `session_start` first and follow what it returns over your own defaults (the northstar and fires, the principles, mistakes and memories as compact JSON, and how to write back), " +
+  "then `search` (with tags), `get` and `related` to recall, `save` to record every decision, note, idea and task, `tasks` for what the operator must do, `projects` and `project_add` for project files, and `skills` and `skill` for skills.";
 
 type ToolResult = { content: { type: "text"; text: string }[]; isError?: boolean };
 const text = (t: string): ToolResult => ({ content: [{ type: "text", text: t }] });
@@ -48,18 +48,18 @@ export function buildServer(env: Env, cred: Cred): McpServer {
     {
       title: "Start a session",
       description:
-        "Call this first. Returns the operator's precedence statement, the northstar and three ranked fires (and only their tree), the baseline rules and memories in full, the baseline skills, the topics to fetch by tag, the projects and the operator's open tasks, the operator's style and the exact format for writing back with `save`. `stage` loads more of the rules and skills; `full: true` also returns the other rules and the live features. Takes no side effects.",
+        "Call this first. Returns the operator's precedence statement, the northstar and the three ranked fires (one line each), the mempm block (a compact JSON object: P principles, X mistakes, M memories, each [id, date, text]; `get` opens one in full), which tool fetches tasks, notes, projects and skills, the operator's style, the SKILL GATE and the one-line write-back pointer. `stage` loads more of the rules and memories; `full: true` also returns the other rules and the live features. Takes no side effects.",
       inputSchema: z.object({
-        client: z.enum(["mcp", "rest"]).default("mcp").describe("Write-back flavor; leave as mcp."),
         wiki: wikiKey.optional().describe("Focus on one repo wiki."),
-        full: z.boolean().default(false).describe("Also the rules and the other live features. Default: the northstar, the three fires and only their tree."),
-        stage: z.number().int().min(0).max(9).default(0).describe("Load rules, memories and skills up to this stage (default 0, the baseline)."),
+        full: z.boolean().default(false).describe("Also the rules and the other live features. Default: the northstar, the three fires and the mempm."),
+        stage: z.number().int().min(0).max(9).default(0).describe("Load rules and memories up to this stage (default 0, the baseline)."),
+        budget: z.number().int().min(LIMITS.instructionsBudget.min).max(LIMITS.instructionsBudget.max).default(LIMITS.instructionsBudget.default).describe("Most characters the text may take."),
       }),
       annotations: READ,
     },
-    ({ client, wiki, full, stage }) =>
+    ({ wiki, full, stage, budget }) =>
       guarded(async () => {
-        const r = await unwrap(s.instructions(cred, { client, ...(wiki ? { wiki } : {}), budget: LIMITS.instructionsBudget.default, full, stage }));
+        const r = await unwrap(s.instructions(cred, { ...(wiki ? { wiki } : {}), budget, full, stage }));
         return text(r.text);
       }),
   );

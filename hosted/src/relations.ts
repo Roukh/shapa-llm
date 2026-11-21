@@ -29,7 +29,7 @@ const isOpenTask = (r: Pick<IndexRow, "kind" | "status">) => r.kind === "T" && r
 function counted(r: IndexRow | null): Map<string, [string, string, number]> {
   const out = new Map<string, [string, string, number]>();
   if (!r || r.deleted) return out;
-  const vis = baseVisible(r.kind, r.tags) ? 1 : 0;
+  const vis = baseVisible(r.kind, r.tags, r.wiki) ? 1 : 0;
   const buckets: string[] = [bucketOf(r.kind, r.tags)];
   if (isOpenTask(r)) buckets.push("O");
   for (const tag of r.tags) for (const b of buckets) out.set(`${tag}\u0000${b}\u0000${vis}`, [tag, b, vis]);
@@ -61,7 +61,7 @@ export function reindexRelations(sql: SqlStorage, old: IndexRow | null, next: In
   if (!next.deleted) {
     const bucket = bucketOf(next.kind, next.tags);
     const open = isOpenTask(next) ? 1 : 0;
-    const vis = baseVisible(next.kind, next.tags) ? 1 : 0;
+    const vis = baseVisible(next.kind, next.tags, next.wiki) ? 1 : 0;
     const rank = rankOf(next.tags) ?? RANK_NONE;
     for (const t of newTags) {
       sql.exec(
@@ -108,7 +108,7 @@ export function rebuildRelations(sql: SqlStorage): void {
         deleted: r["deleted"] === 1, tags: JSON.parse(r["tags"] as string) as string[], links: JSON.parse(r["links"] as string) as Link[],
         status: String(r["status"] ?? ""),
       };
-      sql.exec(`UPDATE records SET base_vis = ? WHERE seq = ?`, baseVisible(row.kind, row.tags) ? 1 : 0, row.seq);
+      sql.exec(`UPDATE records SET base_vis = ? WHERE seq = ?`, baseVisible(row.kind, row.tags, row.wiki) ? 1 : 0, row.seq);
       reindexRelations(sql, null, row);
       after = row.seq;
     }

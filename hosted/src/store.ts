@@ -12,7 +12,7 @@ import { DurableObject } from "cloudflare:workers";
 import { type Device, Devices, type Reach, needWiki, scopesCoherent, validDeviceName, validScopes, validWikis, wikiAllowed } from "./devices.js";
 import { fail, run, type Out } from "./errors.js";
 import * as focus from "./focus.js";
-import { composeInstructions, type ClientKind } from "./instructions.js";
+import { composeInstructions } from "./instructions.js";
 import * as skills from "./skills.js";
 import type { SkillMatch } from "./skillmatch.js";
 import * as ledger from "./ledger.js";
@@ -118,7 +118,7 @@ export class ShapaStore extends DurableObject<Env> {
 
   // --- read -----------------------------------------------------------------------------------
 
-  instructions(cred: Cred, opts: { client: ClientKind; wiki?: string; budget: number; full?: boolean; stage?: number }): Out<{ text: string; version: string }> {
+  instructions(cred: Cred, opts: { wiki?: string; budget: number; full?: boolean; stage?: number }): Out<{ text: string }> {
     return this.act(cred, (repo, d) => composeInstructions(repo, d, opts));
   }
 

@@ -1,99 +1,50 @@
-// Session instructions for clients with no hooks (chat apps, phones, other agents). Composed per
-// request within a character budget, in this order: the precedence statement, what shapa is, the
-// northstar and the fires (and only their tree), the baseline (every stage-0 rule and memory, in
-// full), the baseline skills, the topics (the tag index), the projects and the operator's open
-// tasks, the operator's own session notes and style, then how to write back. The write-back block
-// is reserved first so a small budget never cuts it. Every record text that reaches this text is
-// masked, control characters are removed, and it is one line or indented, so a record can never
-// forge a heading or an instruction block of its own.
+// The session start for an MCP client (`session_start`: chat apps, phones, other agents). It is token
+// lean and composed per request within a character budget, in this order: the precedence statement,
+// the northstar and the fires (one line each), the mempm block (a compact JSON object of principles
+// P, mistakes X and memories M: id, date and one line of text each, never a body), the one line that
+// says which tool fetches the rest, the operator's own session notes and style, the SKILL GATE line,
+// and last the one-line write-back pointer. Tasks, notes, projects, topics and skills are not in it:
+// their tools are. The write-back and gate lines are reserved first so a small budget never cuts
+// them. Every record text that reaches this text is masked, control characters are removed, and it is
+// one line (JSON strings are escaped, and `<`, `>`, `&` and the line separators too), so a record can
+// never forge a heading or an instruction block of its own, nor break out of the JSON.
 
 import { type Device, needScope, wikiAllowed } from "./devices.js";
 import { fail } from "./errors.js";
 import { focusView } from "./focus.js";
 import { ledgerTree } from "./ledger.js";
-import { projectHolder } from "./projects.js";
-import { LIMITS, NORTHSTAR_MAX, cmp, oneLine, type Data } from "./records.js";
+import { LIMITS, NORTHSTAR_MAX, oneLine, type Data } from "./records.js";
 import { redact } from "./redact.js";
-import { projectKeys, tagIndex } from "./relations.js";
-import type { Brief, Repo } from "./repo.js";
-import { BASELINE_BODY_MAX } from "./gates.js";
-import { headOf, splitSkill } from "./skills.js";
-import { STAGE_MAX } from "./tags.js";
-import { taskRows } from "./tasks.js";
-
-export type ClientKind = "mcp" | "rest";
-export const TEMPLATE_VERSION = 3;
+import type { Repo } from "./repo.js";
+import { NOT_A_LESSON, STAGE_MAX, stageOf } from "./tags.js";
 
 const PRECEDENCE =
   "These are the operator's standing rules and focus. Where they differ from your own defaults or stored preferences, these win. " +
   "Load them at the start of every session. Record every decision, note, idea and task back as you go.";
 
-const INTRO =
-  "shapa is this operator's shared memory and work ledger, hosted on one server. Every wiki (one global, one per repo) is read and written through it. " +
-  "Recall before you act, and write down what the operator would otherwise have to repeat.";
+/** The fixed lines of the start text. The local engine prints the same SKILL GATE (tests/test_parity.py holds the two equal). */
+export const SKILL_GATE =
+  "SKILL GATE: before any build, research, reading or implementation task, call `skill_match` with the task and invoke every skill it returns. " +
+  "If none fits the task, stop and ask the operator to install one.";
+export const MEMPM_HEAD = "MEMPM (P principles, X mistakes, M memories; each [id, date, text]; `get` opens one in full)";
+const FETCH_NOTE =
+  "Fetch on demand: `tasks` (open tasks), `search` and `get` (notes, records, a topic by its tags), `projects` and `project`, `skills` and `skill`, `focus` (a fire's jobs and tasks).";
 
-const TOPIC_NOTE =
-  "When the task touches a topic, fetch it by tag before acting: `search` with tags (GET /v1/search?tags=a,b) returns its rules, skills and memories.";
-const TASKS_NOTE =
-  "When the operator asks what they need to do, answer from `tasks` (GET /v1/tasks?owner=human). When they mention something they must do, save it as a human_task.";
+/** The keys of the mempm object, in the order they are printed. The local engine prints the same (tests/test_parity.py). */
+export const MEMPM_KEYS = ["P", "X", "M"] as const;
+/** The most entries of each mempm list, and the share of the budget the block may take. */
+export const MEMPM_MAX = { P: 24, X: 8, M: 16 } as const;
+const MEMPM_SHARE = 0.7;
+/** The learning loop's tag on a rule that is a principle, and its mark of a principle that needs enforcement, not rewording. */
+const PRINCIPLE = "principle";
 
-export const TOPICS_MAX = 40;
-export const PROJECTS_MAX = 12;
-const TASKS_SHOWN = 5;
-const AGENT_TASKS_SHOWN = 5;
-const SECTIONS_NOTE = "sections: issues, questions, implementations, problem, solution, diff, advantages, villains, loop_market, loop_product";
-
-const WRITE_MCP = `HOW TO WRITE BACK (MCP tools)
-Call \`save\` with {wiki, type, summary, body?, tags?}. Pick the wiki: "global" for what holds across repos, else the repo's wiki key (\`wikis\` lists them).
-- memory: something the operator said that matters, or a strategy shift.
-- rule: a standing rule the operator gave you.
-- issue: a mistake the operator corrected: what went wrong and the fix.
-- decision: a decision the operator made, with its reason.
-- idea: a thought worth keeping.
-- human_task: something the operator must do. agent_task: something an agent can do. Add project: "KEY" to link either to a project.
-- document: longer text; use title (not summary) and body.
-- note: a file; give path ("research/name.md" or "arch/name.md") and body. A project keeps ONE note: a second with the same project tag is refused (update it).
-summary is one line, up to 160 characters. Identical text is stored once. Never put secrets in; they are masked anyway.
-Projects: \`project_new\` {key}, \`project_add\` {key, section, text}, \`project\` {key}, \`projects\`; ${SECTIONS_NOTE}.
-Tasks: \`tasks\` lists the operator's open tasks. \`ledger_list\` shows features with their jobs and tasks. \`ledger_add\` {wiki, kind: feature|job|task|human_task|agent_task, title, parent?}. \`ledger_set\` {wiki, id, action: claim|release|close|edit}.
-Focus: \`focus\` {wiki?} shows the northstar and the three fires; \`focus_set\` {wiki, northstar?, fires?, promote?} sets them. A project keeps ONE document: a second \`save\` of type document is refused naming the first (add merge: true to append a section).
-Skills: \`skills\` lists them, \`skill\` {name, wiki?, version?} reads one.
-Look before you write: \`search\` {query, tags?}, \`tags\`, \`related\` {id}, then \`get\` {id}. Fix a record with \`update\` instead of saving a copy.`;
-
-const WRITE_REST = `HOW TO WRITE BACK (HTTP, header "Authorization: Bearer <token>")
-POST /v1/wikis/{wiki}/records
-  {"type":"memory","summary":"<one line, max 160>","body":"<optional detail>","tags":["<optional>"]}
-type: memory (an event the operator said matters or a strategy shift), rule (a standing rule), issue (a mistake the operator corrected and the fix), decision (a decision the operator made, with its reason), idea, human_task (something the operator must do) | agent_task (something an agent can do), each with optional "project":"KEY", document (use "title" instead of "summary"), note (add "path":"research/name.md"; a project keeps ONE note), feature | job | task (use "title"; job and task take "parent").
-Pick the wiki: "global" for what holds across repos, else the repo's wiki key (GET /v1/wikis).
-Identical text is stored once. Never put secrets in; they are masked anyway.
-Projects: PUT /v1/projects/{key}, POST /v1/projects/{key}/items {"section","text"}, GET /v1/projects/{key}, GET /v1/projects; ${SECTIONS_NOTE}.
-Tasks: GET /v1/tasks lists the operator's open tasks. GET /v1/wikis/{wiki}/records?kind=F lists features. POST /v1/wikis/{wiki}/records/{id}/claim, /release, /close {"reason":"agent"}. Fix a record with PATCH /v1/wikis/{wiki}/records/{id}.
-Focus: GET /v1/wikis/{wiki}/focus shows the northstar and the three fires; PUT it {"northstar":"...","fires":[{"feature":"F1"},{"text":"..."}]} to set them. A project keeps ONE document: a second one is a 409 naming the first ("merge": true appends a section).
-Skills: GET /v1/wikis/{wiki}/skills, GET /v1/wikis/{wiki}/skills/{name}.
-Look before you write: GET /v1/search?q=<words>&tags=a,b, GET /v1/tags, GET /v1/wikis/{wiki}/records/{id}/related, GET /v1/get?id=<id>.`;
-
+const WRITE_FULL =
+  "WRITE BACK: call `save` {wiki, type, summary, body?, tags?}; type memory|rule|issue|decision|idea|human_task|agent_task|document|note; " +
+  'wiki is "global" or a repo key (`wikis`). Save every decision, idea and task. Never put secrets in.';
 // A baseline device (an OAuth grant, or a token minted so) is shown only what it may write.
-const WRITE_MCP_BASELINE = `HOW TO WRITE BACK (MCP tools)
-Call \`save\` with {wiki, type, summary, body?, tags?}. Pick the wiki: "global" for what holds across repos, else the repo's wiki key (\`wikis\` lists them).
-- decision: a decision the operator made, with its reason.
-- idea: a thought worth keeping.
-- human_task: something the operator must do. agent_task: something an agent can do. Add project: "KEY" to link either to a project.
-- document: longer text; use title (not summary) and body.
-- note: a file; give path ("research/name.md" or "arch/name.md") and body. A project keeps ONE note (update it). You read the notes you wrote and the ones the operator marked stage:0.
-summary is one line, up to 160 characters. Identical text is stored once. Never put secrets in; they are masked anyway.
-Projects: \`project_new\` {key}, \`project_add\` {key, section, text}, \`project\` {key}, \`projects\`; ${SECTIONS_NOTE}.
-Tasks: \`tasks\` lists the operator's open tasks; \`ledger_set\` {wiki, id, action: claim|release|close} works a task.
-Look before you write: \`search\` {query, tags?}, \`tags\`, \`related\` {id}, then \`get\` {id}. Fix a note, document, task, idea or decision with \`update\`.`;
-
-const WRITE_REST_BASELINE = `HOW TO WRITE BACK (HTTP, header "Authorization: Bearer <token>")
-POST /v1/wikis/{wiki}/records
-  {"type":"decision","summary":"<one line, max 160>","body":"<optional detail>","tags":["<optional>"]}
-type: decision (a decision the operator made, with its reason), idea, human_task (something the operator must do) | agent_task (something an agent can do), each with optional "project":"KEY", document (use "title" instead of "summary"), note (add "path":"research/name.md"; a project keeps ONE note, and you read the notes you wrote and the ones the operator marked stage:0).
-Pick the wiki: "global" for what holds across repos, else the repo's wiki key (GET /v1/wikis).
-Identical text is stored once. Never put secrets in; they are masked anyway.
-Projects: PUT /v1/projects/{key}, POST /v1/projects/{key}/items {"section","text"}, GET /v1/projects/{key}, GET /v1/projects; ${SECTIONS_NOTE}.
-Tasks: GET /v1/tasks lists the operator's open tasks. POST /v1/wikis/{wiki}/records/{id}/claim, /release, /close {"reason":"agent"} work a task. Fix a note, document, task, idea or decision with PATCH /v1/wikis/{wiki}/records/{id}.
-Look before you write: GET /v1/search?q=<words>&tags=a,b, GET /v1/tags, GET /v1/wikis/{wiki}/records/{id}/related, GET /v1/get?id=<id>.`;
+const WRITE_BASELINE =
+  "WRITE BACK: call `save` {wiki, type, summary, body?, tags?}; type decision|idea|human_task|agent_task|document|note; " +
+  'wiki is "global" or a repo key (`wikis`). Save every decision, idea and task. Never put secrets in.';
 
 /** Everything that can start, end or hide a line, except the line breaks and tabs a multi-line note keeps. */
 const INVISIBLE_KEEP_LINES = /(?![\n\t])[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu;
@@ -138,28 +89,15 @@ function clip(text: string, room: number): string {
 /** Anything that can start, end or hide a line: control and format characters (zero-width, bidi), the line and paragraph separators. */
 const INVISIBLE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu;
 
-/** Record text that goes into the instructions: masked, invisible characters out, and one line, so a record can
+/** Record text that goes into the start text: masked, invisible characters out, and one line, so a record can
  *  never add a line or a heading of its own to the operator session text. */
 const line = (text: unknown, limit: number): string => oneLine(redact(String(text ?? "")).replace(INVISIBLE, " "), limit);
-
-/** A body as indented lines (two spaces): masked, cut, and no line of it can ever start a section. */
-function indented(text: unknown, cap: number): string[] {
-  const cut = Array.from(redact(String(text ?? ""))).slice(0, cap).join("");
-  return cut
-    .split(/[\r\n\v\f\u0085\p{Zl}\p{Zp}]+/u)
-    .map((l) => l.replace(INVISIBLE, " ").trimEnd())
-    .filter((l) => l.trim())
-    .map((l) => `  ${l}`);
-}
 
 function section(title: string, body: string): string {
   return body ? `${title}\n${body}` : "";
 }
 
-const TREE_JOBS_SHOWN = 10;
-const TREE_TASKS_SHOWN = 4;
-
-/** The northstar lines and the fires with their tree, for the wikis in scope: the focus a session starts from. */
+/** The northstar lines and the fires, one line each, for the wikis in scope: the focus a session starts from. */
 function focusSections(repo: Repo, wikis: string[]): { north: string[]; fires: string[]; hints: string[] } {
   const north: string[] = [];
   const fires: string[] = [];
@@ -167,75 +105,125 @@ function focusSections(repo: Repo, wikis: string[]): { north: string[]; fires: s
   for (const w of wikis) {
     const v = focusView(repo, w);
     if (v.northstar) north.push(`[${w}] ${line(v.northstar, NORTHSTAR_MAX)}`);
-    const shown: string[] = [];
+    let shown = 0;
     v.fires.forEach((t, i) => {
       if (!t) return;
-      const claimed = t.status === "claimed" ? " (claimed)" : "";
-      shown.push(`${i + 1}. ${t.feature ? `${t.feature} ` : ""}${line(t.title, 160)}${claimed}`);
-      for (const j of t.jobs.slice(0, TREE_JOBS_SHOWN)) {
-        shown.push(`   ${j.id} ${line(j.title, 120)}`);
-        for (const task of j.tasks.slice(0, TREE_TASKS_SHOWN)) shown.push(`      ${task.id} ${line(task.title, 100)}`);
-        if (j.tasks.length > TREE_TASKS_SHOWN) shown.push(`      …${j.tasks.length - TREE_TASKS_SHOWN} more tasks`);
-      }
-      if (t.jobs.length > TREE_JOBS_SHOWN) shown.push(`   …${t.jobs.length - TREE_JOBS_SHOWN} more jobs`);
-      const names = [t.files.map((x) => line(x, 80)).join(", "), t.boxes.length ? `arch ${t.boxes.map((x) => line(x, 60)).join(", ")}` : ""].filter(Boolean).join("; ");
-      if (names) shown.push(`   names: ${names}`);
+      shown++;
+      fires.push(`[${w}] ${i + 1}. ${t.feature ? `${t.feature} ` : ""}${line(t.title, 160)}${t.status === "claimed" ? " (claimed)" : ""}`);
     });
-    if (shown.length) fires.push(`[${w}]\n${shown.join("\n")}`);
-    else if (v.candidates.length && repo.wiki(w)?.kind === "repo") {
+    if (!shown && v.candidates.length && repo.wiki(w)?.kind === "repo") {
       hints.push(`${w}: no fires set; candidates ${v.candidates.slice(0, 3).map((c) => `${c.id} ${line(c.title, 70)}`).join("; ")}`);
     }
   }
   return { north, fires, hints };
 }
 
-// --- the baseline -------------------------------------------------------------------------------
+// --- the mempm block ------------------------------------------------------------------------------
 
-/** The global wiki's records at or under a stage, by tag index (never a scan): rules and memories, or skill versions.
- *  Only a prefix of each body is read (a record may be 1 MB), lowest stage first, then by number. */
-function stagedRecords(repo: Repo, buckets: string[], stage: number, headChars: number): Brief[] {
+export type Entry = [id: string, date: string, text: string];
+export type Mempm = { P: Entry[]; X: Entry[]; M: Entry[] };
+
+/** The day a record last changed, YYYY-MM-DD (its created day when `updated` is not a date), "" when neither is. */
+const DAY = /^\d{4}-\d{2}-\d{2}/;
+export const dayOf = (updated: string, created: string): string => (DAY.exec(updated) ?? DAY.exec(created))?.[0] ?? "";
+
+/** The global wiki's rows at or under a stage, by tag index (never a scan): the stage first, then the number.
+ *  `buckets` are the record buckets (tags.ts): R rule, M memory, E idea, C decision. A row is read without its body. */
+function stagedRows(repo: Repo, buckets: string[], stage: number): { id: string; stage: number; text: string; tags: string[]; day: string }[] {
   const tags = Array.from({ length: stage + 1 }, (_, i) => `stage:${i}`);
-  const rows = repo.sql
+  const ids = repo.sql
     .exec(
       `SELECT id FROM record_tags WHERE wiki = 'global' AND tag IN (${tags.map(() => "?").join(",")}) AND kind IN (${buckets.map(() => "?").join(",")})${repo.vis("vis")}
         ORDER BY tag, CAST(substr(id, 2) AS INTEGER) LIMIT 300`,
       ...tags, ...buckets,
     )
     .toArray();
-  return rows.map((r) => repo.brief("global", r["id"] as string, headChars)).filter((s): s is Brief => s !== null);
+  const out = [];
+  for (const r of ids) {
+    const b = repo.brief("global", r["id"] as string);
+    if (b) out.push({ id: b.id, stage: stageOf(b.tags) ?? 0, text: b.text, tags: b.tags, day: dayOf(b.updated, b.created) });
+  }
+  return out;
 }
 
-/** Every rule and memory at or under the stage: id, summary, then the body indented. */
-function baselineLines(recs: Brief[]): string[] {
-  const lines: string[] = [];
-  for (const r of recs) {
-    lines.push(`${r.id} ${line(r.text, 160)}`);
-    lines.push(...indented(r.head, BASELINE_BODY_MAX));
-  }
-  return lines;
+/** The newest live issues of a wiki, without their bodies: id, tags, summary and day. */
+function newestIssues(repo: Repo, wiki: string, limit: number): { id: string; wiki: string; text: string; tags: string[]; day: string; seq: number }[] {
+  return repo.sql
+    .exec(
+      `SELECT id, seq, created, updated, tags, COALESCE(json_extract(data, '$.summary'), '') AS text
+         FROM records WHERE wiki = ? AND kind = 'I' AND deleted = 0${repo.vis()} ORDER BY seq DESC LIMIT ?`,
+      wiki, limit,
+    )
+    .toArray()
+    .map((r) => ({ id: r["id"] as string, wiki, seq: r["seq"] as number, text: String(r["text"] ?? ""), tags: JSON.parse(r["tags"] as string) as string[], day: dayOf(String(r["updated"] ?? ""), String(r["created"] ?? "")) }));
 }
 
-const SKILL_HEAD = 4000;
+/** The principles of a wiki (rules tagged `principle`, the churned ones left out, newest change first), by the tag index. */
+function principles(repo: Repo, wiki: string): { id: string; text: string; day: string }[] {
+  const ids = repo.sql
+    .exec(`SELECT id FROM record_tags WHERE wiki = ? AND tag = ? AND kind = 'R'${repo.vis("vis")} ORDER BY rev DESC LIMIT 60`, wiki, PRINCIPLE)
+    .toArray();
+  const out = [];
+  for (const r of ids) {
+    const b = repo.brief(wiki, r["id"] as string);
+    if (b && !b.tags.includes("churn")) out.push({ id: b.id, text: b.text, day: dayOf(b.updated, b.created) });
+  }
+  return out;
+}
 
-/** The active skill versions at or under the stage (the highest active one of each name): name, description, body indented. */
-function skillLines(recs: Brief[], bodyCap: number): string[] {
-  const best = new Map<string, { version: number; rec: Brief }>();
-  for (const s of recs) {
-    const h = headOf(s.tags);
-    if (h && h.status === "active" && (!best.has(h.name) || best.get(h.name)!.version < h.version)) best.set(h.name, { version: h.version, rec: s });
+/** Principles, mistakes and memories for the wikis in scope. P: stage-0 rules, then the principles, then the other rules
+ *  up to the stage. X: the newest issues that still carry a lesson. M: the global wiki's memories up to the stage. A
+ *  baseline view holds only stage 0 of each, whatever it asks, and no row it cannot read. The stage rows are the operator's
+ *  standing text for every authenticated device, so `baselineOn` (the global wiki exists) prints them even for a device
+ *  whose wiki list leaves out `global`; the rest of the global wiki stays out of such a device's reach. */
+export function mempmOf(repo: Repo, scope: string[], baselineOn: boolean, stage: number): Mempm {
+  const out: Mempm = { P: [], X: [], M: [] };
+  const seen = new Set<string>();
+  const put = (list: Entry[], key: string, id: string, day: string, text: string, max: number) => {
+    if (list.length >= max || seen.has(key)) return;
+    const t = line(text, 160);
+    if (!t) return;
+    seen.add(key);
+    list.push([id, day, t]);
+  };
+  const rules = baselineOn ? stagedRows(repo, ["R"], stage) : [];
+  for (const r of rules.filter((x) => x.stage === 0)) put(out.P, `global/${r.id}`, r.id, r.day, r.text, MEMPM_MAX.P);
+  for (const w of scope) for (const r of principles(repo, w)) put(out.P, `${w}/${r.id}`, r.id, r.day, r.text, MEMPM_MAX.P);
+  for (const r of rules.filter((x) => x.stage > 0)) put(out.P, `global/${r.id}`, r.id, r.day, r.text, MEMPM_MAX.P);
+
+  const issues = scope.flatMap((w) => newestIssues(repo, w, 40)).filter((r) => !r.tags.some((t) => NOT_A_LESSON.includes(t)));
+  issues.sort((a, b) => b.day.localeCompare(a.day) || b.seq - a.seq);
+  for (const r of issues) put(out.X, `${r.wiki}/${r.id}`, r.id, r.day, r.text, MEMPM_MAX.X);
+
+  if (baselineOn) for (const r of stagedRows(repo, ["M", "E", "C"], stage)) put(out.M, `global/${r.id}`, r.id, r.day, r.text, MEMPM_MAX.M);
+  return out;
+}
+
+/** The characters written as a unicode escape in the block: the markup characters and the line and paragraph separators. */
+const ESCAPED = new RegExp(`[<>&${String.fromCharCode(0x2028, 0x2029)}]`, "g");
+
+/** The compact JSON of a mempm: key order P, X, M, no spaces. `<`, `>`, `&` and the two line separators are written as
+ *  unicode escapes, so the text can hold no tag, and no string can end the block early: it stays one line of valid JSON. */
+export function mempmJson(m: Mempm): string {
+  const ordered = Object.fromEntries(MEMPM_KEYS.map((k) => [k, m[k]]));
+  return JSON.stringify(ordered).replace(ESCAPED, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
+}
+
+/** The block as printed: heading line, then the JSON. Entries are cut from the end of the longest list until it fits `room`. */
+export function mempmBlock(m: Mempm, room: number): string {
+  const lists: Mempm = { P: [...m.P], X: [...m.X], M: [...m.M] };
+  const size = () => MEMPM_HEAD.length + 1 + mempmJson(lists).length;
+  while (size() > room) {
+    const key = (["M", "X", "P"] as const).reduce((a, b) => (lists[b].length > lists[a].length ? b : a));
+    if (!lists[key].length) return "";
+    lists[key].pop();
   }
-  const lines: string[] = [];
-  for (const [name, { rec }] of [...best.entries()].sort(([a], [b]) => cmp(a, b))) {
-    const { fields, body } = splitSkill(rec.head);
-    lines.push(`${name} - ${line(fields["description"] ?? "", 300)}`);
-    lines.push(...indented(body, bodyCap));
-  }
-  return lines;
+  return `${MEMPM_HEAD}\n${mempmJson(lists)}`;
 }
 
 export function composeInstructions(
-  repo: Repo, d: Device, opts: { client: ClientKind; wiki?: string; budget: number; full?: boolean; stage?: number },
-): { text: string; version: string } {
+  repo: Repo, d: Device, opts: { wiki?: string; budget: number; full?: boolean; stage?: number },
+): { text: string } {
   needScope(d, "read");
   const { min, max } = LIMITS.instructionsBudget;
   if (opts.budget < min || opts.budget > max) fail("invalid", `budget must be between ${min} and ${max} characters`);
@@ -248,16 +236,16 @@ export function composeInstructions(
   // leaves out `global`: only stage 0 of the global wiki is exempt from the list, the stages above it are not.
   const stage = repo.baseline || !wikiAllowed(d, "global") ? 0 : (opts.stage ?? 0);
   const baseline = repo.baseline;
-  const write = opts.client === "mcp" ? (baseline ? WRITE_MCP_BASELINE : WRITE_MCP) : baseline ? WRITE_REST_BASELINE : WRITE_REST;
+  const write = baseline ? WRITE_BASELINE : WRITE_FULL;
   const visible = repo.wikis().filter((w) => wikiAllowed(d, w.key) && (opts.wiki === undefined || w.key === opts.wiki || w.key === "global"));
   const hasGlobal = visible.some((w) => w.key === "global");
-  const scopeKeys = visible.map((w) => w.key);
 
   const parts: string[] = [];
-  const head = `${section("PRECEDENCE", PRECEDENCE)}\n\n${INTRO}`;
-  let room = opts.budget - head.length - write.length - 8;
+  const head = section("PRECEDENCE", PRECEDENCE);
+  const tail = `${SKILL_GATE}\n${write}`;
+  let room = opts.budget - head.length - tail.length - 8;
   // Each section gets a share of what is left after the fixed text, so one long note cannot
-  // starve the rules and live features (they keep at least a fifth).
+  // starve the focus and the mempm (they keep at least a fifth).
   const total = Math.max(0, room);
   const place = (text: string) => {
     parts.push(text);
@@ -269,84 +257,43 @@ export function composeInstructions(
     const clipped = clip(text, cap);
     if (clipped) place(clipped);
   };
-  /** A section built from lines that must fit its share: it names how many it left out. */
-  const addLines = (title: string, lines: string[], share: number, tail = "") => {
-    const cap = Math.min(room, Math.floor(total * share));
-    if (!lines.length || cap < 60) return;
-    const body = fit(lines, Math.max(0, cap - title.length - 1 - (tail ? tail.length + 1 : 0)));
-    if (body) place([title, body, tail].filter(Boolean).join("\n"));
-  };
 
-  // The focus first: the northstar, then the fires and only their tree (global first, then the wikis in scope).
+  // The focus first: the northstar, then the fires, one line each (global first, then the wikis in scope).
   const scope = [...visible].sort((a, b) => Number(b.key === "global") - Number(a.key === "global")).map((w) => w.key);
   const focus = focusSections(repo, scope);
   add(section("NORTHSTAR", fit(focus.north, Math.max(0, Math.floor(total * 0.1)))), 0.1);
-  if (focus.fires.length) add(section("FIRES (ranked; each with its open jobs and tasks)", focus.fires.join("\n")), 0.25);
+  if (focus.fires.length) add(section("FIRES (ranked; `focus` shows a fire's jobs and tasks)", fit(focus.fires, Math.max(0, Math.floor(total * 0.15)))), 0.15);
   if (!focus.north.length && !focus.fires.length) {
     // Only a device that may set the focus is told how; a baseline device may not, so it is not pointed at the tool.
-    const how = baseline ? "" : " Set them with PUT /v1/wikis/{wiki}/focus (the `focus_set` tool).";
+    const how = baseline ? "" : " Set them with `focus_set`.";
     add(`NORTHSTAR AND FIRES\nNone are set.${how}` + (focus.hints.length ? `\n${focus.hints.join("\n")}` : ""), 0.1);
   } else if (focus.hints.length) {
     add(section("FIRES NOT SET", focus.hints.join("\n")), 0.05);
   }
 
-  // The baseline: every rule and memory of the global wiki at or under the stage, in full, then the active skills.
-  // The baseline is the operator's standing text for EVERY authenticated device, so it prints even when the
-  // device's wiki list leaves out `global` (the rest of the global wiki stays out of such a device's reach).
-  let baselineIds = new Set<string>();
-  if (repo.wiki("global")) {
-    const recs = stagedRecords(repo, ["R", "M", "E", "C"], stage, BASELINE_BODY_MAX + 100);
-    baselineIds = new Set(recs.map((r) => r.id));
-    addLines(`BASELINE (stage ${stage}${stage === 0 ? "" : " and below"})`, baselineLines(recs), 0.4);
-    const skills = stagedRecords(repo, ["S"], stage, SKILL_HEAD);
-    const perSkill = Math.min(SKILL_HEAD - 1100, Math.max(300, Math.floor((total * 0.2) / Math.max(1, skills.length))));
-    addLines("BASELINE SKILLS (invoke them when the work calls for them)", skillLines(skills, perSkill), 0.2);
+  // The mempm: principles, mistakes and memories, each id, date and one line. The ids open with `get`.
+  const mem = mempmOf(repo, scope, repo.wiki("global") !== null, stage);
+  const shown = new Set([...mem.P, ...mem.M].map((e) => e[0]));
+  if (mem.P.length || mem.X.length || mem.M.length) {
+    const cap = Math.min(room, Math.floor(total * MEMPM_SHARE));
+    const block = cap >= 80 ? mempmBlock(mem, cap) : "";
+    if (block) place(block);
   }
-
-  // The topics: the tag index, so a task that touches one fetches it by tag.
-  const topics = tagIndex(repo.sql, baseline, scopeKeys, { limit: TOPICS_MAX, system: false });
-  if (topics.length) {
-    const lines = topics.map((t) => `  ${line(t.tag, 80)} (rules ${t.counts["rule"] ?? 0}, skills ${t.counts["skill"] ?? 0}, memories ${t.counts["memory"] ?? 0})`);
-    addLines("TOPICS", lines, 0.12, TOPIC_NOTE);
-  }
-
-  // The projects of the global wiki, the operator's open tasks, and the agent tasks waiting.
-  {
-    const lines: string[] = [];
-    if (hasGlobal) {
-      const keys = projectKeys(repo.sql, baseline, "global").sort((a, b) => b.open - a.open || cmp(a.key, b.key));
-      for (const p of keys.slice(0, PROJECTS_MAX)) {
-        const title = projectHolder(repo, "global", p.key)?.title ?? "";
-        lines.push(`  ${line(p.key, 80)}${title && title !== p.key ? ` - ${line(title, 80)}` : ""} (${p.open} open)`);
-      }
-      if (keys.length > PROJECTS_MAX) lines.push(`  …and ${keys.length - PROJECTS_MAX} more projects`);
-    }
-    const ref = (t: { wiki: string; id: string; title: string }) => `  ${t.wiki === "global" ? "" : `${t.wiki}/`}${t.id} ${line(t.title, 120)}`;
-    const mine = taskRows(repo, scopeKeys, { owner: "human", status: "open", project: "", limit: TASKS_SHOWN });
-    const agent = taskRows(repo, scopeKeys, { owner: "agent", status: "open", project: "", limit: AGENT_TASKS_SHOWN });
-    const text = [
-      ...lines,
-      `The operator's open tasks: ${mine.total}`,
-      ...mine.tasks.map(ref),
-      TASKS_NOTE,
-      ...(agent.tasks.length ? ["Agent tasks waiting (oldest first):", ...agent.tasks.map(ref)] : []),
-    ].join("\n");
-    add(`PROJECTS\n${text}`, 0.12);
-  }
+  add(FETCH_NOTE);
 
   if (hasGlobal) {
     add(section("OPERATOR'S SESSION INSTRUCTIONS", noteBody(repo, "session-instructions")), 0.25);
     add(section("OPERATOR'S STYLE", noteBody(repo, "response-style")), 0.1);
   }
 
-  // Everything else (the rules, the other live features) only when asked for: `full`.
+  // The rules not in the mempm and the other live features only when asked for: `full`.
   if (opts.full) {
     const rules: string[] = [];
     // Rules come from the global wiki, plus the wiki the request names: not from every wiki.
     for (const w of visible) {
       if (w.key !== "global" && w.key !== opts.wiki) continue;
       for (const r of repo.live(w.key, ["R"])) {
-        if (w.key === "global" && baselineIds.has(r.id)) continue; // already in the baseline, in full
+        if (w.key === "global" && shown.has(r.id)) continue; // already in the mempm
         rules.push(`${w.key === "global" ? "" : `${w.key}/`}${r.id} ${line((r.data as Data)["summary"], 160)}`);
       }
     }
@@ -366,10 +313,8 @@ export function composeInstructions(
       }
     }
     if (features.length) add(section("LIVE FEATURES", fit(features, Math.max(0, room - 16))));
-  } else {
-    add("MORE: rules and the other live features are left out; ask for them with full=1 (session_start {full: true}), or `search` and `ledger_list`.", 0.1);
   }
 
-  const text = [head, ...parts, write].join("\n\n");
-  return { text: text.length <= opts.budget ? text : clip(text, opts.budget), version: `${TEMPLATE_VERSION}.${repo.rev()}` };
+  const text = [head, ...parts, tail].join("\n\n");
+  return { text: text.length <= opts.budget ? text : clip(text, opts.budget) };
 }

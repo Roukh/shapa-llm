@@ -100,13 +100,20 @@ export const BUCKET_NAMES: Record<Bucket, string> = {
 };
 export const COUNT_NAMES = ["rule", "memory", "issue", "skill", "document", "task", "job", "feature", "note"] as const;
 
+/** An issue carrying one of these tags is not a live lesson: dismissed or soft (never applied), learned (a principle holds it now).
+ *  The local engine reads the same list (`bootstrap.NOT_A_LESSON`; tests/test_parity.py holds the two equal). */
+export const NOT_A_LESSON: readonly string[] = ["dismissed", "soft", "learned"];
+
 /** Whether a `baseline` device (an OAuth grant, or a token minted baseline) may see a record at all: rules,
- *  memories and issues only at stage 0; a skill version when it is the ACTIVE one (every agent may invoke the
- *  operator's skills) or at stage 0, never a pending or previous one; notes only with the access marker `stage:0`;
- *  ideas and decisions; everything else. */
-export function baseVisible(kind: Kind, tags: readonly string[]): boolean {
+ *  memories only at stage 0; a skill version when it is the ACTIVE one (every agent may invoke the operator's
+ *  skills) or at stage 0, never a pending or previous one; notes only with the access marker `stage:0`; ideas and
+ *  decisions; an issue (a mistake) only at stage 0 or, in the global wiki, while it still carries a lesson; everything
+ *  else. An issue takes no stage tag on either side, so the global wiki's live lessons are how a baseline device
+ *  reads the operator's mistakes; a repo wiki's issues stay hidden from it. */
+export function baseVisible(kind: Kind, tags: readonly string[], wiki = ""): boolean {
   switch (kind) {
-    case "R": case "I": return hasBaseline(tags);
+    case "R": return hasBaseline(tags);
+    case "I": return hasBaseline(tags) || (wiki === "global" && !tags.some((t) => NOT_A_LESSON.includes(t)));
     case "M": return tags.includes(IDEA_TAG) || tags.includes(DECISION_TAG) || hasBaseline(tags);
     case "D": return tags.includes("skill") ? hasBaseline(tags) || tags.includes("status:active") : true;
     case "N": return hasBaseline(tags); // a note's stage:0 is the access marker

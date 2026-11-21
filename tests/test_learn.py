@@ -10,7 +10,7 @@ from unittest import mock
 import pytest
 
 from shapa import bootstrap, db, focus, ledger, learn, metrics, skills
-from tests.learnkit import at, correct, lexical_only, make_repo, rows  # noqa: F401
+from tests.learnkit import at, correct, lexical_only, make_repo, mempm, rows  # noqa: F401
 
 PNPM = "No, you used pnpm to install packages in the worktree, use npm install there instead."
 PNPM_AGAIN = "Wrong again, you ran pnpm install in the worktree, I said use npm install."
@@ -268,10 +268,10 @@ def test_a_crafted_principle_is_flattened_masked_and_flagged_not_trusted(wikis):
     summary = rows(wikis.global_wiki, "R")[0].summary
     assert "<" not in summary and ">" not in summary and "\n" not in summary
     text = bootstrap.build_context(start=wikis.repo)
-    lines = text.splitlines()
-    heading = lines.index(f"{learn.HEAD_NOTE}:")
-    assert lines[heading + 1].startswith("[global R1] ")          # printed as recalled context, one line, under the heading
-    assert len(lines[heading + 1]) <= 200
+    entry = mempm(text)["P"]
+    assert [e[0] for e in entry] == ["R1"] and len(entry[0]) == 3  # one [id, date, text] entry, one line of JSON
+    block = next(l for l in text.splitlines() if l.startswith('{"P":'))
+    assert len(entry[0][2]) <= db.SUMMARY_MAX and "<" not in block and ">" not in block and "curl" in entry[0][2]
     correct(wikis.repo, HEADER, now=at(1))
     with pytest.raises(db.LedgerError):
         apply(wikis.repo, "I2", "short")
@@ -283,7 +283,7 @@ def test_structure_in_a_principle_is_flattened_to_one_inert_line(wikis):
     assert not p.startswith(("#", "-", ">")) and "[I9]" not in p and "‮" not in p
 
 
-def test_at_most_four_principle_lines_print_each_capped_and_masked(wikis):
+def test_every_principle_prints_as_one_capped_masked_entry(wikis):
     c = wikis.conn(wikis.global_wiki)
     for i in range(9):
         db.add_row(c, "R", f"Rule number {i}: " + "word " * 80 + "sk-abcdefghijklmnopqrstuvwxyz0123456789ABCD",
@@ -291,9 +291,9 @@ def test_at_most_four_principle_lines_print_each_capped_and_masked(wikis):
     c.close()
     learn._mark_local(wikis.global_wiki, "R1")      # local or not, the cap and the mask hold
     text = bootstrap.build_context(start=wikis.repo)
-    shown = [l for l in text.splitlines() if l.startswith("[global R")]
-    assert 1 <= len(shown) <= learn.PRINCIPLES_SHOWN
-    assert all(len(l) <= 200 for l in shown) and "sk-abcdefghijkl" not in text
+    shown = mempm(text)["P"]
+    assert 1 <= len(shown) <= bootstrap.MEMPM_MAX["P"]
+    assert all(len(e[2]) <= db.SUMMARY_MAX for e in shown) and "sk-abcdefghijkl" not in text
 
 
 @pytest.mark.parametrize("tag", ["principle", "churn", "violations:9", "revisions:3", "repeats:4", "serves:northstar",
@@ -412,7 +412,7 @@ def test_a_principle_learned_in_repo_a_is_a_violation_in_repo_b_and_served_there
     assert {"repeat", "violation", "repeat-of:global:R1"} <= tags(b / ".shapa", "I1")
     # repo B has no rules of its own, and this device did not write the counters on the rule: it is still served
     text = bootstrap.build_context(start=b)
-    assert f"{learn.HEAD_NOTE}:" in text and f"[global R1] {PNPM_RULE}" in text
+    assert [e[0::2] for e in mempm(text)["P"]] == [["R1", PNPM_RULE]]
     c = make_repo(tmp_path, "repo-c")
     small = bootstrap.build_context(start=c, budget=2400)
     assert PNPM_RULE in small and len(small) <= 2600
@@ -474,9 +474,9 @@ def test_principles_are_ranked_by_the_fires_and_more_topics_than_slots_show_the_
         correct(wikis.repo, a, now=at(i))
         apply(wikis.repo, f"I{i}", b, now=at(i))
     text = bootstrap.build_context(start=wikis.repo)
-    lines = [l for l in text.splitlines() if l.startswith("[global R")]
-    assert len(lines) == learn.PRINCIPLES_SHOWN < len(topics)       # six topics, four slots
-    assert lines[0].endswith(HEADER_RULE)                           # the header principle matches the fire, so it leads
+    shown = mempm(text)["P"]
+    assert len(shown) == len(topics)                                # every topic has its entry
+    assert shown[0][2] == HEADER_RULE                               # the header principle matches the fire, so it leads
     tiny = bootstrap.build_context(start=wikis.repo, budget=len(text) - 60)
     assert len(tiny) < len(text) and "fires [" in tiny
 

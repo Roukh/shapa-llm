@@ -102,8 +102,6 @@ class HostedDouble:
             return 401, self.err("unauthorized", "bad token")
         if path == "/v1/whoami":
             return 200, {"id": device["id"], "name": device["name"], "scopes": device["scopes"]}
-        if path == "/v1/instructions":
-            return 200, "Session defaults for " + (query.get("client") or ["rest"])[0]
         m = re.fullmatch(r"/v1/wikis/([^/]+)", path)
         if m and method == "PUT":
             return self.put_wiki(m.group(1), json.loads(body or b"{}"))

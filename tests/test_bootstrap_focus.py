@@ -61,16 +61,22 @@ def ctx(wikis, **kw):
     return bootstrap.build_context(start=wikis.repo, **kw)
 
 
-def test_the_northstar_leads_then_the_fires_then_their_tree(busy):
+def test_the_northstar_leads_then_the_fires_one_line_each_then_the_mempm(busy):
+    g = busy.conn(busy.global_wiki)
+    db.add_row(g, "R", "Write plainly", "", tags=["stage:0"], privileged=True)
+    g.close()
     text = ctx(busy)
     north = text.index("One brain for every device and app")
     fires = text.index("Feature number 0")
-    tree = text.index("Job 0 of")
-    assert north < fires < tree
+    mem = text.index("MEMPM (")
+    assert north < fires < mem
     assert text.index("A repo northstar") < fires
     for n in (0, 1, 2):
         assert f"Feature number {n} with" in text
-    assert "shapa/remote.py" in text  # the files a job names
+    # one line per fire: no job, task or file a job names is printed (the `focus` tool carries the tree)
+    assert "Job 0 of" not in text and "Task for job" not in text and "shapa/remote.py" not in text
+    assert [l for l in text.splitlines() if l[:2] in ("1.", "2.", "3.")] == [
+        f"{n + 1}. {busy.feats[n]} Feature number {n} with a descriptive title" for n in range(3)]
 
 
 def test_everything_else_stays_out_by_default(busy):
@@ -94,14 +100,13 @@ def test_the_byte_counts_before_and_after(busy, capsys):
     assert after < before / 2 and after < 3000
 
 
-def test_a_job_of_a_fire_lists_its_open_jobs_and_tasks_only(busy):
+def test_a_closed_fire_is_not_printed_and_no_job_of_one_is(busy):
     c = busy.conn()
     done = [i for i in db.items(c, parent=busy.feats[0])][0]
     db.close(c, done.id, "commit")
     c.close()
     text = ctx(busy)
-    assert done.title not in text
-    assert "Task for job" in text
+    assert done.title not in text and "Task for job" not in text
 
 
 def test_text_cannot_forge_wrapper_tags_or_add_lines(busy):

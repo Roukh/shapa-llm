@@ -13,6 +13,7 @@ from datetime import timedelta
 import pytest
 
 from shapa import bootstrap, db, focus, learn, metrics
+from tests.learnkit import mempm
 from tests.learnkit import at, correct, lexical_only, make_repo, rows  # noqa: F401
 
 TOPICS = {
@@ -54,11 +55,8 @@ def topic_of(topics, text):
 
 
 def printed(text):
-    """The principle lines of a session start text, and whether they sit under the recalled-context heading."""
-    lines = text.splitlines()
-    out = [l for l in lines if l.startswith("[global R")]
-    assert not out or f"{learn.HEAD_NOTE}:" in lines
-    return out
+    """The principles of a session start text: the one line of text of each entry of the mempm block's P list."""
+    return [e[2] for e in mempm(text)["P"]]
 
 
 def simulate(wikis, topics, learning: bool, leak=None):
@@ -130,27 +128,23 @@ def test_with_learning_and_room_to_show_every_principle_the_repeats_stop_in_both
     assert [w["rules"] for w in weekly] == [3] * WEEKS and all(w["shown"] == 3 for w in weekly[1:])
 
 
-def test_more_topics_than_display_slots_bound_the_repeats_and_the_rule_count(wikis):
+def test_six_topics_all_fit_in_p_so_the_repeats_stop_and_the_rule_count_holds(wikis):
     topics = {**TOPICS, **MORE}
-    assert len(topics) == 6 > learn.PRINCIPLES_SHOWN
+    assert len(topics) == 6 <= bootstrap.MEMPM_MAX["P"]
     weekly = simulate(wikis, topics, learning=True)
     assert weekly[0]["total"] == 6 and weekly[0]["rules"] == 6
     assert all(w["rules"] == 6 for w in weekly)                            # however often it was worded, six rules
-    assert all(w["shown"] <= learn.PRINCIPLES_SHOWN for w in weekly)       # the display never grows
-    spill = len(topics) - learn.PRINCIPLES_SHOWN
-    # the two principles that do not fit are still repeated, one correction per repo for each, no more
-    assert [w["repeats"] for w in weekly[1:3]] == [2 * spill] * 2
-    assert all(w["repeats"] <= 2 * spill for w in weekly[1:])
-    assert all(w["total"] <= 2 * spill for w in weekly[1:])
+    assert all(w["shown"] == 6 for w in weekly[1:])                        # every principle has its entry in P
+    assert all(w["repeats"] == 0 and w["total"] == 0 for w in weekly[1:])  # so none is ever said again
 
 
-def test_the_fire_decides_which_principles_take_the_slots(wikis):
+def test_the_fire_decides_which_principle_leads_p(wikis):
     topics = {**TOPICS, **MORE}
     simulate(wikis, topics, learning=True)
     text = bootstrap.build_context(start=wikis.repo)
     lines = printed(text)
-    assert len(lines) == learn.PRINCIPLES_SHOWN
-    assert any(TOPICS["header"][0] in l for l in lines)                    # the fire is about the mobile header
+    assert len(lines) == len(topics)
+    assert TOPICS["header"][0] in lines[0]                                 # the fire is about the mobile header
 
 
 def test_the_two_runs_side_by_side(tmp_path_factory, monkeypatch):

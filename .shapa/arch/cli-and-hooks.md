@@ -29,7 +29,7 @@ automatically instead of a human typing it.
 - `shapa/githooks.py` - links a repo's git hooks at `shapa init`, never into a shared or hook-manager-owned directory it does not own.
 - `shapa/reconfigure.py` - the session-start restructure directive (prompt `assets/prompts/reconfigure.md`); `shapa/memri_import.py` - opt-in importer.
 - `shapa/mcp.py` - the MCP stdio server.
-- `shapa/remote.py`, `remotesync.py`, `remotehttp.py`, `sync.py`, `syncapply.py`, `syncrec.py`, `syncstate.py`, `dbsync.py` - `shapa remote` (login, sync, status, devices, logout, instructions), the opt-in client of the hosted store; contract in [[hosted]] and [[hosted-sync]].
+- `shapa/remote.py`, `remotesync.py`, `remotehttp.py`, `sync.py`, `syncapply.py`, `syncrec.py`, `syncstate.py`, `dbsync.py` - `shapa remote` (login, sync, status, devices, logout), the opt-in client of the hosted store; contract in [[hosted]] and [[hosted-sync]].
 
 ## Interfaces in
 

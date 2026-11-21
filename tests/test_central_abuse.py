@@ -145,18 +145,20 @@ def test_capture_style_tags_cannot_mint_a_stage(g):
 
 
 def test_a_hostile_tag_flood_is_bounded_in_what_a_session_start_reads(wikis, g):
-    """Thousands of junk tags on one record, and one tag on thousands of records: the topics line
-    stays within its share of the budget and one line."""
+    """Thousands of junk tags on one staged record: the session start reads none of them, and the
+    mempm block stays one line within its share of the budget."""
     with db.write(g):
         g.execute("INSERT INTO mri(id, kind, summary, body, hash, created, updated) VALUES "
                   "('M1','M','s','','h','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')")
+        g.execute("INSERT INTO tags(id, tag) VALUES ('M1', 'stage:0')")
         for i in range(5000):
             g.execute("INSERT INTO tags(id, tag) VALUES ('M1', ?)", (f"junk-{i:05d}-" + "z" * 60,))
     start = time.perf_counter()
     text = bootstrap.build_context(start=wikis.repo)
     assert time.perf_counter() - start < 1.0  # 5,000 tags on one record cost the session start nothing much
-    topics = [l for l in text.splitlines() if l.startswith("  junk-")]
-    assert len(topics) == 1 and len(topics[0]) <= int(bootstrap.DEFAULT_BUDGET * bootstrap.TOPICS_SHARE) + 100
+    assert "junk-" not in text  # the session start prints a row's summary, never its tags
+    block = [l for l in text.splitlines() if l.startswith('{"P":')]
+    assert len(block) == 1 and len(block[0]) <= int(bootstrap.DEFAULT_BUDGET * bootstrap.MEMPM_SHARE)
     assert text.count("</shapa-memory>") == 1
 
 

@@ -29,7 +29,20 @@ export async function rpc(token: string | undefined, method: string, params: unk
   return { status: res.status, json, headers: res.headers, text };
 }
 
-export const INIT = { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "test", version: "1" } };
+/** The session start text through the MCP tool, the one way an agent gets it. A refusal comes back as its text (`forbidden: ...`). */
+export async function sessionText(token: string, o: { wiki?: string; full?: boolean; stage?: number; budget?: number } = {}): Promise<string> {
+  return (await tool(token, "session_start", o)).text;
+}
+
+export type Mempm = { P: [string, string, string][]; X: [string, string, string][]; M: [string, string, string][] };
+
+/** The mempm object of a session start text: the one line that is the compact JSON (all three lists empty when there is none). */
+export function mempmIn(text: string): Mempm {
+  const line = text.split("\n").find((l) => l.startsWith('{"P":'));
+  return line ? (JSON.parse(line) as Mempm) : { P: [], X: [], M: [] };
+}
+
+export const INIT ={ protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "test", version: "1" } };
 
 export async function tool(token: string, name: string, args: Record<string, unknown> = {}): Promise<{ text: string; isError: boolean; raw: any }> {
   const r = await rpc(token, "tools/call", { name, arguments: args });

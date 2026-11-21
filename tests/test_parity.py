@@ -68,10 +68,6 @@ def test_the_baseline_budget_is_6000_characters_on_both_sides():
     assert _number("BASELINE_BUDGET") == db.BASELINE_BUDGET == 6000
 
 
-def test_a_baseline_records_body_prints_at_most_1200_characters_on_both_sides():
-    assert _number("BASELINE_BODY_MAX") == bootstrap.BASELINE_BODY_MAX == 1200
-
-
 def test_a_project_item_is_at_most_500_characters_on_both_sides():
     assert _number("ITEM_MAX") == projectfile.ITEM_MAX == 500
 
@@ -149,3 +145,36 @@ def test_the_secret_patterns_of_the_table_are_masked_by_both_maskers():
     assert [n for n, _ in redact.PATTERNS][-len(names):] == names
     ts = (SRC.parent / "test" / "redact.test.ts").read_text(encoding="utf-8")
     assert all(f'"{n}"' in ts for n in names)  # the vitest parity list names them in the same order
+
+
+
+def test_the_skill_gate_sentence_is_the_same():
+    worker = "".join(_literal(t) for t in re.findall(_STRING, _body_of("SKILL_GATE")))
+    assert bootstrap.SKILL_GATE == worker
+    assert len(worker) < 300 and "`skill_match`" in worker and worker.startswith("SKILL GATE: ")
+
+
+def test_the_mempm_block_has_the_same_heading_keys_order_and_limits():
+    consts = _consts()
+    assert consts["MEMPM_HEAD"] == bootstrap.MEMPM_HEAD
+    assert "[id, date, text]" in bootstrap.MEMPM_HEAD            # the field order of every entry
+    assert _list("MEMPM_KEYS") == list(bootstrap.MEMPM_KEYS) == ["P", "X", "M"]
+    worker = re.search(r"export const MEMPM_MAX = \{ P: (\d+), X: (\d+), M: (\d+) \}", _ts_files())
+    assert worker and dict(zip("PXM", map(int, worker.groups()))) == bootstrap.MEMPM_MAX
+    share = re.search(r"\bconst MEMPM_SHARE\s*=\s*([\d.]+)\s*;", _ts_files())
+    assert share and float(share.group(1)) == bootstrap.MEMPM_SHARE
+    assert _list("NOT_A_LESSON") == list(bootstrap.NOT_A_LESSON)
+    assert consts["PRINCIPLE"] == "principle" and "principle" in db.LEARNING_TAGS
+
+
+#: The entries both sides print for it, and the text they must make: also in hosted/test/instructions.test.ts.
+MEMPM_SAMPLE = {"P": [["R1", "2026-11-20", 'say "hi" <b>&</b> x']], "X": [], "M": [["M2", "2026-11-19", 'a]],["b']]}
+MEMPM_SAMPLE_JSON = ('{"P":[["R1","2026-11-20","say \\"hi\\" \\u003cb\\u003e\\u0026\\u003c/b\\u003e\\u2028x"]],"X":[],'
+                     '"M":[["M2","2026-11-19","a]],[\\"b"]]}')
+
+
+def test_the_mempm_json_is_written_alike_on_both_sides():
+    """Compact JSON, keys P, X, M, the markup characters and line separators escaped. The Worker's vitest holds its
+    `mempmJson` to the same expected text."""
+    assert bootstrap.mempm_json(MEMPM_SAMPLE) == MEMPM_SAMPLE_JSON
+    assert json.loads(MEMPM_SAMPLE_JSON) == MEMPM_SAMPLE

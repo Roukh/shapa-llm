@@ -12,7 +12,6 @@ import {
 } from "./records.js";
 import { RELATED_LIMIT, TAGS_LIMIT } from "./tagapi.js";
 import { TASKS_LIMIT } from "./tasks.js";
-import { STAGE_MAX } from "./tags.js";
 import type { Cred } from "./store.js";
 
 export interface AppEnv {
@@ -72,38 +71,6 @@ export function registerV1(app: App): void {
       const { wiki } = c.req.valid("param");
       const r = await unwrap(store(c.env).putWiki(cred(c), wiki, c.req.valid("json")));
       return c.json(r.wiki, r.created ? 201 : 200);
-    },
-  );
-
-  app.openapi(
-    createRoute({
-      method: "get", path: "/v1/instructions", tags: tag, security, summary: "Session defaults for a client with no hooks",
-      request: {
-        query: z.object({
-          client: z.enum(["mcp", "rest"]).default("rest"),
-          wiki: z.string().regex(WIKI_KEY_RE).optional(),
-          budget: intQuery(LIMITS.instructionsBudget.min, LIMITS.instructionsBudget.max, LIMITS.instructionsBudget.default),
-          full: z.enum(["0", "1", "true", "false"]).optional().openapi({ description: "1 adds the rules and the other live features to the focus." }),
-          stage: z.coerce.number().int().min(0).max(STAGE_MAX).default(0).openapi({ description: "Load the rules, memories and skills up to this stage (default 0: the baseline). A baseline-reach device always gets 0." }),
-        }),
-      },
-      responses: {
-        200: {
-          description: "Text, within the budget (send Accept: text/plain for the text alone)",
-          content: {
-            "application/json": { schema: z.object({ text: z.string(), version: z.string() }) },
-            "text/plain": { schema: z.string() },
-          },
-        },
-        ...errors,
-      },
-    }),
-    async (c) => {
-      const q = c.req.valid("query");
-      const full = q.full === "1" || q.full === "true";
-      const r = await unwrap(store(c.env).instructions(cred(c), { client: q.client, ...(q.wiki ? { wiki: q.wiki } : {}), budget: q.budget, full, stage: q.stage }));
-      if ((c.req.header("accept") ?? "").includes("text/plain")) return c.text(r.text, 200) as never;
-      return c.json(r, 200);
     },
   );
 

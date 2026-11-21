@@ -184,11 +184,12 @@ def test_cap_on_real_session_text(wikis):
         tasks.add_task(g, f"Task {i} " + "u" * 100, "human", standalone_only=True)
     g.close()
     text = bootstrap.build_context(start=wikis.repo, budget=30000)
-    assert len(text) > hookcap.HOOK_CAP
-    out = hookcap.cap(text)
-    assert len(out) <= hookcap.HOOK_CAP
-    assert "BASELINE (" in out and "PROJECTS:" not in out
-    assert "PRECEDENCE:" in out and "WRITE BACK:" in out and out.count("</shapa-memory>") == 1
+    # the lean session text (the mempm, no baseline body, projects or tasks) stays under the hook cap by itself,
+    # whatever the central brain holds, so the cap has nothing to cut and leaves it byte for byte
+    assert len(text) <= hookcap.HOOK_CAP
+    assert hookcap.cap(text) == text
+    assert "BASELINE (" not in text and "PROJECTS:" not in text and "Task 0" not in text
+    assert "PRECEDENCE:" in text and "WRITE BACK:" in text and text.count("</shapa-memory>") == 1
 
 
 def test_the_bootstrap_command_emits_a_capped_envelope(monkeypatch, capsys):

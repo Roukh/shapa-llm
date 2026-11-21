@@ -184,7 +184,7 @@ commands:
                  each is there; local only, session start shows the top
   remote ...     the opt-in hosted store: login URL, sync (two-way, every wiki
                  in scope; --hook for a session hook), status, devices,
-                 logout, instructions
+                 logout
   correction     UserPromptSubmit hook: an operator correction ("no",
                  "wrong", "not like this") becomes an issue row
   serve [ROOT]   run the optional warm per-root daemon (latency only)

@@ -461,23 +461,26 @@ def test_session_text_drops_bidi_overrides_zero_width_and_format_characters(wiki
     db.add_row(g, "R", "Read‮ this​ rule﻿ plain", "Line⁦ one‏\nLine⁧ two\x07",
                tags=["stage:0"], privileged=True)
     text = bootstrap.build_context(start=wikis.repo)
-    assert "this" in text and "Line" in text
+    assert "this" in text  # the summary prints (a body never does)
     for ch in ("‮", "​", "﻿", "⁦", "⁧", "‏", "\x07"):
         assert ch not in text
     assert memlog.display_line("a b­c\U000e0041d") == "a b c d"
 
 
-def test_a_locked_database_is_left_out_of_a_session_start_after_one_second(wikis, g):
+def test_a_locked_database_is_left_out_of_a_session_start_after_one_second(wikis, g, monkeypatch):
+    # the restructure check waits on a lock by itself (reconfigure.py); this test times the session start's own reads
+    monkeypatch.setattr(bootstrap.reconfigure, "directive_lines", lambda paths: [])
+    db.add_row(g, "R", "Rule behind the lock", "", tags=["stage:0"], privileged=True)
     holder = sqlite3.connect(str(db.db_path(wikis.global_wiki)), isolation_level=None, timeout=0.1)
     holder.execute("BEGIN EXCLUSIVE")
     try:
         start = time.perf_counter()
-        lines = bootstrap.central_lines(config.wiki_roots(wikis.repo), 12000)
+        text = bootstrap.build_context(start=wikis.repo)
         elapsed = time.perf_counter() - start
     finally:
         holder.execute("ROLLBACK")
         holder.close()
-    assert lines == [] and elapsed < 2.5
+    assert "Rule behind the lock" not in text and elapsed < 2.5
 
 
 # --- reads that are capped or bounded --------------------------------------------------------------

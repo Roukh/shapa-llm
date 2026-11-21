@@ -1,14 +1,14 @@
 import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
-import { BASELINE_BUDGET, BASELINE_BODY_MAX } from "../src/gates.js";
+import { BASELINE_BUDGET } from "../src/gates.js";
 import { quarantineLegacyStage, rebuildRelations } from "../src/relations.js";
 import { migrate } from "../src/schema.js";
 import { TS, TS2, env, freshKey, get, mint, mintAll, put, rec, row, send, setup, sync, uidOf, wiki } from "./helpers.js";
-import { tool } from "./mcp-helpers.js";
+import { mempmIn, sessionText, tool } from "./mcp-helpers.js";
 import { oauthLogin } from "./oauth-helpers.js";
 
 const create = (token: string, w: string, body: Record<string, unknown>) => send("POST", rec(w), { token, body });
-const text = async (token: string, q = "") => (await get(`/v1/instructions?client=mcp${q}`, token)).body.text as string;
+const text = (token: string, o: { stage?: number } = {}) => sessionText(token, o);
 
 /** The global wiki is shared by the tests of this file: every record here carries its own marker. */
 async function globalWiki(token: string): Promise<void> {
@@ -122,15 +122,16 @@ describe("stages: stage 0 is the operator's", () => {
     const op = await sync(token, "global", { ops: [put(row("R50", "OPERATOR-S0 answer in plain words", { tags: ["stage:0"], data: { summary: "OPERATOR-S0 answer in plain words", body: "line one\nline two", alias: null, source: "", session: "" } }))] });
     expect(op.body.results[0].status).toBe("accepted");
     const t = await text(token);
-    expect(t).toMatch(/BASELINE \(stage 0\)\n(?:.*\n)*R50 OPERATOR-S0 answer in plain words\n  line one\n  line two/);
+    expect(mempmIn(t).P.map((e) => `${e[0]} ${e[2]}`)).toContain("R50 OPERATOR-S0 answer in plain words");
+    expect(t).not.toContain("line one"); // a row's summary prints, never its body
     expect(t).not.toContain("PLANTED-S0");
     expect(t).not.toContain("PROPOSED-DIRECT");
     // the threshold loads the next stage too
     await sync(token, "global", { ops: [put(row("R51", "STAGE-THREE rule", { tags: ["stage:3"] }))] });
     expect(await text(token)).not.toContain("STAGE-THREE");
-    expect(await text(token, "&stage=3")).toContain("R51 STAGE-THREE rule");
-    expect((await get("/v1/instructions?stage=10", token)).status).toBe(400);
-    expect((await get("/v1/instructions?stage=-1", token)).status).toBe(400);
+    expect(mempmIn(await text(token, { stage: 3 })).P.map((e) => `${e[0]} ${e[2]}`)).toContain("R51 STAGE-THREE rule");
+    expect((await tool(token, "session_start", { stage: 10 })).isError).toBe(true);
+    expect((await tool(token, "session_start", { stage: -1 })).isError).toBe(true);
     expect((await tool(token, "session_start", { stage: 3 })).text).toContain("STAGE-THREE");
   });
 
@@ -215,7 +216,6 @@ describe("stages: stage 0 is the operator's", () => {
 describe("stages: the baseline budget", () => {
   it("holds the contract's numbers", () => {
     expect(BASELINE_BUDGET).toBe(6000);
-    expect(BASELINE_BODY_MAX).toBe(1200);
   });
 
   it("refuses to put more than the budget at stage 0, naming the size", async () => {
@@ -263,7 +263,7 @@ describe("stages: the baseline budget", () => {
     expect(await holds()).toBe(before + 500);
   });
 
-  it("prints a baseline record's body cut at 1,200 characters, indented and masked", async () => {
+  it("prints a baseline record's summary and never its body", async () => {
     const { token } = await setup();
     await globalWiki(token);
     const body = `${"a".repeat(1300)}\nHEADING-FORGE`;
@@ -275,9 +275,8 @@ describe("stages: the baseline budget", () => {
     expect(refused.status).toBe("rejected");
     expect(refused.error).toContain("a secret or credential");
     const t = await text(token);
-    const lines = t.split("\n");
-    const at = lines.findIndex((l) => l.startsWith("R95 CUT-S0 rule"));
-    expect(lines[at + 1]).toBe(`  ${"a".repeat(1200)}`);
+    expect(mempmIn(t).P.map((e) => `${e[0]} ${e[2]}`)).toContain("R95 CUT-S0 rule");
+    expect(t).not.toContain("aaaaaaaaaa");
     expect(t).not.toContain("HEADING-FORGE");
     expect(t).not.toContain("sk-ant-api03");
   });

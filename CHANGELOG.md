@@ -21,6 +21,28 @@ This project follows [Semantic Versioning](https://semver.org/).
   global wiki; a principle two repos share is filed there as a pending `soft`, `promote` candidate
   for `shapa learn`. New reserved learning tag: `promote`.
 
+### Changed
+
+- The session start text is lean and carries one compact JSON, the mempm:
+  `{"P":[[id,date,text]],"X":[...],"M":[...]}` with principles, mistakes (issues
+  that still carry a lesson) and stage-0 memories, each a masked one-line summary
+  with an id `get` opens. Tasks, notes, projects, topics and skills left the text;
+  one line names the tool that fetches each. A fixed SKILL GATE line tells the
+  agent to call `skill_match` before any build, research, reading or implementation
+  task. The local `shapa bootstrap` and the hosted `session_start` compose the same
+  parts, and `tests/test_parity.py` holds the keys, the gate sentence and the entry
+  order equal. `--full` still prints the old overview.
+- A baseline (OAuth) device reads the global wiki's live mistakes (an issue takes
+  no stage tag; dismissed, soft and learned ones, and every repo wiki's, stay
+  hidden). Reads only; baseline writes are unchanged.
+
+### Removed
+
+- Agent-facing REST session text: `GET /v1/instructions`, its openapi entry, the
+  `rest` client kind, the REST write-back text and `shapa remote instructions`.
+  Agents reach shapa through authenticated MCP only; the REST routes `shapa remote
+  sync` uses stay.
+
 ## [0.10.0] - 2026-11-13
 
 ### Added

@@ -10,6 +10,8 @@ export const RELATIONS_KEY = "relations_v1";
 export const NOTE_ACCESS_KEY = "note_access_v1";
 /** Meta key: set once `base_vis` and the relation index were rebuilt for the skills' access rule (a baseline device sees every ACTIVE skill version, not only stage 0). */
 export const SKILL_ACCESS_KEY = "skill_access_v1";
+/** Meta key: set once `base_vis` and the relation index were rebuilt for the global wiki's live issues (a baseline device reads them). */
+export const ISSUE_ACCESS_KEY = "issue_access_v1";
 
 const DDL: string[] = [
   `CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
@@ -96,13 +98,16 @@ export function backfillOnce(sql: SqlStorage): void {
     sql.exec(`INSERT OR IGNORE INTO meta (key, value) VALUES (?, '1')`, RELATIONS_KEY);
     sql.exec(`INSERT OR IGNORE INTO meta (key, value) VALUES (?, '1')`, NOTE_ACCESS_KEY);
     sql.exec(`INSERT OR IGNORE INTO meta (key, value) VALUES (?, '1')`, SKILL_ACCESS_KEY);
+    sql.exec(`INSERT OR IGNORE INTO meta (key, value) VALUES (?, '1')`, ISSUE_ACCESS_KEY);
     return;
   }
-  // A store built before the notes' access marker, or before every active skill was readable by a baseline device:
-  // recompute `base_vis` and the index once. No relabelling here: a stored stage:0 is the operator's by now.
-  if (!has(NOTE_ACCESS_KEY) || !has(SKILL_ACCESS_KEY)) {
+  // A store built before the notes' access marker, before every active skill was readable by a baseline device, or
+  // before the global wiki's live issues were: recompute `base_vis` and the index once. No relabelling here: a stored
+  // stage:0 is the operator's by now.
+  if (!has(NOTE_ACCESS_KEY) || !has(SKILL_ACCESS_KEY) || !has(ISSUE_ACCESS_KEY)) {
     rebuildRelations(sql);
     sql.exec(`INSERT OR IGNORE INTO meta (key, value) VALUES (?, '1')`, NOTE_ACCESS_KEY);
     sql.exec(`INSERT OR IGNORE INTO meta (key, value) VALUES (?, '1')`, SKILL_ACCESS_KEY);
+    sql.exec(`INSERT OR IGNORE INTO meta (key, value) VALUES (?, '1')`, ISSUE_ACCESS_KEY);
   }
 }
