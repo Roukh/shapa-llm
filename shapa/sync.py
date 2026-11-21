@@ -132,11 +132,20 @@ def classify(local: dict[str, dict], hashes: dict[str, str], base: dict[str, dic
 
 # --- step 3: send -------------------------------------------------------------------------------
 
+def _still_refused(state: dict, local: dict, hashes: dict) -> dict:
+    """The refusals still standing: a record the server refused is not resent until it changes, except a
+    stage-0 one, which the server may have refused only because the baseline budget was full at the time
+    (a later delete can make room), so it is offered again on every sync."""
+    return {i: h for i, h in state["refused"].items()
+            if hashes.get(i) == h and "stage:0" not in (local.get(i) or {}).get("tags", ())}
+
+
 def _batches(plan: Plan):
-    """``(ops, want)`` pairs: puts then deletes in order, each request within
-    the op and byte limits; wants ride along 200 per request."""
-    ops_all = [{"op": "put", "base_rev": b, "record": wire_put(r)} for r, b in plan.puts]
-    ops_all += plan.dels
+    """``(ops, want)`` pairs: deletes then puts, each request within the op and byte
+    limits; wants ride along 200 per request. Deletes go first so a put that needs
+    room a delete frees (the stage-0 budget) is accepted in the same sync."""
+    ops_all = list(plan.dels)
+    ops_all += [{"op": "put", "base_rev": b, "record": wire_put(r)} for r, b in plan.puts]
     chunks, cur, size = [], [], 0
     for op in ops_all:
         n = len(json.dumps(op, separators=(",", ":")))
@@ -299,7 +308,7 @@ def pending_changes(root, *, key: str, url: str, rdir: Path) -> int | None:
     finally:
         conn.close()
     state = syncstate.load_state(syncstate.state_path(rdir, db_file), key, url)
-    refused = {i: h for i, h in state["refused"].items() if hashes.get(i) == h}
+    refused = _still_refused(state, local, hashes)
     return classify(local, hashes, state["base"], tombs, notes, state["token"] != token,
                     refused).pending
 
@@ -347,7 +356,7 @@ def _locked_sync(result, root, wiki_dir, db_file, path, client, key, name, kind,
         tombs = dbsync.local_tombstones(conn)
         counters = dbsync.counters(conn)
         token = _token(conn)
-        refused = {i: h for i, h in state["refused"].items() if hashes.get(i) == h}
+        refused = _still_refused(state, local, hashes)
         plan = classify(local, hashes, state["base"], tombs, notes, state["token"] != token, refused)
         plan.wants = sorted(set(plan.wants) | set(state.get("retry", [])))
         result.sent_put, result.sent_del, result.wanted = len(plan.puts), len(plan.dels), len(plan.wants)
