@@ -177,6 +177,19 @@ def test_install_is_idempotent(box, mode):
     assert text.count("BEGIN shapa-harness") == 1
 
 
+def test_an_unchanged_install_a_second_later_writes_nothing(box, monkeypatch):
+    """CI flake: a reinstall that crossed a clock second rewrote installed_at, so the state changed."""
+    import time as time_mod
+
+    box.seed()
+    install(*SUPPORTED, mode="append")
+    once = box.snapshot()
+    later = time_mod.gmtime(time_mod.time() + 3600)
+    monkeypatch.setattr(harness.time, "gmtime", lambda *a: later)
+    install(*SUPPORTED, mode="append")
+    assert box.snapshot() == once
+
+
 def test_a_second_install_after_a_prompt_edit_in_the_package_updates_only_the_prompt(box):
     box.seed()
     install("codex", mode="replace")

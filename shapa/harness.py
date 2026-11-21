@@ -977,6 +977,8 @@ def _install_one(h: str, mode: str | None, state: dict, dry: bool, force: bool, 
             res.action = "updated" if old else "installed"
         if mode == "default" and not changes:
             res.action = "unchanged" if old and old.get("mode") == "default" else "installed"
+        if res.action == "unchanged" and old and old.get("installed_at"):
+            record["installed_at"] = old["installed_at"]  # an install that changed nothing leaves the state byte-identical
         state["harnesses"][h] = record
         if not dry:
             res.notes.append("takes effect in new sessions; a running session keeps its old prompt")
