@@ -3,7 +3,7 @@ import { BASE, call, get, mint, mintAll, rec, send, setup, wiki } from "./helper
 import { INIT, rpc, tool } from "./mcp-helpers.js";
 import { oauthLogin } from "./oauth-helpers.js";
 
-const TOOLS = ["session_start", "search", "get", "save", "update", "ledger_list", "ledger_add", "ledger_set", "wikis", "focus", "focus_set", "skills", "skill", "skill_match", "tags", "related", "tasks", "projects", "project", "project_new", "project_add"];
+const TOOLS = ["session_start", "search", "get", "save", "update", "ledger_list", "ledger_add", "ledger_set", "wikis", "focus", "focus_set", "skills", "skill", "skill_match", "tags", "related", "tasks", "projects", "project", "project_new", "project_add", "delete"];
 
 describe("MCP: discovery", () => {
   it("publishes the protected resource and challenges an unauthenticated caller", async () => {
@@ -27,16 +27,18 @@ describe("MCP: protocol surface", () => {
     expect(r.json.result.capabilities.tools).toBeDefined();
   });
 
-  it("lists exactly the contract's tools, with no delete tool and honest annotations", async () => {
+  it("lists exactly the contract's tools, with one delete tool (the caller's own records) and honest annotations", async () => {
     const { token } = await setup();
     const r = await rpc(token, "tools/list");
     const tools: { name: string; annotations?: Record<string, boolean>; description: string; inputSchema: unknown }[] = r.json.result.tools;
     expect(tools.map((t) => t.name).sort()).toEqual([...TOOLS].sort());
-    expect(tools.some((t) => /delete|remove|forget/i.test(t.name))).toBe(false);
+    expect(tools.filter((t) => /delete|remove|forget/i.test(t.name)).map((t) => t.name)).toEqual(["delete"]);
     const by = Object.fromEntries(tools.map((t) => [t.name, t]));
     for (const ro of ["session_start", "search", "get", "ledger_list", "wikis", "focus", "skills", "skill"]) expect(by[ro]!.annotations?.readOnlyHint, ro).toBe(true);
     for (const rw of ["save", "update", "ledger_add", "ledger_set", "focus_set"]) expect(by[rw]!.annotations?.readOnlyHint, rw).toBe(false);
     expect(by["update"]!.annotations?.destructiveHint).toBe(true);
+    expect(by["delete"]!.annotations?.destructiveHint).toBe(true);
+    expect(by["delete"]!.annotations?.readOnlyHint).toBe(false);
     for (const t of tools) {
       expect(t.description.length, t.name).toBeGreaterThan(20);
       expect(t.inputSchema).toBeTruthy();

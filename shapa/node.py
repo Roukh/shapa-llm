@@ -5,9 +5,13 @@ is ONE project document in the global wiki per repo (the one-document-per-projec
 repo's wiki key, alias ``node:KEY``, mime ``application/json``) whose body is compact JSON::
 
     {"key", "updated", "northstar", "fires": [...], "principles": [[id, date, text], ...],
-     "mistakes": N, "counts": {"rules", "memories", "issues", "open_tasks"}}
+     "mistakes": N, "counts": {"rules", "memories", "issues", "open_tasks"},
+     "path": [group, ...], "type", "read_stage", "global_access"}
 
-``principles`` are the repo wiki's own principles (project and subproject scope, newest first, at most
+``path``, ``type``, ``read_stage`` and ``global_access`` are the repo's place in the hierarchy
+(:mod:`shapa.hierarchy`): the groups above it, its type, the lowest device stage that may read it on the hosted
+store and the highest global stage it reads (``null`` unset). A node written before them reads with the defaults
+(no path, no type, stage 0, unset). ``principles`` are the repo wiki's own principles (project and subproject scope, newest first, at most
 :data:`MAX_PRINCIPLES`); ``mistakes`` is only the COUNT of its open corrections: raw correction text never
 leaves the repo wiki. Every text is one masked line (:func:`shapa.learn.flatten`) and the body is written with
 ``json.dumps``, so a principle whose text looks like JSON stays a string. :func:`sync` is idempotent: no
@@ -48,7 +52,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from shapa import db, learn, metrics
+from shapa import db, hierarchy, learn, metrics
 
 BUDGET_S = 2.0
 MAX_PRINCIPLES = 40
@@ -57,6 +61,7 @@ MAX_NEW_PER_SYNC = 3
 MAX_OPEN = 5
 PROMOTE_MIN_REPOS = 2
 MAX_SOURCES = 8            # sources named in one candidate
+MAX_PATH = 16              # groups in a node's path
 ALIAS_PREFIX = db.NODE_ALIAS_PREFIX
 SOURCE = "node"            # an unprivileged writer cannot set it together with the reserved tag
 MIME = "application/json"
@@ -82,8 +87,22 @@ class Deadline:
 
 def node_key(root) -> str:
     """The repo's wiki key as a project key: what :func:`shapa.db.clean_project` accepts."""
-    key = re.sub(r"[^a-z0-9._/-]+", "-", metrics.repo_key(root).lower()).strip("-./")
-    return key[:70] or "repo"
+    return hierarchy.repo_key(root)
+
+
+def place(root, key: str, groot=None) -> dict:
+    """The repo's place in the hierarchy for its node: ``{path, type, read_stage, global_access}``. A broken
+    config reads as the defaults: a node is never refused for it."""
+    try:
+        repo = hierarchy.load_repo(root)
+    except hierarchy.HierarchyError:
+        repo = {"type": None, "global_access": None, "read_stage": 0}
+    try:
+        path = hierarchy.path_of(hierarchy.load_global(groot), key) or []
+    except hierarchy.HierarchyError:
+        path = []
+    return {"path": path, "type": repo["type"] or "", "read_stage": repo["read_stage"],
+            "global_access": repo["global_access"]}
 
 
 # --- the node ----------------------------------------------------------------------------------------
@@ -163,12 +182,21 @@ def parse(doc: db.Doc, expect_key: str | None = None) -> dict | None:
         return None
     counts = raw.get("counts") if isinstance(raw.get("counts"), dict) else {}
     fires = raw.get("fires") if isinstance(raw.get("fires"), list) else []
+    path = raw.get("path") if isinstance(raw.get("path"), list) else []
+    typ = raw.get("type") if isinstance(raw.get("type"), str) else ""
     return {"key": raw["key"], "updated": raw["updated"][:32],
             "northstar": learn.flatten(str(raw.get("northstar") or ""), 240),
             "fires": [learn.flatten(str(f), 160) for f in fires[:3] if isinstance(f, str)],
             "principles": principles, "mistakes": max(0, mistakes),
             "counts": {k: int(counts[k]) for k in ("rules", "memories", "issues", "open_tasks")
-                       if isinstance(counts.get(k), int)}}
+                       if isinstance(counts.get(k), int)},
+            "path": [p for p in path[:MAX_PATH] if isinstance(p, str) and hierarchy.NAME_RE.match(p)],
+            "type": typ if hierarchy.NAME_RE.match(typ) else "",
+            "read_stage": _stage(raw.get("read_stage"), 0), "global_access": _stage(raw.get("global_access"), None)}
+
+
+def _stage(value, default):
+    return value if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= db.STAGE_MAX else default
 
 
 def _write(gconn, key: str, node: dict, now: datetime) -> tuple[str, str]:
@@ -342,7 +370,7 @@ def sync(cwd=None, *, now: datetime | None = None, budget: float | None = None) 
     try:
         rconn = db.connect(repo.root, busy_ms=min(deadline.busy_ms(), 1000))
         try:
-            node = build(rconn, key)
+            node = {**build(rconn, key), **place(repo.root, key, glob.root)}
         finally:
             rconn.close()
         if deadline.over():

@@ -195,3 +195,19 @@ def test_the_atomic_rule_word_list_and_the_shared_cases_match_the_worker():
     assert cases["commands"] == sorted(db.COMMAND_WORDS)
     for c in cases["cases"]:
         assert db.several_rules(c["summary"], c["body"]) == c["why"], c["name"]
+
+
+def test_the_hierarchy_line_the_name_patterns_and_the_node_path_cap_match():
+    from shapa import hierarchy, node
+
+    assert _consts()["HIERARCHY_PREFIX"] == hierarchy.PREFIX
+    assert _number("MAX_SIBLINGS") == hierarchy.MAX_SIBLINGS and _number("MAX_PATH") == node.MAX_PATH
+    ts = (SRC / "nodes.ts").read_text(encoding="utf-8")
+    # Python spells the end of text `\Z`: its `$` would accept a trailing newline, which JavaScript's `$` does not
+    assert re.search(r"const NAME_RE = /(.*)/;", ts).group(1) == hierarchy.NAME_RE.pattern.replace("\\Z", "$")
+    assert re.search(r"const KEY_RE = /(.*)/;", ts).group(1) == hierarchy.KEY_RE.pattern.replace("\\Z", "$")
+    # the same line from the same pieces, on both sides: hosted/test/hierarchy.test.ts holds the TypeScript twin
+    assert hierarchy.line(["a", "b"], "me", "main", ["x", "y"]) == "HIERARCHY: a > b > me (type main); siblings: x, y"
+    assert hierarchy.line([], "me", None, []) == ""
+    assert hierarchy.line(["a"], "me", None, [f"s{i}" for i in range(12)]) == \
+        "HIERARCHY: a > me; siblings: " + ", ".join(f"s{i}" for i in range(8)) + " (+4 more)"

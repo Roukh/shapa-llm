@@ -58,7 +58,7 @@ export function search(
     rest = tags.slice(1);
     order = `${STAGE_SQL}, r.rev DESC`;
   }
-  if (repo.baseline) where.push(`r.base_vis = 1`);
+  if (repo.baseline) where.push(repo.vis("r.base_vis").slice(" AND ".length)); // the reach filter, and no hidden wiki
   for (const t of rest) {
     where.push(`EXISTS (SELECT 1 FROM record_tags t WHERE t.wiki = r.wiki AND t.id = r.id AND t.tag = ?)`);
     args.push(t);

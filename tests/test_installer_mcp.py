@@ -386,3 +386,70 @@ class TestBootstrapForwarding(BootstrapShTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+HOSTED_SHAPA_STUB = SHAPA_STUB.replace(
+    "exit 0\n",
+    'if [ "$1" = "remote" ] && [ "$2" = "mcp" ]; then echo "https://hosted.example/mcp"; exit 0; fi\nexit 0\n')
+#: One marker per server name, so the stub tells `shapa` from `shapa-hosted`.
+NAMED_CLAUDE_STUB = CLAUDE_STUB.replace(
+    'mark="$SHAPA_STUB_HOME/claude-mcp-registered"',
+    'name="$3"; [ "$3" = "--transport" ] && name="$5"\nmark="$SHAPA_STUB_HOME/claude-mcp-registered-$name"')
+
+
+class TestHostedMcp(InstallShTestCase):
+    """`shapa remote mcp` names the hosted MCP only while logged in with global_store = hosted: only then does
+    the installer wire it, in the three harnesses, with the token read from the environment."""
+
+    def hosted_install(self, *args):
+        _write_stub(self.bin / "shapa", HOSTED_SHAPA_STUB)
+        for name in ("claude", "codex", "opencode"):
+            _write_stub(self.bin / name, NAMED_CLAUDE_STUB if name == "claude" else NOOP_STUB)
+        return self.run_install(["--no-embeddings", "--harness", "all", "--mcp", *args])
+
+    def test_a_default_install_wires_no_hosted_server(self):
+        self.add_stub_harness("claude", "codex", "opencode")
+        result = self.run_install(["--no-embeddings", "--harness", "all", "--mcp"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("hosted", self.stub_log.read_text(encoding="utf-8"))
+        self.assertNotIn("hosted", self.codex_config.read_text(encoding="utf-8"))
+        self.assertNotIn("shapa-hosted", self.opencode_config.read_text(encoding="utf-8"))
+
+    def test_the_hosted_mcp_is_wired_in_every_harness_without_the_token_and_only_once(self):
+        first = self.hosted_install()
+        self.assertEqual(first.returncode, 0, first.stderr)
+        log = self.stub_log.read_text(encoding="utf-8")
+        self.assertIn("claude mcp add --transport http shapa-hosted --scope user https://hosted.example/mcp "
+                      "--header Authorization: Bearer ${SHAPA_MCP_TOKEN}", log)
+        codex = self.codex_config.read_text(encoding="utf-8")
+        self.assertIn('[mcp_servers.shapa-hosted]\nurl = "https://hosted.example/mcp"\n'
+                      'bearer_token_env_var = "SHAPA_MCP_TOKEN"', codex)
+        entry = json.loads(self.opencode_config.read_text(encoding="utf-8"))["mcp"]["shapa-hosted"]
+        self.assertEqual(entry, {"type": "remote", "url": "https://hosted.example/mcp",
+                                 "headers": {"Authorization": "Bearer {env:SHAPA_MCP_TOKEN}"}})
+        before = (codex, self.opencode_config.read_text(encoding="utf-8"))
+        again = self.hosted_install()
+        self.assertEqual(again.stdout.count("hosted MCP already registered")
+                         + again.stdout.count("'shapa-hosted' already registered"), 3)
+        self.assertEqual((self.codex_config.read_text(encoding="utf-8"),
+                          self.opencode_config.read_text(encoding="utf-8")), before)
+        self.assertEqual(sum(1 for ln in self.stub_log.read_text(encoding="utf-8").splitlines()
+                             if ln.startswith("claude mcp add --transport http")), 1)
+
+    def test_uninstall_removes_the_hosted_entries_and_leaves_the_rest(self):
+        self.hosted_install()
+        _write_stub(self.bin / "shapa", HOSTED_SHAPA_STUB)
+        result = self.run_install(["--no-embeddings", "--harness", "all", "--uninstall"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("shapa-hosted", self.codex_config.read_text(encoding="utf-8"))
+        self.assertNotIn("shapa-mcp-hosted", self.codex_config.read_text(encoding="utf-8"))
+        self.assertNotIn("shapa-hosted", self.opencode_config.read_text(encoding="utf-8"))
+        self.assertFalse((self.home / "claude-mcp-registered-shapa-hosted").exists())
+
+    def test_a_dry_run_previews_the_hosted_wiring_and_writes_nothing(self):
+        result = self.hosted_install("--dry-run")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("would run: claude mcp add --transport http shapa-hosted", result.stdout)
+        self.assertIn("bearer_token_env_var", result.stdout)
+        self.assertIn("would set .mcp.shapa-hosted", result.stdout)
+        self.assertFalse(self.codex_config.exists())

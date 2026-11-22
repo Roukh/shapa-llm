@@ -1,7 +1,7 @@
 // The break-it pass, MCP half: transport checks and the same limits through the tools.
 
 import { describe, expect, it } from "vitest";
-import { call, mint, rec, send, setup, wiki } from "./helpers.js";
+import { call, get, mint, rec, send, setup, wiki } from "./helpers.js";
 import { INIT, rpc, tool } from "./mcp-helpers.js";
 
 describe("abuse: MCP search input", () => {
@@ -64,9 +64,12 @@ describe("abuse: MCP transport", () => {
     expect(hostile.isError).toBe(true);
     const ok = await tool(lim.token, "save", { wiki: a.w, type: "memory", summary: "fine" });
     expect(ok.isError).toBe(false);
-    // nothing in MCP can delete
+    // MCP deletes only what the caller wrote: one delete tool, and it refuses another device's record
     const list = await rpc(lim.token, "tools/list");
-    expect(JSON.stringify(list.json)).not.toMatch(/"name":"(delete|remove)/);
+    expect(JSON.stringify(list.json)).not.toMatch(/"name":"remove/);
+    const theirs = await send("POST", rec(a.w), { token: a.token, body: { type: "memory", summary: "the operator's own memory" } });
+    expect((await tool(lim.token, "delete", { wiki: a.w, id: theirs.body.id })).isError).toBe(true);
+    expect((await get(rec(a.w, `/${theirs.body.id}`), a.token)).status).toBe(200);
     // a tombstoned record is not reachable through MCP either
     await send("DELETE", rec(a.w, "/M1"), { token: a.token });
     expect((await tool(lim.token, "get", { id: "M1" })).text).toBe("No record M1.");

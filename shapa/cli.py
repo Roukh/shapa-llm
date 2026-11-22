@@ -160,6 +160,13 @@ commands:
                  corrections, counts) into the global wiki; a principle two repos
                  share is filed there as a pending `learn` candidate. Runs
                  at session end with `commit --hook`
+  hierarchy level|type|group|link|unlink|store|show|check
+                 how repos nest: level names, repo types and the tree are data in
+                 <global wiki>/shapa.toml (limits enforced on write and by check)
+  repo type|stage|access [VALUE]
+                 this repo's type, read_stage (the lowest device stage that may
+                 read it on the hosted store) and global_access (the highest
+                 global stage it reads), in <repo wiki>/shapa.toml
   stage ...    which rules, memories and skills every session starts with:
                  set ID N (0 = baseline, served in full, capped at 6,000
                  characters; only this CLI sets it), clear, list, pending
@@ -435,8 +442,12 @@ def _init(argv: list[str]) -> None:
 
         upgrade.upgrade_wiki(resolved)
     registry.register([resolved], via="init")
+    if not make_global:
+        from shapa import hierarchy
 
-    verb = "scaffolded" if fresh else ("adopted" if adopted else "already present")
+        hierarchy.init_repo(resolved)
+
+    verb ="scaffolded" if fresh else ("adopted" if adopted else "already present")
     print(f"shapa wiki {verb} at: {resolved}")
     if installed:
         print(f"Installed {len(installed)} doc(s): {', '.join(installed)}")
@@ -510,6 +521,11 @@ def main(argv: list[str] | None = None) -> None:
         from shapa import node
 
         node.main(rest)
+        return
+    if cmd in ("hierarchy", "repo"):
+        from shapa import hierarchy
+
+        (hierarchy.main if cmd == "hierarchy" else hierarchy.main_repo)(rest)
         return
     if cmd in ("learn", "metrics"):
         mod = importlib.import_module(f"shapa.{cmd}")

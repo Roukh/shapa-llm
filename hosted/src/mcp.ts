@@ -1,7 +1,8 @@
 // The remote MCP server (/mcp, streamable HTTP, stateless: one server per request). Each tool
-// calls the same store method the matching REST route calls. There is no delete tool: deletion
-// is REST-only, behind the `delete` scope. Scope and wiki-allowlist checks live in the store,
-// so a tool cannot do more than the calling device may.
+// calls the same store method the matching REST route calls. The one delete tool removes only
+// records the calling device wrote (`device` equals the caller); deleting any record is REST,
+// behind the `delete` scope. Scope and wiki-allowlist checks live in the store, so a tool
+// cannot do more than the calling device may.
 
 import { McpServer } from "@modelcontextprotocol/server";
 import { createMcpHandler } from "agents/mcp/server";
@@ -236,6 +237,22 @@ export function buildServer(env: Env, cred: Cred): McpServer {
       guarded(async () => {
         const { record: r, notice, warnings }: { record: RecordWire; notice?: string; warnings?: string[] } = await unwrap(s.patch(cred, wiki, id, patch));
         return text(`Updated ${r.id} in ${wiki} (rev ${r.rev}).${notice ? ` (${notice})` : ""}${warnings?.length ? ` Warning: ${warnings.join(" ")}` : ""}`);
+      }),
+  );
+
+  server.registerTool(
+    "delete",
+    {
+      title: "Delete a record you saved",
+      description:
+        "Delete a record this device wrote (an id or alias): a note, memory, task, document or any other record you saved. Only your own: a record another device or the operator wrote or last edited is refused, and so are the focus, skills, repo nodes and stage 0. The delete syncs to every device.",
+      inputSchema: z.object({ wiki: wikiKey, id: z.string().min(1).max(120) }),
+      annotations: { ...WRITE, destructiveHint: true, idempotentHint: true },
+    },
+    ({ wiki, id }) =>
+      guarded(async () => {
+        const r = await unwrap(s.removeOwn(cred, wiki, id));
+        return text(`Deleted ${r.id} in ${wiki}.`);
       }),
   );
 

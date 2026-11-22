@@ -188,6 +188,7 @@ function loadAll(repo: Repo, wiki: string, ids: string[], head = 0): Brief[] {
 export function showProject(repo: Repo, d: Device, key: string, wiki: string): ProjectOut {
   usable(repo, d, wiki, "read");
   validKey(key);
+  if (hiddenProject(repo, wiki, key)) fail("not_found", `no project ${key} in ${wiki}`);
   const doc = documentOf(repo, wiki, key);
   const tag = PROJECT_PREFIX + key;
   const counts = tagBuckets(repo.sql, repo.baseline, wiki, tag);
@@ -230,12 +231,15 @@ export function showProject(repo: Repo, d: Device, key: string, wiki: string): P
   };
 }
 
+/** A global project named for a repo this view may not reach (the repo's `read_stage` is above the device's). */
+const hiddenProject = (repo: Repo, wiki: string, key: string): boolean => wiki === "global" && repo.hiddenWikis().includes(key);
+
 export interface ProjectRow { key: string; title: string; open_tasks: number }
 
 /** The projects of a wiki: key, title and open tasks, the busiest first; at most PROJECTS_CAP, with the total. */
 export function listProjects(repo: Repo, d: Device, wiki: string, limit = PROJECTS_CAP): { projects: ProjectRow[]; total: number } {
   usable(repo, d, wiki, "read");
-  const keys = projectKeys(repo.sql, repo.baseline, wiki).sort((a, b) => b.open - a.open || cmp(a.key, b.key));
+  const keys = projectKeys(repo.sql, repo.baseline, wiki).filter((k) => !hiddenProject(repo, wiki, k.key)).sort((a, b) => b.open - a.open || cmp(a.key, b.key));
   const rows = keys.slice(0, Math.min(limit, PROJECTS_CAP)).map(({ key, open }) => {
     const doc = projectHolder(repo, wiki, key);
     return { key, title: doc?.title || key, open_tasks: open };

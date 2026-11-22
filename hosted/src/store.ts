@@ -243,6 +243,11 @@ export class ShapaStore extends DurableObject<Env> {
     return this.act(cred, (repo, d) => ledger.deleteRecord(repo, d, wiki, ref));
   }
 
+  /** Delete a record this device wrote (the MCP `delete` tool): no delete scope needed, never another device's record. */
+  removeOwn(cred: Cred, wiki: string, ref: string): Out<RecordWire> {
+    return this.act(cred, (repo, d) => ledger.deleteOwn(repo, d, wiki, ref));
+  }
+
   sync(cred: Cred, wiki: string, req: Parameters<typeof sync>[3]): Out<SyncResponseOut> {
     return this.act(cred, (repo, d) => sync(repo, d, wiki, req));
   }

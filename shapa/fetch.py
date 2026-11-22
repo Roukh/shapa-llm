@@ -747,6 +747,21 @@ def _stage_rank(node: Node) -> int:
     return db.STAGE_MAX + 1 if stage is None else stage
 
 
+def global_limit(wiki_roots: list[WikiRoot]) -> int | None:
+    """The repo's ``global_access`` (the highest global stage a recall may return), or ``None`` when unset or
+    no repo wiki is in scope. A global record with no stage tag counts as stage 9."""
+    from shapa import hierarchy
+
+    repo = next((wr for wr in wiki_roots if wr.kind == "repo"), None)
+    return hierarchy.global_access(repo.path) if repo is not None else None
+
+
+def _forget(data: "_RootData", rid: str) -> None:
+    for d in (data.nodes, data.bodies, data.rel, data.value, data.bm25_rel, data.emb_rel, data.mem_lex, data.lex):
+        d.pop(rid, None)
+    data.mem_ids.discard(rid)
+
+
 def select_multi(query: str, start=None, roots: list[WikiRoot] | None = None,
                   k: int = DEFAULT_K, budget: int = DEFAULT_BUDGET,
                   *, read_only: bool = False,
@@ -806,6 +821,9 @@ def select_multi(query: str, start=None, roots: list[WikiRoot] | None = None,
     if not wiki_roots:
         return Selection(items=[])
 
+    from shapa import db
+
+    limit = global_limit(wiki_roots)
     per_root: dict[WikiRoot, _RootData] = {}
     # Keyed by the WikiRoot itself (not just its ``kind``) - two distinct
     # physical roots that happen to share a ``kind`` label (e.g. an
@@ -819,14 +837,14 @@ def select_multi(query: str, start=None, roots: list[WikiRoot] | None = None,
     for wr in wiki_roots:
         data = _load_root_data(Path(wr.path), query, read_only=read_only)
         per_root[wr] = data
+        if limit is not None and wr.kind == "global":
+            for rid in [nid for nid, n in data.nodes.items() if min(_stage_rank(n), db.STAGE_MAX) > limit]:
+                _forget(data, rid)
         # A memory id is content-derived, so the same id in two roots is the
         # same memory (imported twice) - shown once, from the most specific
         # root, never flagged as an F09 collision.
         for rid in sorted(data.mem_ids & seen_memories):
-            for d in (data.nodes, data.bodies, data.rel, data.value, data.bm25_rel,
-                      data.emb_rel, data.mem_lex, data.lex):
-                d.pop(rid, None)
-            data.mem_ids.discard(rid)
+            _forget(data, rid)
         seen_memories |= data.mem_ids
         for nid in data.nodes:
             if nid not in data.mem_ids:
@@ -1069,6 +1087,7 @@ def tag_selection(tags, query: str = "", start=None, roots: list[WikiRoot] | Non
 
     wanted = relate.clean_query_tags(tags)
     wiki_roots = list(roots) if roots is not None else config.wiki_roots(start)
+    limit = global_limit(wiki_roots)
     found: dict[tuple[str, str], dict] = {}
     only: dict[str, set[str]] = {}
     for wr in wiki_roots:
@@ -1084,6 +1103,8 @@ def tag_selection(tags, query: str = "", start=None, roots: list[WikiRoot] | Non
             focus = {r[0] for r in conn.execute("SELECT id FROM tags WHERE tag = ?", (db.FOCUS_TAG,))}
         finally:
             conn.close()
+        if limit is not None and wr.kind == "global":
+            meta = {i: m for i, m in meta.items() if (stages.get(i) if stages.get(i) is not None else db.STAGE_MAX) <= limit}
         only[str(wr.path)] = {i for i in meta if i not in focus}
         for i, m in meta.items():
             if i not in focus:

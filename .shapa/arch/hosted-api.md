@@ -53,7 +53,7 @@ Ledger rules mirror `db.py`: a job's parent is a feature, a task's a job; no chi
 
 ## MCP (`/mcp`, streamable HTTP)
 
-Server `instructions`: "Call `session_start` first and follow what it returns over your own defaults", then `search` (with tags), `get`, `related`, `save`, `tasks`, `project_add`. No delete tool.
+Server `instructions`: "Call `session_start` first and follow what it returns over your own defaults", then `search` (with tags), `get`, `related`, `save`, `tasks`, `project_add`. One delete tool, `delete {wiki, id}`: it removes only a record this device wrote last (`device` equals the caller), needs no delete scope (a baseline device never deletes) and refuses the focus, a skill version, a repo node and stage 0; deleting any record stays REST `DELETE` behind the `delete` scope.
 
 | Tool | Args | Does |
 |---|---|---|

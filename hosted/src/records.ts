@@ -389,6 +389,8 @@ export const WikiKey = z.string().regex(WIKI_KEY_RE);
 export const WikiOut = z.object({
   key: z.string(), name: z.string(), kind: z.enum(["global", "repo"]), origin: z.string(),
   created: z.string(), counts: z.record(z.string(), z.number().int()),
+  path: z.array(z.string()).optional().describe("The groups above this repo in the operator's hierarchy, outermost first (from its node; absent without one)."),
+  type: z.string().optional().describe("The repo type the hierarchy gives it (absent when none)."),
 }).openapi("Wiki");
 export const WikiPut = z.object({
   name: z.string().min(1).max(120),

@@ -191,7 +191,8 @@ def tool_get(args: dict[str, Any], cwd: str | None) -> dict[str, Any]:
     start = args.get("root") or cwd
 
     matches = []
-    for wr in config.wiki_roots(start):
+    roots = config.wiki_roots(start)
+    for wr in roots:
         root_path = Path(wr.path)
         if not root_path.is_dir():
             continue
@@ -222,6 +223,9 @@ def tool_get(args: dict[str, Any], cwd: str | None) -> dict[str, Any]:
             "body": body,
         })
 
+    limit = fetch.global_limit(roots)  # the repo's global_access: a global record above it is not found
+    if limit is not None:
+        matches = [m for m in matches if m["root_kind"] != "global" or _within_access(m, limit)]
     if not matches:
         return {"error": f"no note '{note_id}' found in any wiki in scope"}
     if len(matches) > 1 and all(m.get("source") == "memory" for m in matches):
@@ -238,6 +242,15 @@ def tool_get(args: dict[str, Any], cwd: str | None) -> dict[str, Any]:
             "matches": matches,
         }
     return matches[0]
+
+
+def _within_access(hit: dict[str, Any], limit: int) -> bool:
+    """Whether a global record is at or below a repo's ``global_access``; one with no stage counts as stage 9."""
+    from shapa import db
+
+    tags = (hit.get("meta") or {}).get("tags") or (hit.get("record") or {}).get("tags") or []
+    stage = db.stage_of(tags)
+    return (db.STAGE_MAX if stage is None else stage) <= limit
 
 
 def tool_save(args: dict[str, Any], cwd: str | None) -> dict[str, Any]:
@@ -427,6 +440,50 @@ def tool_focus(args: dict[str, Any], cwd: str | None) -> dict[str, Any]:
         return focus.as_dict(conn)
     finally:
         conn.close()
+
+
+#: Settings that decide what a repo may read or where the global wiki lives: the operator's CLI sets them,
+#: never an agent (this server runs outside the agent's sandbox).
+_OPERATOR_ONLY = "is set by the operator's CLI (`shapa {cmd}`), not through MCP"
+
+
+def tool_hierarchy(args: dict[str, Any], cwd: str | None) -> dict[str, Any]:
+    from shapa import hierarchy
+
+    action = str(args.get("action") or "show").strip()
+    if action == "store":
+        return {"error": f"the global store {_OPERATOR_ONLY.format(cmd='hierarchy store hosted|local')}"}
+    try:
+        root = config.global_root()
+        cfg = hierarchy.load_global(root)
+        if action == "check":
+            problems = hierarchy.check(cfg, hierarchy.own_type(args.get("root") or cwd))
+            return {"ok": not problems, "problems": problems}
+        if action != "show":
+            hierarchy.edit(cfg, action, {"action": args.get("op"), "name": args.get("name"),
+                                         "path": args.get("path"), "repo": args.get("repo"),
+                                         "remove": bool(args.get("remove"))}, args.get("root") or cwd)
+            hierarchy.save_global(root, cfg)
+        return cfg
+    except hierarchy.HierarchyError as exc:
+        return {"error": str(exc)}
+
+
+def tool_repo(args: dict[str, Any], cwd: str | None) -> dict[str, Any]:
+    from shapa import hierarchy
+
+    action = str(args.get("action") or "show").strip()
+    if action in ("stage", "access"):
+        return {"error": f"a repo's {action} {_OPERATOR_ONLY.format(cmd='repo ' + action)}"}
+    try:
+        wiki = hierarchy.repo_wiki(args.get("root") or cwd)
+        if action != "show":
+            hierarchy.set_repo(wiki, action, args.get("value"))
+        key = hierarchy.repo_key(wiki)
+        return {**hierarchy.load_repo(wiki), "key": key,
+                "path": hierarchy.path_of(hierarchy.load_global(), key) or []}
+    except hierarchy.HierarchyError as exc:
+        return {"error": str(exc)}
 
 
 def tool_skill_match(args: dict[str, Any], cwd: str | None) -> dict[str, Any]:
@@ -680,6 +737,8 @@ _HANDLERS: dict[str, Callable[[dict[str, Any], str | None], dict[str, Any]]] = {
     "skill": tool_skill,
     "skill_match": tool_skill_match,
     "partition": tool_partition,
+    "hierarchy": tool_hierarchy,
+    "repo": tool_repo,
 }
 
 TOOLS: list[dict[str, Any]] = [
@@ -919,6 +978,39 @@ TOOLS: list[dict[str, Any]] = [
             "properties": {"text": {"type": "string", "description": "the task, in a sentence or two"},
                            "root": {"type": "string"}},
             "required": ["text"],
+        },
+    },
+    {
+        "name": "hierarchy",
+        "description": (
+            "The tree your repos sit in (levels, repo types and groups are the operator's own, in "
+            "<global wiki>/shapa.toml). action `show` (default) reads it, `check` lists what is wrong; "
+            "`level` and `type` {op: add|rm, name}, `group` {path: a/b, remove?}, `link` {path, repo?} "
+            "and `unlink` {repo?} edit it (the repo defaults to this one). Limits are enforced on write. "
+            "The global store setting is the operator's CLI alone."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["show", "check", "level", "type", "group", "link", "unlink"]},
+                "op": {"type": "string", "enum": ["add", "rm"]}, "name": {"type": "string"},
+                "path": {"type": "string"}, "repo": {"type": "string"}, "remove": {"type": "boolean"},
+                "root": {"type": "string"},
+            },
+        },
+    },
+    {
+        "name": "repo",
+        "description": (
+            "This repo's own settings in <repo wiki>/shapa.toml. action `show` (default) reads them with "
+            "the repo's key and its path in the tree; `type` {value} sets the repo type (one of the "
+            "hierarchy's types, or unset). The repo's read stage and global access are the operator's "
+            "CLI alone."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"action": {"type": "string", "enum": ["show", "type"]}, "value": {"type": "string"},
+                           "root": {"type": "string"}},
         },
     },
     {

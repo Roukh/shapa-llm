@@ -430,6 +430,23 @@ export function deleteRecord(repo: Repo, d: Device, wiki: string, ref: string): 
   return toWire(repo.save(wiki, tomb, d.name, rec));
 }
 
+/** Delete a record this device wrote last (the MCP `delete` tool): its `device` is the caller's name, so an agent removes
+ *  its own saves and nothing else. The operator's delete scope (above) removes any record. The engine's own records (the
+ *  focus, a skill version, a repo node) and the baseline (stage 0) are never an agent's to delete. */
+export function deleteOwn(repo: Repo, d: Device, wiki: string, ref: string): RecordWire {
+  needScope(d, "write");
+  denyBaseline(d, "this device never deletes");
+  wikiFor(repo, d, wiki);
+  const rec = liveRecord(repo, wiki, ref);
+  if (rec.device !== d.name) fail("forbidden", `${rec.id} was not written by this device: you delete only your own records (the operator deletes any)`);
+  if (hasBaseline(rec.tags) && rec.kind !== "N") fail("forbidden", `${rec.id} is baseline (stage 0): the operator deletes it`);
+  if (rec.kind === "D" && rec.tags.some((t) => t === FOCUS_TAG || t === SKILL_TAG || t === NODE_TAG)) {
+    fail("forbidden", `${rec.id} is an engine record (focus, skill or repo node): it is changed with \`shapa\` on the operator's machine`);
+  }
+  const tomb: Normalized = { ...norm(rec), deleted: true, alias: "", data: {}, tags: [], links: [], updated: stamp(rec.updated) };
+  return toWire(repo.save(wiki, tomb, d.name, rec));
+}
+
 // --- the ledger view (MCP ledger_list, session instructions) ---------------------------------
 
 export interface LedgerNode {

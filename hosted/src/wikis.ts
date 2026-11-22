@@ -2,6 +2,7 @@
 
 import { type Device, needScope, needWiki, wikiAllowed } from "./devices.js";
 import { fail } from "./errors.js";
+import { readNodes, type NodeInfo } from "./nodes.js";
 import { piiGate } from "./piigate.js";
 import { denyBaseline } from "./reach.js";
 import { Repo } from "./repo.js";
@@ -13,11 +14,18 @@ export interface WikiInfo {
   origin: string;
   created: string;
   counts: Record<string, number>;
+  /** Where the operator's hierarchy puts this repo: the groups above it and its type (from its node; absent without one). */
+  path?: string[];
+  type?: string;
 }
 
-function info(repo: Repo, key: string): WikiInfo {
+function info(repo: Repo, key: string, nodes: NodeInfo[] = readNodes(repo.sql)): WikiInfo {
   const w = repo.wiki(key)!;
-  return { key: w.key, name: w.name, kind: w.kind, origin: w.origin, created: w.created, counts: repo.wikiCounts(key) };
+  const n = nodes.find((x) => x.key === key);
+  return {
+    key: w.key, name: w.name, kind: w.kind, origin: w.origin, created: w.created, counts: repo.wikiCounts(key),
+    ...(n && n.path.length ? { path: n.path } : {}), ...(n && n.type ? { type: n.type } : {}),
+  };
 }
 
 /** The keys of the wikis a device may use (every registered wiki when it has no list). */
@@ -27,7 +35,8 @@ export function readableWikis(repo: Repo, d: Device): string[] {
 
 export function listWikis(repo: Repo, d: Device): WikiInfo[] {
   needScope(d, "read");
-  return repo.wikis().filter((w) => wikiAllowed(d, w.key)).map((w) => info(repo, w.key));
+  const nodes = readNodes(repo.sql);
+  return repo.wikis().filter((w) => wikiAllowed(d, w.key)).map((w) => info(repo, w.key, nodes));
 }
 
 export function putWiki(

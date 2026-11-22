@@ -193,7 +193,9 @@ function applyDel(
   repo: Repo, d: Device, wiki: string,
   op: Extract<SyncOpIn, { op: "del" }>, extras: Set<string>,
 ): SyncResultOut {
-  if (!d.scopes.includes("delete")) {
+  // A device without the delete scope may still delete a note it wrote last (a note file has no tombstone of its own).
+  const ownNote = !op.uid && repo.get(wiki, op.id)?.device === d.name;
+  if (!d.scopes.includes("delete") && !ownNote) {
     extras.add(op.id);
     return { id: op.id, status: "rejected", rev: repo.get(wiki, op.id)?.rev ?? 0, error: "this device lacks the delete scope" };
   }

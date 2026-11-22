@@ -62,7 +62,7 @@ Request `{cursor, ops, want, counters}`; response `{cursor, results, changes, co
 | Op | Shape |
 |---|---|
 | put | `{op: "put", base_rev: int\|null, record}` (`null` = new to the server as far as the client knows) |
-| del | `{op: "del", id, uid, deleted_at, base_rev: int\|null}` (needs scope `delete`) |
+| del | `{op: "del", id, uid, deleted_at, base_rev: int\|null}` (needs scope `delete`, except a note, `uid` empty, whose last writer is this device) |
 
 The server applies `ops` in order inside one transaction:
 
@@ -94,7 +94,7 @@ Client (`shapa remote sync`), per wiki, under a file lock:
 3. Send (parents first: F, J, T, then the rest), in batches.
 4. In one local write transaction: apply `renamed` (relabel id, child `parent`, tags, links; foreign keys deferred), then each change, skipping any record whose local content changed since step 1; raise counters; drop acknowledged tombstones; write state.
 
-Note files sync only while the wiki's primary checkout is on its default branch (always, outside git). A remote delete removes a local note only if it is unchanged since the last sync; a note deleted locally comes back (delete it through the API). Remote text is never executed and never picks a path outside the note pattern.
+Note files sync only while the wiki's primary checkout is on its default branch (always, outside git). A remote delete removes a local note only if it is unchanged since the last sync; a note another device wrote and this one deleted locally comes back (delete it through the API); a note this device wrote stays deleted: the base marks a note this device put (`own`, cleared when anyone else's edit replaces it), and a marked note gone from the wiki is sent as a `del` (no uid, found by path), which the server accepts without the `delete` scope when that device is the note's last writer. Remote text is never executed and never picks a path outside the note pattern.
 
 ## Client commands
 

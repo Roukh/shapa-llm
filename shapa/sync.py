@@ -4,8 +4,9 @@
 
 1. **Snapshot** the wiki: F/J/T items, M/R/I rows, D documents, N note files.
 2. **Classify** against the stored base: new, modified (or stale), deleted
-   (a local tombstone), missing (gone with no tombstone: a database swapped
-   by git heals from the server instead of pushing deletes).
+   (a local tombstone, or a note file this device wrote and removed), missing
+   (gone with no tombstone: a database swapped by git heals from the server
+   instead of pushing deletes; a note another device wrote comes back).
 3. **Send** puts (parents first) and deletes in batches, then page through
    what the server has since the cursor.
 4. **Apply** in ONE local write transaction: renames first, then each change,
@@ -87,11 +88,13 @@ def too_big(rec: dict) -> bool:
 
 def classify(local: dict[str, dict], hashes: dict[str, str], base: dict[str, dict],
              tombstones: dict[str, dict], notes: bool = True, swapped: bool = False,
-             refused: dict[str, str] | None = None) -> Plan:
+             refused: dict[str, str] | None = None, present=None) -> Plan:
     """Step 2. *swapped* says the database is not the one the base was taken
     from (its sync token differs): only then are clocks consulted, so that a
     copy older than the server heals instead of overwriting it. *refused*
-    maps an id to the hash of the version the server already refused."""
+    maps an id to the hash of the version the server already refused. *present*
+    says whether anything is at a note's path: a note this device wrote is a
+    delete only when its file is really gone, not merely left out of the snapshot."""
     plan, refused = Plan(), refused or {}
 
     def put(rec, base_rev):
@@ -126,6 +129,9 @@ def classify(local: dict[str, dict], hashes: dict[str, str], base: dict[str, dic
             continue
         if ent["uid"] and (ent["uid"] in here or ent["uid"] in stoned):
             continue  # still here under another label, or deleted here and sent as a del
+        if is_note and ent.get("own") and not (present and present(rid)):  # a note file has no tombstone: one this device wrote and then removed is a delete
+            plan.dels.append({"op": "del", "id": rid, "uid": "", "deleted_at": db.now_iso(), "base_rev": ent["rev"]})
+            continue
         plan.wants.append(rid)
     return plan
 
@@ -310,7 +316,7 @@ def pending_changes(root, *, key: str, url: str, rdir: Path) -> int | None:
     state = syncstate.load_state(syncstate.state_path(rdir, db_file), key, url)
     refused = _still_refused(state, local, hashes)
     return classify(local, hashes, state["base"], tombs, notes, state["token"] != token,
-                    refused).pending
+                    refused, lambda rid: syncrec.note_present(db_file.parent, rid)).pending
 
 
 def sync_wiki(root, *, client: Client, rdir: Path, key: str, name: str = "", kind: str = "repo",
@@ -357,7 +363,8 @@ def _locked_sync(result, root, wiki_dir, db_file, path, client, key, name, kind,
         counters = dbsync.counters(conn)
         token = _token(conn)
         refused = _still_refused(state, local, hashes)
-        plan = classify(local, hashes, state["base"], tombs, notes, state["token"] != token, refused)
+        plan = classify(local, hashes, state["base"], tombs, notes, state["token"] != token, refused,
+                        lambda rid: syncrec.note_present(wiki_dir, rid))
         plan.wants = sorted(set(plan.wants) | set(state.get("retry", [])))
         result.sent_put, result.sent_del, result.wanted = len(plan.puts), len(plan.dels), len(plan.wants)
         result.oversized = list(plan.oversized)

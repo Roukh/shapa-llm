@@ -100,10 +100,15 @@ class _Apply:
             if res["status"] in ("accepted", "noop", "renamed") and key_of(rec) in self.snap:
                 self.base[final] = {"rev": res["rev"], "uid": rec["uid"], "updated": rec["updated"],
                                     "hash": self.snap[key_of(rec)]}
+                if rec["kind"] == "N" and res["status"] != "noop":
+                    self.base[final]["own"] = True  # this device wrote the stored note
         else:
             dbsync.drop_tombstones(self.conn, [op["id"]])
             if res["status"] in ("accepted", "noop"):
-                self.forget(op["uid"])
+                if op["uid"]:
+                    self.forget(op["uid"])
+                else:
+                    self.base.pop(op["id"], None)  # a note, found by its path
 
     # -- changes -----------------------------------------------------------------------------------
     def change(self, rec: dict) -> None:
@@ -229,7 +234,9 @@ def apply(conn, wiki_dir: Path, local, hashes, state, ex, result, notes: bool = 
                 digest, where = syncrec.record_hash(final[rec["uid"]]), final[rec["uid"]]["id"]
             else:
                 continue
-            ap.base[where] = {"rev": rec["rev"], "uid": rec["uid"], "updated": rec["updated"],
-                              "hash": digest}
+            prev = ap.base.get(where)
+            ap.base[where] = {"rev": rec["rev"], "uid": rec["uid"], "updated": rec["updated"], "hash": digest}
+            if prev and prev.get("own") and prev["rev"] == rec["rev"]:
+                ap.base[where]["own"] = True  # the server handing back this device's own write
     state["cursor"], state["last_sync"] = ex.cursor, stamp
     state["retry"] = sorted(ap.retry)[:syncstate.MAX_RETRY]

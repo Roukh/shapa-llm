@@ -101,6 +101,12 @@ def snapshot_notes(wiki_dir: Path) -> dict[str, dict]:
     return out
 
 
+def note_present(wiki_dir: Path, note_id: str) -> bool:
+    """Whether anything sits at a note's path: :func:`snapshot_notes` leaves out a symlink, an oversized, unreadable or
+    non-UTF-8 file, and none of those is a deleted note."""
+    return is_note_id(note_id) and os.path.lexists(Path(wiki_dir) / note_id)
+
+
 def _note_target(wiki_dir: Path, note_id: str, *, create_dir: bool) -> Path:
     """The file for *note_id*, proven to sit directly in the wiki directory or
     its ``arch/``/``research/`` folder; ``ValueError`` otherwise."""

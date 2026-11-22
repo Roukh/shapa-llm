@@ -14,7 +14,7 @@ URL = "https://hosted.example"
 class Device:
     """One machine: its own wiki, its own remote dir, a client onto the double."""
 
-    def __init__(self, tmp_path, name, double, *, wiki=None):
+    def __init__(self, tmp_path, name, double, *, wiki=None, scopes=("read", "write", "delete")):
         from tests.conftest import Wikis
 
         self.name = name
@@ -22,7 +22,7 @@ class Device:
         self.wiki = wiki or self.wikis.wiki
         self.rdir = tmp_path / f"{name}-remote"
         self.double = double
-        _, token = double.add_device(name)
+        _, token = double.add_device(name, scopes)
         self.client = remotehttp.Client(URL, token, transport=double.transport)
 
     def sync(self, **kw):
@@ -895,14 +895,48 @@ def test_notes_sync_only_while_the_checkout_is_on_its_default_branch(a, b, doubl
     assert "arch/design.md" in double.live(KEY)
 
 
-def test_a_locally_deleted_note_comes_back_on_the_default_branch(a, double):
-    (a.wiki / "keep.md").write_text("precious\n", encoding="utf-8")
+def test_a_note_this_device_wrote_and_then_deleted_stays_deleted(tmp_path, b, double):
+    w = Device(tmp_path, "w", double, scopes=("read", "write"))   # no delete scope: an agent's device
+    (w.wiki / "mine.md").write_text("scratch\n", encoding="utf-8")
+    real_git(w)
+    real_git(b)
+    w.sync()
+    w.sync()  # the server hands the note back on the next pass: it must still count as written here
+    (w.wiki / "mine.md").unlink()
+    res = w.sync()
+    assert res.sent_del == 1 and not (w.wiki / "mine.md").exists()
+    assert "mine.md" not in double.live(KEY)
+    assert w.sync().sent_del == 0 and not (w.wiki / "mine.md").exists()
+    b.sync()
+    assert not (b.wiki / "mine.md").exists()          # the delete reached the other device too
+
+
+def test_a_note_another_device_wrote_comes_back_when_deleted_locally(a, b, double):
+    (b.wiki / "keep.md").write_text("precious\n", encoding="utf-8")
     real_git(a)
-    a.sync()
-    (a.wiki / "keep.md").unlink()
+    real_git(b)
+    b.sync()
     a.sync()
     assert (a.wiki / "keep.md").read_text() == "precious\n"
-    assert double.live(KEY)["keep.md"]  # deleting a note is done through the API
+    (a.wiki / "keep.md").unlink()
+    res = a.sync()
+    assert res.sent_del == 0
+    assert (a.wiki / "keep.md").read_text() == "precious\n"
+    assert double.live(KEY)["keep.md"]  # another device's note is deleted through the API
+
+
+def test_a_note_edited_elsewhere_after_this_device_wrote_it_is_no_longer_its_own(a, b, double):
+    (a.wiki / "shared.md").write_text("v1\n", encoding="utf-8")
+    real_git(a)
+    real_git(b)
+    a.sync()
+    b.sync()
+    (b.wiki / "shared.md").write_text("v2 by b\n", encoding="utf-8")
+    b.sync()
+    a.sync()
+    assert (a.wiki / "shared.md").read_text() == "v2 by b\n"
+    (a.wiki / "shared.md").unlink()
+    assert a.sync().sent_del == 0 and (a.wiki / "shared.md").exists()
 
 
 # --- J85: fixes from the independent review ---------------------------------------------------------------
@@ -1230,3 +1264,18 @@ def test_the_double_mirrors_the_server_on_verify_reserved_names_origin_and_futur
     res = b.sync(origin="")  # a different origin, empty versus non-empty included
     assert res.status == "error" and "409" in res.message
     assert b.sync(origin="git.example/owner/repo").status == "ok"
+
+
+def test_a_note_left_out_of_the_snapshot_is_not_a_deleted_note(tmp_path, b, double):
+    w = Device(tmp_path, "w2", double, scopes=("read", "write"))
+    (w.wiki / "mine.md").write_text("scratch\n", encoding="utf-8")
+    real_git(w)
+    real_git(b)
+    w.sync()
+    w.sync()
+    assert "mine.md" in double.live(KEY)
+    (w.wiki / "mine.md").unlink()
+    (w.wiki / "mine.md").symlink_to(w.wiki / "elsewhere.md")   # a symlink is never synced, and it is not a delete
+    res = w.sync()
+    assert res.sent_del == 0
+    assert "mine.md" in double.live(KEY)
