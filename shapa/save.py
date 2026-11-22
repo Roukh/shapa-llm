@@ -102,7 +102,7 @@ SUPERSEDE_REFUSAL = ("superseding deletes a rule, so only the operator's local C
 
 def save_row(root, scope: str, note_type: str, summary: str, body: str, tags, alias=None,
              project: str | None = None, merge: bool = False, privileged: bool = False,
-             supersedes=None, distinct_from=None) -> dict:
+             supersedes=None, distinct_from=None, repo: str | None = None) -> dict:
     """Format 4: a memory/rule/issue is a row in the wiki's database, never a
     note file. *alias* keeps a caller-supplied slug findable by ``get``. A
     document obeys the lean gate: one per *project* (see :func:`db.add_doc`).
@@ -111,11 +111,16 @@ def save_row(root, scope: str, note_type: str, summary: str, body: str, tags, al
     caller (see :func:`db.check_row_tags`). A rule is ONE rule (:func:`db.check_atomic_rule`); a rule near
     an existing one is refused with the candidates (``{"error", "candidates"}``) unless it names what it
     *supersedes* (deleted once it is written; baseline rules only from the privileged CLI) or claims it is
-    *distinct_from* it."""
+    *distinct_from* it. An agent task takes *repo*: the repo (its ``hierarchy.repo_key``) whose next
+    session start dispatches it (the ``repo:KEY`` tag)."""
     from shapa import tasks
 
     if (supersedes or distinct_from) and note_type != "rule":
         return {"error": "supersedes and distinct_from apply to rules only"}
+    if repo and note_type != "agent_task":
+        return {"error": "repo applies to an agent_task only"}
+    if repo:
+        tags = [*(tags or []), db.REPO_PREFIX + repo.strip()]
     if supersedes and not privileged:
         return {"error": SUPERSEDE_REFUSAL}
 
@@ -193,6 +198,7 @@ def save_note(
     privileged: bool = False,
     supersedes: list[str] | None = None,
     distinct_from: list[str] | None = None,
+    repo: str | None = None,
 ) -> dict[str, Any]:
     """Write one note. Returns ``{"id", "path", "scope", ...}`` on success,
     or ``{"error": "..."}`` on any ordinary bad-input case - this function
@@ -269,7 +275,7 @@ def save_note(
     if db.exists(root):
         return save_row(root, stored_scope, note_type, summary, body, tags, alias=(id or "").strip(),
                         project=project, privileged=privileged, supersedes=supersedes,
-                        distinct_from=distinct_from)
+                        distinct_from=distinct_from, repo=repo)
     if supersedes or distinct_from:
         return {"error": "supersedes and distinct_from need a format-4 wiki (a shapa.db)"}
     if note_type in DB_ONLY_TYPES:
@@ -364,6 +370,9 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--project", default=None,
                         help="the project this belongs to (the project:KEY tag, and an about link "
                              "to the project's document)")
+    parser.add_argument("--repo", default=None, metavar="KEY",
+                        help="agent_task only: address it to this repo (the repo:KEY tag, KEY the repo's "
+                             "directory name as a project key); its next session start dispatches it")
     parser.add_argument("--supersedes", action="append", default=[], metavar="R<n>",
                         help="rule only: the newer rule wins, delete this older one of the same wiki once this "
                              "is written (baseline rules too: the operator's CLI)")
@@ -382,7 +391,7 @@ def main(argv: list[str] | None = None) -> None:
         note_type=args.note_type, tags=tags, id=args.id,
         applies_to=args.applies_to, start=args.root, project=args.project,
         privileged=True,  # the local CLI is the operator's (it may set stage:0)
-        supersedes=args.supersedes, distinct_from=args.distinct_from,
+        supersedes=args.supersedes, distinct_from=args.distinct_from, repo=args.repo,
     )
     if "error" in result:
         print(f"shapa save: {result['error']}", file=sys.stderr)

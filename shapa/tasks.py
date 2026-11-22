@@ -69,10 +69,14 @@ def add_task(conn: sqlite3.Connection, title: str, owner: str, body: str = "", *
     clean_body = redact(str(body or "").strip())
     found = None
     if owner:
-        found = conn.execute(
-            "SELECT i.id FROM items i JOIN tags t ON t.id = i.id AND t.tag = ? "
-            "WHERE i.kind = 'T' AND i.status != 'closed' AND i.title = ? AND i.body = ? "
-            "ORDER BY i.created, i.id LIMIT 1", (_OWNER_TAG[owner], clean_title, clean_body)).fetchone()
+        addressed = sorted(t for t in want if t.startswith(db.REPO_PREFIX))  # the same text for another repo is another task
+        for row in conn.execute(
+                "SELECT i.id FROM items i JOIN tags t ON t.id = i.id AND t.tag = ? "
+                "WHERE i.kind = 'T' AND i.status != 'closed' AND i.title = ? AND i.body = ? "
+                "ORDER BY i.created, i.id", (_OWNER_TAG[owner], clean_title, clean_body)).fetchall():
+            if sorted(t for t in db._tags_of(conn, row[0]) if t.startswith(db.REPO_PREFIX)) == addressed:
+                found = row
+                break
     if found:
         # identical text never moves a task to another project: only a task with none gains one
         if key and not any(t.startswith(db.PROJECT_PREFIX) for t in db._tags_of(conn, found[0])):

@@ -485,6 +485,7 @@ export const isNodeAlias = (alias: unknown): boolean =>
   typeof alias === "string" && alias.normalize("NFKC").trim().toLowerCase().startsWith(NODE_ALIAS_PREFIX);
 export const PROJECT_PREFIX = "project:";
 export const RANK_PREFIX = "rank:";
+export const REPO_PREFIX = "repo:";
 export const NORTHSTAR_MAX = 600;
 export const FIRE_TEXT_MAX = 200;
 export const DOC_BODY_MAX = 1_000_000;

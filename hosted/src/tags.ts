@@ -4,7 +4,7 @@
 // relation index (relations.ts), the session text, the stage gate and the reach filter all read
 // from here.
 
-import { NODE_TAG, PROJECT_PREFIX, RANK_PREFIX, cmp, type Kind } from "./records.js";
+import { NODE_TAG, PROJECT_PREFIX, RANK_PREFIX, REPO_PREFIX, cmp, type Kind } from "./records.js";
 
 export const STAGE_MAX = 9;
 export const STAGE_PREFIX = "stage:";
@@ -25,7 +25,7 @@ export const LEARNING_PREFIXES: readonly string[] = ["violations:", "revisions:"
 
 /** Tags that are the engine's, not topics: never listed in TOPICS or the tag index (unless asked). */
 export const SYSTEM_TAGS: readonly string[] = ["skill", "focus", NODE_TAG, "human_task", "agent_task", IDEA_TAG, DECISION_TAG, ...LEARNING_TAGS];
-export const SYSTEM_PREFIXES: readonly string[] = [STAGE_PREFIX, PROPOSED_PREFIX, "skill:", "v:", "status:", RANK_PREFIX, PROJECT_PREFIX, ...LEARNING_PREFIXES];
+export const SYSTEM_PREFIXES: readonly string[] = [STAGE_PREFIX, PROPOSED_PREFIX, "skill:", "v:", "status:", RANK_PREFIX, PROJECT_PREFIX, REPO_PREFIX, ...LEARNING_PREFIXES];
 
 export function isSystemTag(tag: string): boolean {
   return SYSTEM_TAGS.includes(tag) || SYSTEM_PREFIXES.some((p) => tag.startsWith(p));
