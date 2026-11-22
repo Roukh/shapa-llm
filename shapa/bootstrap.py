@@ -31,7 +31,7 @@ import time
 from pathlib import Path
 
 from shapa import (codemap, config, db, embed, focus, hierarchy, ledger, memlog, partition,
-                   reconfigure, registry, serve)
+                   reconfigure, registry, serve, upkeep)
 from shapa.config import CHARS_PER_TOKEN, WikiRoot
 from shapa.nodes import Node, load_nodes
 from shapa.redact import redact
@@ -158,6 +158,19 @@ def _learning_off() -> bool:
     """``SHAPA_LEARNING=0`` switches off what the learning loop adds to a session start (its lines and
     its measurements): the comparison run for the cost test, and an escape hatch."""
     return os.environ.get("SHAPA_LEARNING") == "0"
+
+
+def _directive(wiki_roots: list[WikiRoot]) -> list[str]:
+    """The lines of the ``<shapa-action>`` head: the restructure of a wiki below the format, then the upkeep a
+    repo wiki owes (behind, or tasks addressed to it). Each fails alone and never blocks a session start."""
+    lines: list[str] = []
+    for make, roots in ((reconfigure.directive_lines, [wr.path for wr in wiki_roots if wr.kind != "external"]),
+                        (upkeep.directive_lines, wiki_roots)):
+        try:
+            lines += make(roots)
+        except Exception:
+            pass
+    return lines
 
 
 def _select_from_loaded(
@@ -448,10 +461,7 @@ def build_focused(wiki_roots: list[WikiRoot], budget: int = DEFAULT_BUDGET, stag
 
     budget = min(budget, HOOK_CAP - 200)
     _SERVED.clear()
-    try:
-        directive = reconfigure.directive_lines([wr.path for wr in wiki_roots if wr.kind != "external"])
-    except Exception:
-        directive = []  # never block session start
+    directive = _directive(wiki_roots)
     norths: list[str] = []
     groups: list[tuple[str, list[dict]]] = []  # (wiki label, fires)
     optional: list[tuple[int, int, int, str]] = []  # (level, fire index, order, line)
@@ -658,10 +668,7 @@ def build_context(
     if not full:
         return build_focused(wiki_roots, budget, max(0, min(db.STAGE_MAX, int(stage))))
 
-    try:
-        directive = reconfigure.directive_lines([wr.path for wr in wiki_roots if wr.kind != "external"])
-    except Exception:
-        directive = []  # never block session start
+    directive = _directive(wiki_roots)
     per_root = {root: _load_root(root) for root in wiki_roots}
     ledger_lines: list[str] = []
     for wr in wiki_roots:

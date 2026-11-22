@@ -80,6 +80,7 @@ NODE_TAG = "shapa-node"
 NODE_ALIAS_PREFIX = "node:"
 RESERVED_DOC_TAGS = (FOCUS_TAG, SKILL_TAG, NODE_TAG)
 PROJECT_PREFIX = "project:"
+REPO_PREFIX = "repo:"
 _PROJECT_RE = re.compile(r"^[a-z0-9][a-z0-9._/-]{0,79}$")
 
 #: Stages (the central brain contract, section 1): ``stage:N`` (one digit) on a rule, a memory
@@ -109,7 +110,7 @@ LEARNING_TAG_PREFIXES = ("violations:", "revisions:", "repeats:", "serves:", "re
                          "evidence:", "learned-at:", "generalized-into:")
 SYSTEM_TAGS = (SKILL_TAG, FOCUS_TAG, NODE_TAG, *OWNER_TAGS, IDEA_TAG, DECISION_TAG, *LEARNING_TAGS)
 SYSTEM_TAG_PREFIXES = (STAGE_PREFIX, PROPOSED_PREFIX, "skill:", "v:", "status:", "rank:", PROJECT_PREFIX,
-                       *LEARNING_TAG_PREFIXES)
+                       REPO_PREFIX, *LEARNING_TAG_PREFIXES)
 #: Kept under its old names for the callers that import them.
 RESERVED_ROW_TAGS = LEARNING_TAGS
 RESERVED_ROW_TAG_PREFIXES = LEARNING_TAG_PREFIXES
@@ -949,6 +950,7 @@ def _guard_tags(conn: sqlite3.Connection, target: str | None, new, *, letter: st
     ``stage-proposed:0`` instead, and no tag changes at all on a record that already holds it."""
     raw = [" ".join(str(x).split()) for x in new if str(x).strip()]
     check_project_tags(raw)                                   # on the tag as sent, before the cut
+    check_repo_tags(raw)
     check_tag_spelling(raw)
     clean = list(dict.fromkeys(t for t in (_clean_tag(x) for x in raw) if t))
     if len({t for t in clean if t.startswith(PROJECT_PREFIX)}) > 1:
@@ -1267,6 +1269,17 @@ def check_project_tags(tags) -> None:
             key = t[len(PROJECT_PREFIX):]
             if not key or clean_project(key) != key:
                 raise LedgerError(f"invalid project tag {t!r}: lowercase letters, digits and . _ / - only")
+
+
+def check_repo_tags(tags) -> None:
+    """Refuse a ``repo:`` tag (the repo an agent task is addressed to) whose key is not a clean project
+    key, and a second repo on one record."""
+    keys = {t for t in tags if t.startswith(REPO_PREFIX)}
+    for t in keys:
+        if not _PROJECT_RE.match(t[len(REPO_PREFIX):]):
+            raise LedgerError(f"invalid repo tag {t!r}: lowercase letters, digits and . _ / - only")
+    if len(keys) > 1:
+        raise LedgerError("a record is addressed to one repo")
 
 
 def is_node_alias(alias) -> bool:

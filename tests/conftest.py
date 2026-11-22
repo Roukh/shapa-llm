@@ -72,6 +72,13 @@ def inline_snapshot(monkeypatch):
     monkeypatch.setenv("SHAPA_INLINE_SNAPSHOT", "1")
 
 
+@pytest.fixture(autouse=True)
+def no_upkeep(monkeypatch):
+    """The fixture wikis carry a stub AGENTS.md, which reads as behind: session start adds no upkeep block
+    unless a test (tests/test_upkeep.py) switches it on."""
+    monkeypatch.setenv("SHAPA_UPKEEP", "0")
+
+
 class Wikis:
     """A global wiki and one repo wiki, both format 4, with an isolated pointer."""
 

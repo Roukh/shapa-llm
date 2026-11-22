@@ -302,7 +302,8 @@ def tool_save(args: dict[str, Any], cwd: str | None) -> dict[str, Any]:
         return save_mod.save_row(root, scope, note_type, summary, body, tags,
                                  alias=str(args.get("id") or "").strip(),
                                  project=str(args.get("project") or "").strip() or None,
-                                 merge=bool(args.get("merge")), supersedes=supersedes, distinct_from=distinct)
+                                 merge=bool(args.get("merge")), supersedes=supersedes, distinct_from=distinct,
+                                 repo=str(args.get("repo") or "").strip() or None)
     if note_type in DB_ONLY_TYPES:
         return {"error": f"type {note_type!r} needs a format-4 wiki (a shapa.db) - "
                          f"run `shapa upgrade {root}` first"}
@@ -890,6 +891,11 @@ TOOLS: list[dict[str, Any]] = [
                                    "documents (default: this wiki's own); a project keeps ONE "
                                    "document, a second is refused with the first one's id unless "
                                    "`merge` is true.",
+                },
+                "repo": {
+                    "type": "string",
+                    "description": "agent_task only: the repo key (its directory name as a project key) "
+                                   "whose next session start dispatches this task (the repo:KEY tag).",
                 },
                 "merge": {
                     "type": "boolean",
