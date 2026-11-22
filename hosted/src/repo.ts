@@ -3,6 +3,7 @@
 
 import { ApiError } from "./errors.js";
 import { COUNTER_KINDS, MAX_COUNTER, TYPE_NAMES, nowIso, type Data, type Kind, type Link, type Normalized, type RecordWire } from "./records.js";
+import { hiddenKeys, readNodes } from "./nodes.js";
 import { reindexRelations, type IndexRow } from "./relations.js";
 import { baseVisible } from "./tags.js";
 
@@ -103,9 +104,21 @@ export class Repo {
     return this.reach === "baseline";
   }
 
-  /** ` AND <col> = 1` for a baseline view, else nothing: the reach filter in SQL. */
+  /** ` AND <col> = 1` for a baseline view, else nothing: the reach filter in SQL. It also leaves out the records of a
+   *  hidden wiki (`hiddenWikis`): `col` is `base_vis`, `vis`, or either behind an alias (`t.vis`). */
   vis(col = "base_vis"): string {
-    return this.baseline ? ` AND ${col} = 1` : "";
+    if (!this.baseline) return "";
+    const hidden = this.hiddenWikis();
+    return ` AND ${col} = 1` + (hidden.length ? ` AND ${col.replace(/(base_)?vis$/, "")}wiki NOT IN (${hidden.map((k) => `'${k}'`).join(",")})` : "");
+  }
+
+  private hidden: string[] | null = null;
+
+  /** The repo wikis a baseline view may not reach: those whose node says `read_stage` above 0 (a baseline device is
+   *  stage 0). Empty for a full view. The keys match the node key pattern, so they are safe to quote in SQL. */
+  hiddenWikis(): string[] {
+    if (!this.baseline) return [];
+    return (this.hidden ??= hiddenKeys(readNodes(this.sql), 0));
   }
 
   // --- revisions and counters ---------------------------------------------------------------
@@ -156,12 +169,14 @@ export class Repo {
   // --- wikis ----------------------------------------------------------------------------------
 
   wiki(key: string): WikiRow | null {
+    if (this.hiddenWikis().includes(key)) return null;
     const r = this.sql.exec(`SELECT * FROM wikis WHERE key = ?`, key).toArray()[0];
     return r ? (r as unknown as WikiRow) : null;
   }
 
   wikis(): WikiRow[] {
-    return this.sql.exec(`SELECT * FROM wikis ORDER BY key`).toArray() as unknown as WikiRow[];
+    const hidden = this.hiddenWikis();
+    return (this.sql.exec(`SELECT * FROM wikis ORDER BY key`).toArray() as unknown as WikiRow[]).filter((w) => !hidden.includes(w.key));
   }
 
   insertWiki(w: Omit<WikiRow, "created">): void {
@@ -303,7 +318,7 @@ export class Repo {
     const p = byTag ? "r." : "";
     const where = byTag ? [`t.wiki = ?`, `t.tag = ?`, `t.rev > ?`, `r.deleted = 0`] : [`wiki = ?`, `deleted = 0`, `rev > ?`];
     const args: SqlStorageValue[] = byTag ? [wiki, f.tag!, f.after] : [wiki, f.after];
-    if (this.baseline) where.push(`${p}base_vis = 1`);
+    if (this.baseline) where.push(`${p}base_vis = 1`); // a hidden wiki never reaches here: wikiFor refuses it first
     if (f.kind) { where.push(`${p}kind = ?`); args.push(f.kind); }
     if (f.status) { where.push(`json_extract(${p}data, '$.status') = ?`); args.push(f.status); }
     args.push(f.limit);

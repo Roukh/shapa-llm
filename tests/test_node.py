@@ -68,13 +68,36 @@ def test_sync_writes_one_tagged_document_of_compact_json_with_the_documented_sha
     d, body, tags = node_doc(wikis)
     assert d.alias == "node:my-repo" and d.mime == "application/json" and tags == [db.NODE_TAG]
     assert d.source == "node" and db.project_of(tags) is None             # not a project document
-    assert list(body) == ["key", "updated", "northstar", "fires", "principles", "mistakes", "counts"]
+    assert list(body) == ["key", "updated", "northstar", "fires", "principles", "mistakes", "counts",
+                          "path", "type", "read_stage", "global_access"]
+    assert body["path"] == [] and body["type"] == "" and body["read_stage"] == 0 and body["global_access"] is None
     assert body["key"] == "my-repo" and body["updated"] == "2026-10-03"
     assert body["principles"] == [[pid, body["principles"][0][1], SHARED]]
     assert body["mistakes"] == 1                                          # a count, never the text
     assert "header" not in d.body and "Operator" not in d.body
     assert body["counts"] == {"rules": 1, "memories": 1, "issues": 1, "open_tasks": 1}
     assert d.body == json.dumps(body, separators=(",", ":"), ensure_ascii=False)  # compact separators
+
+
+def test_the_node_carries_the_repos_place_and_an_old_node_reads_with_the_defaults(wikis):
+    from shapa import hierarchy
+
+    hierarchy.run(["type", "add", "main"])
+    hierarchy.run(["group", "acme/core"])
+    hierarchy.run(["link", "acme/core", "my-repo"])
+    hierarchy.save_repo(wikis.wiki, {"type": "main", "global_access": 3, "read_stage": 2})
+    assert node.sync(wikis.repo, now=at(0))["status"] == "created"
+    d, body, _ = node_doc(wikis)
+    assert (body["path"], body["type"], body["read_stage"], body["global_access"]) == (["acme", "core"], "main", 2, 3)
+    hierarchy.run(["unlink", "my-repo"])
+    assert node.sync(wikis.repo, now=at(1))["status"] == "updated"        # a moved repo rewrites its node
+    assert node_doc(wikis)[1]["path"] == []
+    old = {k: v for k, v in body.items() if k not in ("path", "type", "read_stage", "global_access")}
+    c = db.connect(wikis.global_wiki)
+    db.update_doc(c, d.id, body=json.dumps(old), system=True)
+    parsed = node.parse(db.get_doc(c, d.id))
+    c.close()
+    assert (parsed["path"], parsed["type"], parsed["read_stage"], parsed["global_access"]) == ([], "", 0, None)
 
 
 def test_sync_is_idempotent_and_only_a_real_change_rewrites_the_document(wikis):

@@ -363,10 +363,79 @@ run_prompt() {  # $1 = install|uninstall
   return 0
 }
 
+# --- the hosted MCP, when `shapa remote` is logged in and global_store = hosted ----------------
+# `shapa remote mcp` prints the hosted MCP's URL only then (nothing otherwise, so a default install
+# wires nothing). The device token never goes in argv or in a config file: each harness reads it from
+# $SHAPA_MCP_TOKEN (`shapa remote devices --mint NAME --env-file PATH --env-var SHAPA_MCP_TOKEN`).
+HOSTED_NAME="shapa-hosted"; HOSTED_ENV="SHAPA_MCP_TOKEN"
+HOSTED_BEGIN="# BEGIN shapa-mcp-hosted"; HOSTED_END="# END shapa-mcp-hosted"
+
+mcp_hosted() {  # $1 = add|remove
+  local url="" h OC_TMP
+  if [ "$1" = "add" ]; then
+    url="$("${INV_ARGV[@]}" remote mcp 2>/dev/null)" || url=""
+    [ -n "$url" ] || return 0
+  fi
+  for h in claude codex opencode; do
+    harness_in_scope "$h" && have_bin "$h" || continue
+    case "$h" in
+      claude)
+        if [ "$1" = "remove" ]; then
+          [ "$DRY_RUN" -eq 1 ] && { echo "# would run: claude mcp remove $HOSTED_NAME --scope user"; continue; }
+          claude mcp remove "$HOSTED_NAME" --scope user >/dev/null 2>&1 || true
+        elif claude mcp get "$HOSTED_NAME" >/dev/null 2>&1; then
+          echo "Claude Code MCP server '$HOSTED_NAME' already registered - skipping (idempotent)."
+        elif [ "$DRY_RUN" -eq 1 ]; then
+          echo "# would run: claude mcp add --transport http $HOSTED_NAME --scope user $url (token from \$$HOSTED_ENV)"
+        else  # single quotes: the harness expands ${VAR} itself, so the token is never in argv
+          claude mcp add --transport http "$HOSTED_NAME" --scope user "$url" --header 'Authorization: Bearer ${'"$HOSTED_ENV"'}'
+          echo "Registered the hosted MCP '$HOSTED_NAME' for Claude Code (token from \$$HOSTED_ENV)."
+        fi ;;
+      codex)
+        if [ "$1" = "remove" ]; then
+          [ "$DRY_RUN" -eq 1 ] && { echo "# would remove the shapa-mcp-hosted block from $CODEX_CONFIG"; continue; }
+          [ -f "$CODEX_CONFIG" ] && sed -i "/^${HOSTED_BEGIN}\$/,/^${HOSTED_END}\$/d" "$CODEX_CONFIG"
+        elif [ -f "$CODEX_CONFIG" ] && grep -qF "$HOSTED_BEGIN" "$CODEX_CONFIG"; then
+          echo "Codex hosted MCP already registered at $CODEX_CONFIG - skipping (idempotent)."
+        else
+          local block="$HOSTED_BEGIN
+[mcp_servers.$HOSTED_NAME]
+url = \"$(_toml_escape "$url")\"
+bearer_token_env_var = \"$HOSTED_ENV\"
+$HOSTED_END"
+          if [ "$DRY_RUN" -eq 1 ]; then echo "# would append to $CODEX_CONFIG:"; printf '%s\n' "$block"; continue; fi
+          mkdir -p "$(dirname "$CODEX_CONFIG")"; touch "$CODEX_CONFIG"
+          if [ -s "$CODEX_CONFIG" ]; then printf '\n' >> "$CODEX_CONFIG"; fi
+          printf '%s\n' "$block" >> "$CODEX_CONFIG"
+          echo "Registered the hosted MCP '$HOSTED_NAME' in $CODEX_CONFIG (token from \$$HOSTED_ENV)."
+        fi ;;
+      opencode)
+        if [ "$1" = "remove" ]; then
+          [ "$DRY_RUN" -eq 1 ] && { echo "# would remove .mcp.$HOSTED_NAME from $OPENCODE_CONFIG"; continue; }
+          [ -f "$OPENCODE_CONFIG" ] || continue
+          OC_TMP="$(mktemp)"
+          jq --arg n "$HOSTED_NAME" 'if .mcp then .mcp |= del(.[$n]) else . end' "$OPENCODE_CONFIG" > "$OC_TMP" && mv "$OC_TMP" "$OPENCODE_CONFIG"
+        elif [ -f "$OPENCODE_CONFIG" ] && jq -e --arg n "$HOSTED_NAME" '(.mcp // {}) | .[$n] != null' "$OPENCODE_CONFIG" >/dev/null 2>&1; then
+          echo "OpenCode hosted MCP already registered at $OPENCODE_CONFIG - skipping (idempotent)."
+        elif [ "$DRY_RUN" -eq 1 ]; then
+          echo "# would set .mcp.$HOSTED_NAME in $OPENCODE_CONFIG to a remote server at $url (token from \$$HOSTED_ENV)"
+        else
+          mkdir -p "$(dirname "$OPENCODE_CONFIG")"; [ -f "$OPENCODE_CONFIG" ] || echo '{}' > "$OPENCODE_CONFIG"
+          OC_TMP="$(mktemp)"
+          jq --arg n "$HOSTED_NAME" --arg u "$url" --arg e "Bearer {env:$HOSTED_ENV}" \
+            '.mcp = (.mcp // {}) | .mcp[$n] = {type:"remote", url:$u, headers:{Authorization:$e}}' "$OPENCODE_CONFIG" > "$OC_TMP" && mv "$OC_TMP" "$OPENCODE_CONFIG"
+          echo "Registered the hosted MCP '$HOSTED_NAME' in $OPENCODE_CONFIG (token from \$$HOSTED_ENV)."
+        fi ;;
+    esac
+  done
+  return 0
+}
+
 run_mcp() {  # $1 = add|remove - dispatches to every harness in scope
   harness_in_scope claude   && mcp_claude   "$1"
   harness_in_scope codex    && mcp_codex    "$1"
   harness_in_scope opencode && mcp_opencode "$1"
+  mcp_hosted "$1"
   return 0
 }
 

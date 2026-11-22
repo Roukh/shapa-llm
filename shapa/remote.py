@@ -161,9 +161,34 @@ def cmd_sync(args) -> int:
 
 # --- status / devices -----------------------------------------------------------
 
+def _global_store() -> str:
+    """``global_store`` of the global config; ``local`` when it cannot be read."""
+    from shapa import config, hierarchy
+
+    try:
+        return hierarchy.load_global(config.global_root())["global_store"]
+    except hierarchy.HierarchyError:
+        return "local"
+
+
+def cmd_mcp(args) -> int:
+    """The hosted MCP's URL, for an installer: printed only while logged in with ``global_store = hosted``
+    (exit 1 and no output otherwise, so a default install wires nothing). The token never appears here: a
+    harness reads it from the environment variable it names."""
+    creds = syncstate.load_credentials()
+    if creds is None or _global_store() != "hosted":
+        return 1
+    try:
+        url = check_url(creds.url)  # a stored URL is re-checked: it goes into a harness config next to a token variable
+    except RemoteError:
+        return 1
+    print(f"{url}/mcp")
+    return 0
+
+
 def cmd_status(args) -> int:
     creds = syncstate.load_credentials()
-    out: dict = {"logged_in": creds is not None, "wikis": []}
+    out: dict = {"logged_in": creds is not None, "wikis": [], "global_store": _global_store()}
     code = 0
     if creds is None:
         code = 1 if args.check else 0
@@ -194,6 +219,8 @@ def cmd_status(args) -> int:
         print("not logged in")
         return code
     print(f"logged in as {creds.device} ({creds.device_id}) at {creds.url}")
+    if out["global_store"] == "hosted":
+        print("global wiki: a cache of the hosted store (global_store = hosted)")
     for w in out["wikis"]:
         if w.get("needs_key"):
             print(f"  {w['name']}: needs --key (no git origin; run `shapa remote sync --key KEY` once)")
@@ -370,11 +397,12 @@ def build_parser() -> argparse.ArgumentParser:
                          "not tracked by git; other lines are kept)")
     dv.add_argument("--env-var", default=None, metavar="VAR", help="with --mint: the variable name")
     sub.add_parser("logout", help="forget the stored login")
+    sub.add_parser("mcp", help="the hosted MCP URL when logged in and global_store is hosted (for installers)")
     return p
 
 
 _COMMANDS = {"login": cmd_login, "sync": cmd_sync, "status": cmd_status, "devices": cmd_devices,
-             "logout": cmd_logout}
+             "logout": cmd_logout, "mcp": cmd_mcp}
 
 
 def run(argv: list[str]) -> int:

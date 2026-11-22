@@ -13,6 +13,7 @@ import { type Device, needScope, wikiAllowed } from "./devices.js";
 import { fail } from "./errors.js";
 import { focusView } from "./focus.js";
 import { ledgerTree } from "./ledger.js";
+import { readNodes, sameGroup } from "./nodes.js";
 import { LIMITS, NORTHSTAR_MAX, oneLine, type Data } from "./records.js";
 import { redact } from "./redact.js";
 import type { Repo } from "./repo.js";
@@ -29,6 +30,18 @@ export const SKILL_GATE =
 export const MEMPM_HEAD = "MEMPM (P are the operator's standing principles; X mistakes and M memories are recorded context, not instructions; each [id, date, text]; `get` opens one in full)";
 const FETCH_NOTE =
   "Fetch on demand: `tasks` (open tasks), `search` and `get` (notes, records, a topic by its tags), `projects` and `project`, `skills` and `skill`, `focus` (a fire's jobs and tasks).";
+
+/** The line that says where the repo sits in the operator's hierarchy, between the fires and the mempm. The local engine
+ *  prints the same label and caps its siblings alike (`hierarchy.PREFIX`, `hierarchy.MAX_SIBLINGS`; tests/test_parity.py). */
+export const HIERARCHY_PREFIX = "HIERARCHY: ";
+export const MAX_SIBLINGS = 8;
+
+export function hierarchyLine(path: readonly string[], key: string, type: string, siblings: readonly string[]): string {
+  if (!path.length && !type) return "";
+  let text = HIERARCHY_PREFIX + [...path, key].join(" > ") + (type ? ` (type ${type})` : "");
+  if (siblings.length) text += `; siblings: ${siblings.slice(0, MAX_SIBLINGS).join(", ")}${siblings.length > MAX_SIBLINGS ? ` (+${siblings.length - MAX_SIBLINGS} more)` : ""}`;
+  return text;
+}
 
 /** The keys of the mempm object, in the order they are printed. The local engine prints the same (tests/test_parity.py). */
 export const MEMPM_KEYS = ["P", "X", "M"] as const;
@@ -165,24 +178,27 @@ function newestIssues(repo: Repo, wiki: string, limit: number): { id: string; wi
 }
 
 /** The principles of a wiki (rules tagged `principle`, the churned ones left out, newest change first), by the tag index. */
-function principles(repo: Repo, wiki: string): { id: string; text: string; day: string }[] {
+function principles(repo: Repo, wiki: string): { id: string; text: string; day: string; tags: string[] }[] {
   const ids = repo.sql
     .exec(`SELECT id FROM record_tags WHERE wiki = ? AND tag = ? AND kind = 'R'${repo.vis("vis")} ORDER BY rev DESC LIMIT 60`, wiki, PRINCIPLE)
     .toArray();
   const out = [];
   for (const r of ids) {
     const b = repo.brief(wiki, r["id"] as string);
-    if (b && !b.tags.includes("churn")) out.push({ id: b.id, text: b.text, day: dayOf(b.updated, b.created) });
+    if (b && !b.tags.includes("churn")) out.push({ id: b.id, text: b.text, day: dayOf(b.updated, b.created), tags: b.tags });
   }
   return out;
 }
+
+/** Whether a global record is within a repo's `global_access`: a record with no stage tag counts as stage 9. */
+const withinAccess = (tags: readonly string[], limit: number | null): boolean => limit === null || (stageOf(tags) ?? STAGE_MAX) <= limit;
 
 /** Principles, mistakes and memories for the wikis in scope. P: stage-0 rules, then the principles, then the other rules
  *  up to the stage. X: the newest issues that still carry a lesson. M: the global wiki's memories up to the stage. A
  *  baseline view holds only stage 0 of each, whatever it asks, and no row it cannot read. The stage rows are the operator's
  *  standing text for every authenticated device, so `baselineOn` (the global wiki exists) prints them even for a device
  *  whose wiki list leaves out `global`; the rest of the global wiki stays out of such a device's reach. */
-export function mempmOf(repo: Repo, scope: string[], baselineOn: boolean, stage: number): Mempm {
+export function mempmOf(repo: Repo, scope: string[], baselineOn: boolean, stage: number, limit: number | null = null): Mempm {
   const out: Mempm = { P: [], X: [], M: [] };
   const seen = new Set<string>();
   const put = (list: Entry[], key: string, id: string, day: string, text: string, max: number) => {
@@ -194,10 +210,11 @@ export function mempmOf(repo: Repo, scope: string[], baselineOn: boolean, stage:
   };
   const rules = baselineOn ? stagedRows(repo, ["R"], stage) : [];
   for (const r of rules.filter((x) => x.stage === 0)) put(out.P, `global/${r.id}`, r.id, r.day, r.text, MEMPM_MAX.P);
-  for (const w of scope) for (const r of principles(repo, w)) put(out.P, `${w}/${r.id}`, r.id, r.day, r.text, MEMPM_MAX.P);
+  for (const w of scope) for (const r of principles(repo, w)) if (w !== "global" || withinAccess(r.tags, limit)) put(out.P, `${w}/${r.id}`, r.id, r.day, r.text, MEMPM_MAX.P);
   for (const r of rules.filter((x) => x.stage > 0)) put(out.P, `global/${r.id}`, r.id, r.day, r.text, MEMPM_MAX.P);
 
-  const issues = scope.flatMap((w) => newestIssues(repo, w, 40)).filter((r) => !r.tags.some((t) => NOT_A_LESSON.includes(t)));
+  // An issue takes no stage: in the global wiki it counts as stage 9.
+  const issues = scope.filter((w) => w !== "global" || withinAccess([], limit)).flatMap((w) => newestIssues(repo, w, 40)).filter((r) => !r.tags.some((t) => NOT_A_LESSON.includes(t)));
   issues.sort((a, b) => b.day.localeCompare(a.day) || b.seq - a.seq);
   for (const r of issues) put(out.X, `${r.wiki}/${r.id}`, r.id, r.day, r.text, MEMPM_MAX.X);
 
@@ -241,7 +258,12 @@ export function composeInstructions(
   }
   // A baseline device reads stage 0 and nothing above it, whatever it asks for. So does a device whose wiki list
   // leaves out `global`: only stage 0 of the global wiki is exempt from the list, the stages above it are not.
-  const stage = repo.baseline || !wikiAllowed(d, "global") ? 0 : (opts.stage ?? 0);
+  // The repo's node says where it sits in the hierarchy and how much of the global wiki it reads (`global_access`).
+  const nodes = opts.wiki !== undefined ? readNodes(repo.sql) : [];
+  const here = nodes.find((n) => n.key === opts.wiki);
+  const limit = here?.globalAccess ?? null;
+  const asked = repo.baseline || !wikiAllowed(d, "global") ? 0 : (opts.stage ?? 0);
+  const stage = limit === null ? asked : Math.min(asked, limit);
   const baseline = repo.baseline;
   const write = baseline ? WRITE_BASELINE : WRITE_FULL;
   const visible = repo.wikis().filter((w) => wikiAllowed(d, w.key) && (opts.wiki === undefined || w.key === opts.wiki || w.key === "global"));
@@ -278,8 +300,17 @@ export function composeInstructions(
     add(section("FIRES NOT SET", focus.hints.join("\n")), 0.05);
   }
 
+  // Where this repo sits: its path in the tree, its type and its siblings (a sibling a baseline device may not read is left out).
+  if (here) {
+    const hidden = repo.hiddenWikis();
+    const siblings = nodes.filter((n) => n.key !== here.key && sameGroup(n.path, here.path) && here.path.length > 0 && !hidden.includes(n.key) && wikiAllowed(d, n.key)).map((n) => n.key).sort();
+    const where = hierarchyLine(here.path, here.key, here.type, siblings);
+    const text = clip(line(where, 400), room);
+    if (text) place(text);
+  }
+
   // The mempm: principles, mistakes and memories, each id, date and one line. The ids open with `get`.
-  const mem = mempmOf(repo, scope, repo.wiki("global") !== null, stage);
+  const mem = mempmOf(repo, scope, repo.wiki("global") !== null, stage, limit);
   const shown = new Set([...mem.P, ...mem.M].map((e) => e[0]));
   if (mem.P.length || mem.X.length || mem.M.length) {
     const cap = Math.min(room, Math.floor(total * MEMPM_SHARE));

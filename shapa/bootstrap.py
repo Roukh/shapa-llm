@@ -30,7 +30,7 @@ import sys
 import time
 from pathlib import Path
 
-from shapa import (codemap, config, db, embed, focus, ledger, memlog, partition,
+from shapa import (codemap, config, db, embed, focus, hierarchy, ledger, memlog, partition,
                    reconfigure, registry, serve)
 from shapa.config import CHARS_PER_TOKEN, WikiRoot
 from shapa.nodes import Node, load_nodes
@@ -367,7 +367,16 @@ def _lesson_issues(conn, limit: int = 40, engine_only: bool = False) -> list[tup
         + "ORDER BY rowid DESC LIMIT ?", [*NOT_A_LESSON, limit]).fetchall()
 
 
-def build_mempm(global_conn, scoped: list[tuple], stage: int, ranked: list[dict]) -> tuple[dict, list[dict]]:
+def _stage_allowed(conn, rid: str, limit: int | None) -> bool:
+    """Whether a global record is within a repo's ``global_access``: a record with no stage tag counts as stage 9."""
+    if limit is None or limit >= db.STAGE_MAX:
+        return True
+    stage = db.stage_of([r[0] for r in conn.execute("SELECT tag FROM tags WHERE id = ?", (rid,))])
+    return (db.STAGE_MAX if stage is None else stage) <= limit
+
+
+def build_mempm(global_conn, scoped: list[tuple], stage: int, ranked: list[dict],
+                limit: int | None = None) -> tuple[dict, list[dict]]:
     """The principles, mistakes and memories of a session start.
 
     *global_conn* is the global wiki's connection (or None), *scoped* the ``(label, conn)`` of every wiki in
@@ -377,7 +386,8 @@ def build_mempm(global_conn, scoped: list[tuple], stage: int, ranked: list[dict]
 
     P: stage-0 rules, then the learned principles, then the other rules up to *stage*. X: issues that still
     carry a lesson, newest first (the global wiki's, and in a repo wiki those the engine's hook filed). M: the global wiki's memories up to *stage*. One masked line of text each,
-    never a body."""
+    never a body. *limit* is the repo's ``global_access``: global records above it are left out (*stage* is
+    already capped by it)."""
     mem: dict = {k: [] for k in MEMPM_KEYS}
     taken: list[tuple[int, dict]] = []  # (position in P, the learned principle there)
     seen: set = set()
@@ -396,6 +406,8 @@ def build_mempm(global_conn, scoped: list[tuple], stage: int, ranked: list[dict]
     for p in ranked:
         from shapa import learn
 
+        if p["wiki"] == "global" and not _stage_allowed(global_conn, p["id"], limit):
+            continue
         if put("P", (p["wiki"], p["id"]), p["id"], p["day"], learn.flatten(p["text"], db.SUMMARY_MAX)):
             taken.append((len(mem["P"]) - 1, p))
     for s, rid, summary, created, updated in rules:
@@ -404,6 +416,8 @@ def build_mempm(global_conn, scoped: list[tuple], stage: int, ranked: list[dict]
 
     issues = []
     for n, (label, conn) in enumerate(scoped):
+        if label == "global" and limit is not None and limit < db.STAGE_MAX:
+            continue  # an issue takes no stage: it counts as stage 9
         for rid, summary, created, updated in _lesson_issues(conn, engine_only=label != "global"):
             issues.append((_day(updated, created), -n, rid, label, summary))
     for day, _, rid, label, summary in sorted(issues, key=lambda x: x[:2], reverse=True):
@@ -455,6 +469,11 @@ def build_focused(wiki_roots: list[WikiRoot], budget: int = DEFAULT_BUDGET, stag
     L = None                      # shapa.learn, imported only when a wiki has something for it
     ordered = sorted((wr for wr in wiki_roots if wr.kind in ("global", "repo")),
                      key=lambda wr: wr.kind != "global")  # the global northstar leads
+    repo_wr = next((wr for wr in ordered if wr.kind == "repo"), None)
+    limit = hierarchy.global_access(repo_wr.path) if repo_wr else None  # the highest global stage this repo reads
+    hier = hierarchy.session_line(repo_wr.path) if repo_wr else ""
+    if limit is not None:
+        stage = min(stage, limit)
     try:
         for wr in ordered:
             label = _clip(wr.repo or wr.kind, 60)
@@ -543,7 +562,7 @@ def build_focused(wiki_roots: list[WikiRoot], budget: int = DEFAULT_BUDGET, stag
             rest = sorted((c for c in pool if c not in ranked), key=lambda c: (c["day"], c["id"]), reverse=True)
             ranked += rest
         try:
-            mem, served = build_mempm(global_conn, scoped, max(0, min(db.STAGE_MAX, int(stage))), ranked)
+            mem, served = build_mempm(global_conn, scoped, max(0, min(db.STAGE_MAX, int(stage))), ranked, limit)
         except Exception:
             mem, served = {k: [] for k in MEMPM_KEYS}, []  # never block session start
     finally:
@@ -567,7 +586,7 @@ def build_focused(wiki_roots: list[WikiRoot], budget: int = DEFAULT_BUDGET, stag
         learn_lines.append(drift_lines[0] + (f" (+{len(drift_lines) - 1} more: shapa metrics)"
                                              if len(drift_lines) > 1 else ""))
     has_mem = any(mem[k] for k in MEMPM_KEYS)
-    if not (norths or groups or hints or directive or has_mem or learn_lines):
+    if not (norths or groups or hints or directive or has_mem or learn_lines or hier):
         return ""
     head = (["<shapa-action>", *directive, "</shapa-action>"] if directive else [])
     top = [*head, "<shapa-memory>", PRECEDENCE]
@@ -580,7 +599,8 @@ def build_focused(wiki_roots: list[WikiRoot], budget: int = DEFAULT_BUDGET, stag
         fire_lines.append(f"fires [{label}]:")
         fire_lines += [e["head"] for e in fires]
     tail = [FETCH_NOTE, *learned, SKILL_GATE, WRITE_BACK, "</shapa-memory>"]
-    fixed = len("\n".join([*top, *fire_lines, *tail])) + 2
+    where = [_clip(hier, 300)] if hier else []   # after the fires, before the mempm
+    fixed = len("\n".join([*top, *fire_lines, *where, *tail])) + 2
     room = max(0, budget - fixed)
     block, kept = mempm_block(mem, min(room, int(budget * MEMPM_SHARE))) if has_mem else ("", {})
     if block:
@@ -611,6 +631,7 @@ def build_focused(wiki_roots: list[WikiRoot], budget: int = DEFAULT_BUDGET, stag
     for k, line in enumerate(hints):
         if (LEVEL_POINTER, 0, k) in keep_lines:
             lines.append(line)
+    lines += where
     if block:
         lines.append(block)
     lines += tail

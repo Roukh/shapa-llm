@@ -271,7 +271,7 @@ class TestDispatch(unittest.TestCase):
         resp = mcp.dispatch({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}, None)
         names = {t["name"] for t in resp["result"]["tools"]}
         self.assertEqual(names, {"search", "get", "save", "placement", "focus", "skill", "skill_match", "partition", "tags", "related", "tasks",
-                                "projects", "project", "project_new", "project_add"})
+                                "projects", "project", "project_new", "project_add", "hierarchy", "repo"})
         for tool in resp["result"]["tools"]:
             self.assertIn("description", tool)
             self.assertIn("inputSchema", tool)
@@ -337,7 +337,7 @@ class TestStdioTransport(_StubWiki):
         self.assertEqual(lines[0]["result"]["serverInfo"]["name"], "shapa")
         tool_names = {t["name"] for t in lines[1]["result"]["tools"]}
         self.assertEqual(tool_names, {"search", "get", "save", "placement", "focus", "skill", "skill_match", "partition", "tags", "related", "tasks",
-                                "projects", "project", "project_new", "project_add"})
+                                "projects", "project", "project_new", "project_add", "hierarchy", "repo"})
         search_payload = json.loads(lines[2]["result"]["content"][0]["text"])
         self.assertIn("git-workflow", [r["id"] for r in search_payload["results"]])
 

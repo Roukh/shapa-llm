@@ -169,7 +169,7 @@ class HostedDouble:
             wiki.bump(kind, int(n))
         results, rejected, renames = [], [], {}
         for op in ops:
-            if op["op"] == "del" and "delete" not in device["scopes"]:
+            if op["op"] == "del" and "delete" not in device["scopes"] and not self.own(wiki, device, op):
                 res = {"id": op["id"], "status": "rejected", "rev": 0,
                        "error": "this device lacks the delete scope"}
             else:
@@ -280,10 +280,22 @@ class HostedDouble:
             wiki.bump(m.group(1), int(m.group(2)) + 1)
         return {"id": orig, "status": status, "rev": rev}
 
+    @staticmethod
+    def target(wiki, op):
+        """The live record a delete names: by uid under any id, a note (no uid) by its path."""
+        if op["uid"]:
+            return next((r for r in wiki.records.values()
+                         if r["uid"] == op["uid"] and not r["deleted"] and r["kind"] != "N"), None)
+        cur = wiki.records.get(op["id"])
+        return cur if cur is not None and not cur["deleted"] and cur["kind"] == "N" else None
+
+    def own(self, wiki, device, op):
+        """A device may delete a note it wrote last (a note has no uid) without the delete scope."""
+        cur = self.target(wiki, op)
+        return not op["uid"] and cur is not None and cur["device"] == device["name"]
+
     def apply_del(self, wiki, device, op):
-        # the record is found by uid, under any id
-        cur = next((r for r in wiki.records.values()
-                    if r["uid"] == op["uid"] and not r["deleted"] and r["kind"] != "N"), None)
+        cur = self.target(wiki, op)
         if cur is None:
             return {"id": op["id"], "status": "noop", "rev": 0}
         if op.get("base_rev") == cur["rev"] or cur["updated"] <= op["deleted_at"]:
